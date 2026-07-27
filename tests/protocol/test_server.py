@@ -1,8 +1,9 @@
 """Protocol-level checks against the in-memory FastMCP client.
 
-Phase 0 registers no tools, so these assert the skeleton: the server boots, the
-handshake carries the instructions the model reads, the lifespan wires the tool
-context, and every deployment-filter path builds without crashing.
+These assert the assembled server: it boots, the handshake carries the
+instructions the model reads, the lifespan wires the tool context, the Phase 1
+tool set is registered, and every deployment-filter path prunes exactly the
+tools it should.
 """
 
 from __future__ import annotations
@@ -50,8 +51,33 @@ async def test_instructions_are_advertised(mcp_client: Client[Any]) -> None:
     assert "open items only" in instructions
 
 
-async def test_no_tools_are_registered_yet(mcp_client: Client[Any]) -> None:
-    assert await mcp_client.list_tools() == []
+PHASE_1_READ_TOOLS = {
+    "search_work_packages",
+    "list_work_packages",
+    "get_work_package",
+    "list_work_package_comments",
+    "list_attachments",
+    "download_attachment",
+    "list_projects",
+    "get_project",
+    "get_instance_info",
+    "get_project_metadata",
+    "get_work_package_schema",
+}
+PHASE_1_WRITE_TOOLS = {
+    "create_work_package",
+    "update_work_package",
+    "delete_work_package",
+    "add_work_package_comment",
+    "upload_attachment",
+}
+PHASE_1_TOOLS = PHASE_1_READ_TOOLS | PHASE_1_WRITE_TOOLS
+ATTACHMENT_GROUP_TOOLS = {"list_attachments", "download_attachment", "upload_attachment"}
+
+
+async def test_phase_1_tool_set_is_registered(mcp_client: Client[Any]) -> None:
+    listed = {tool.name for tool in await mcp_client.list_tools()}
+    assert listed == PHASE_1_TOOLS
     assert await mcp_client.list_resources() == []
     assert await mcp_client.list_prompts() == []
 
@@ -157,11 +183,12 @@ async def test_reference_tool_shape_works_end_to_end(
     server = build_server(settings)
 
     @server.tool(
+        name="reference_list_work_packages",
         tags=tool_tags(GROUP_WORK_PACKAGES, READ),
         annotations=read_annotations(title="List work packages"),
     )
     @tool_errors
-    async def list_work_packages(
+    async def reference_list_work_packages(
         page: int = 1, page_size: int = 20
     ) -> ListEnvelope[WorkPackageRow]:
         """Lists open work packages."""
@@ -187,11 +214,13 @@ async def test_reference_tool_shape_works_end_to_end(
     )
 
     async with Client(server) as client:
-        tool = (await client.list_tools())[0]
+        tool = next(
+            t for t in await client.list_tools() if t.name == "reference_list_work_packages"
+        )
         assert tool.outputSchema is not None
         assert tool.annotations is not None and tool.annotations.readOnlyHint is True
 
-        result = await client.call_tool("list_work_packages", {"page": 2})
+        result = await client.call_tool("reference_list_work_packages", {"page": 2})
         assert not result.is_error
         structured = result.structured_content
         assert structured is not None
@@ -206,7 +235,7 @@ async def test_reference_tool_shape_works_end_to_end(
         assert structured["sums"]["estimated_hours"] == 220.0
 
         route.mock(return_value=httpx.Response(404, json={"message": "nope"}))
-        failed = await client.call_tool("list_work_packages", {}, raise_on_error=False)
+        failed = await client.call_tool("reference_list_work_packages", {}, raise_on_error=False)
 
     assert failed.is_error
     envelope = json.loads(failed.content[0].text)  # type: ignore[union-attr]
@@ -219,15 +248,17 @@ async def test_reference_tool_shape_works_end_to_end(
     assert sent.params["offset"] == "2"
 
 
-async def test_read_only_server_boots_and_lists_nothing() -> None:
+async def test_read_only_server_hides_every_write_tool() -> None:
     settings = Settings(  # type: ignore[call-arg]
         _env_file=None, url=TEST_URL, api_key="test-token", read_only=True
     )
     async with Client(build_server(settings)) as client:
-        assert await client.list_tools() == []
+        listed = {tool.name for tool in await client.list_tools()}
+    assert listed == PHASE_1_READ_TOOLS
+    assert not listed & PHASE_1_WRITE_TOOLS
 
 
-async def test_disable_groups_do_not_break_startup() -> None:
+async def test_disable_prunes_exactly_the_named_groups() -> None:
     settings = Settings(  # type: ignore[call-arg]
         _env_file=None,
         url=TEST_URL,
@@ -235,4 +266,5 @@ async def test_disable_groups_do_not_break_startup() -> None:
         disable="meetings,news,attachments",
     )
     async with Client(build_server(settings)) as client:
-        assert await client.list_tools() == []
+        listed = {tool.name for tool in await client.list_tools()}
+    assert listed == PHASE_1_TOOLS - ATTACHMENT_GROUP_TOOLS

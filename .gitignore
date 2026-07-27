@@ -19,3 +19,6 @@ venv/
 htmlcov/
 
 # uv.lock is intentionally tracked
+
+# default download target of download_attachment
+openproject-downloads/
