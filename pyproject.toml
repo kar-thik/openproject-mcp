@@ -1,0 +1,76 @@
+[project]
+name = "openproject-mcp"
+version = "0.1.0"
+description = "MCP server for the OpenProject API v3"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "kar-thik", email = "mail@karthikv.dev" }]
+license = "MIT"
+keywords = ["mcp", "openproject", "fastmcp"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "fastmcp>=3.4,<4",
+    "httpx[http2]>=0.28",
+    "pydantic>=2.7",
+    "pydantic-settings>=2",
+]
+
+[project.scripts]
+openproject-mcp = "openproject_mcp.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/kar-thik/openproject-mcp"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.22",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["openproject_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q"
+markers = [
+    "integration: requires a live OpenProject instance (opt-in, never run by default)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["openproject_mcp", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "B008",  # function call in default argument — normal for FastMCP/pydantic
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["openproject_mcp"]

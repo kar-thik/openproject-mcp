@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# uv.lock is intentionally tracked
