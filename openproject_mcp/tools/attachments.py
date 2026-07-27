@@ -28,17 +28,754 @@ Non-negotiables for this module:
   honor ``OPENPROJECT_MCP_MAX_DOWNLOAD_MB``.
 * In HTTP (multi-user) mode these tools switch to resource/blob mode and uploads
   are refused with an explanatory error — check ``ctx.settings``.
+
+:func:`upload_uncontainered_attachment` is exported for
+``create_work_package(attachment_paths=…)``: files are uploaded uncontainered
+and claimed through ``_links.attachments`` on create, because posting to
+``…/{id}/attachments`` needs *edit* permission a fresh author may not have
+(SPEC §7.2).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import hashlib
+import json
+import re
+import time
+from collections.abc import Mapping
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, cast
+
+from fastmcp.tools.base import ToolResult
+from fastmcp.utilities.types import Image
+from mcp.types import TextContent
+from pydantic import BaseModel, Field
+
+from openproject_mcp.client import hal
+from openproject_mcp.client.errors import (
+    AuthenticationError,
+    InputValidationError,
+    NetworkError,
+    OpenProjectError,
+    UnexpectedResponseError,
+    ValidationFailedError,
+)
+from openproject_mcp.config import Settings
+from openproject_mcp.projections import ListEnvelope, Ref
+from openproject_mcp.tools._shared import (
+    GROUP_ATTACHMENTS,
+    READ,
+    WRITE,
+    ToolContext,
+    envelope_from_collection,
+    get_tool_context,
+    read_annotations,
+    report_progress,
+    tool_errors,
+    tool_tags,
+    write_annotations,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-__all__ = ["register"]
+__all__ = [
+    "AttachmentQuarantinedError",
+    "AttachmentRow",
+    "AttachmentTooLargeError",
+    "DownloadResult",
+    "register",
+    "upload_uncontainered_attachment",
+]
+
+#: Container kind → API collection. ``comment`` is an activity: OpenProject
+#: mounts comment attachments under ``/activities/{id}/attachments``.
+CONTAINER_PATHS: dict[str, str] = {
+    "work_package": "work_packages",
+    "wiki_page": "wiki_pages",
+    "meeting": "meetings",
+    "document": "documents",
+    "budget": "budgets",
+    "comment": "activities",
+}
+
+ContainerType = Literal["work_package", "wiki_page", "meeting", "document", "budget", "comment"]
+
+#: ``status`` value of an attachment the virus scanner rejected.
+QUARANTINED_STATUS = "quarantined"
+#: ``status`` values that mean the bytes are readable by everyone who may see
+#: the container; anything else is mid-scan and 401s for non-uploaders.
+READABLE_STATUSES = frozenset({"uploaded", "scanned", "rescanned"})
+
+DOWNLOAD_CHUNK_BYTES = 64 * 1024
+#: Wall-clock cap for one download (SPEC §7.1); streamed bodies have no read
+#: timeout, so this is what stops a stalled transfer from hanging the call.
+DOWNLOAD_DEADLINE_SECONDS = 900.0
+#: Largest image returned as an inline MCP image block (SPEC §7.1 step 4).
+IMAGE_INLINE_MAX_BYTES = 1024 * 1024
+DEFAULT_DOWNLOAD_DIRNAME = "openproject-downloads"
+MAX_FILE_NAME_CHARS = 200
+
+#: Cache key for ``GET /configuration``. Namespaced to this module so it cannot
+#: collide with a differently-shaped value cached by another tool module.
+CACHE_KEY_CONFIGURATION = "attachments:configuration"
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+class AttachmentQuarantinedError(OpenProjectError):
+    """The antivirus scanner quarantined the file; the bytes are unreachable."""
+
+    error_type: ClassVar[str] = "attachment_quarantined"
+
+
+class AttachmentTooLargeError(InputValidationError):
+    """A local size cap refused the transfer before or during it."""
+
+    error_type: ClassVar[str] = "attachment_too_large"
+
+
+# --- output models ---------------------------------------------------------
+
+
+class AttachmentRow(BaseModel):
+    """One attached file (SPEC §6.4)."""
+
+    id: int | str | None = Field(
+        default=None, description="Attachment id; pass it to download_attachment."
+    )
+    file_name: str | None = Field(default=None, description="Stored file name including extension.")
+    size_bytes: int | None = Field(default=None, description="File size in bytes.")
+    content_type: str | None = Field(
+        default=None, description="MIME type detected by OpenProject from the bytes."
+    )
+    description: str | None = Field(default=None, description="Caption stored with the file.")
+    author: Ref | None = Field(default=None, description="User who uploaded the file.")
+    created_at: str | None = Field(default=None, description="ISO 8601 UTC upload timestamp.")
+    status: str | None = Field(
+        default=None,
+        description=(
+            "Virus-scan state: 'uploaded'/'scanned' are downloadable, 'quarantined' is not, "
+            "anything else is still being scanned."
+        ),
+    )
+
+
+class DownloadResult(BaseModel):
+    """Where the bytes landed and what they were (SPEC §7.1 step 4)."""
+
+    path: str = Field(description="Absolute path of the saved file on the MCP server's machine.")
+    file_name: str = Field(
+        description="Name the file was saved under; may differ from the attachment's own name "
+        "when it collided with an existing file."
+    )
+    size_bytes: int = Field(description="Bytes actually written to disk.")
+    content_type: str | None = Field(default=None, description="MIME type reported by OpenProject.")
+    sha256: str = Field(description="SHA-256 of the downloaded bytes, hex encoded.")
+    notes: list[str] | None = Field(
+        default=None,
+        description="Degradation markers: renamed target, image not shown inline, …",
+    )
+
+
+# --- small helpers ---------------------------------------------------------
+
+
+def _str_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _attachment_row(payload: Mapping[str, Any]) -> AttachmentRow:
+    return AttachmentRow(
+        id=hal.self_id(payload),
+        file_name=_str_or_none(payload.get("fileName")),
+        size_bytes=_int_or_none(payload.get("fileSize")),
+        content_type=_str_or_none(payload.get("contentType")),
+        description=hal.formattable(payload.get("description")),
+        author=Ref.from_hal(payload, "author"),
+        created_at=_str_or_none(payload.get("createdAt")),
+        status=_str_or_none(payload.get("status")),
+    )
+
+
+def _container_path(container_type: str, container_id: int | str) -> str:
+    collection = CONTAINER_PATHS.get(container_type)
+    if collection is None:
+        raise InputValidationError(
+            f"Unknown container_type {container_type!r}.",
+            hint=f"Valid container types: {', '.join(sorted(CONTAINER_PATHS))}.",
+        )
+    return f"{collection}/{container_id}/attachments"
+
+
+def _sanitize_file_name(raw: str | None, *, fallback: str) -> str:
+    """Reduce a server-supplied file name to a safe single path segment.
+
+    Directory separators, traversal and control characters are the attack
+    surface here — an attachment named ``../../.ssh/authorized_keys`` must land
+    in the download directory as ``authorized_keys`` (SPEC §7.1, §11).
+    """
+    candidate = (raw or "").replace("\\", "/").rsplit("/", 1)[-1]
+    candidate = _CONTROL_CHARS.sub("", candidate).strip()
+    # Trailing dots and spaces are stripped by Windows and hide extensions.
+    candidate = candidate.rstrip(" .")
+    if not candidate or set(candidate) <= {"."}:
+        return fallback
+    if len(candidate) > MAX_FILE_NAME_CHARS:
+        suffix = Path(candidate).suffix[:20]
+        candidate = candidate[: MAX_FILE_NAME_CHARS - len(suffix)] + suffix
+    return candidate
+
+
+def _unique_path(directory: Path, file_name: str) -> Path:
+    """``report.pdf`` → ``report (2).pdf`` when the name is already taken."""
+    target = directory / file_name
+    if not target.exists():
+        return target
+    stem = target.stem
+    suffix = target.suffix
+    counter = 2
+    while True:
+        candidate = directory / f"{stem} ({counter}){suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def _resolve_download_dir(save_dir: str | None, settings: Settings) -> Path:
+    """Pick and create the target directory (SPEC §7.1 step 3)."""
+    if save_dir:
+        directory = Path(save_dir).expanduser()
+        if not directory.is_absolute():
+            raise InputValidationError(
+                f"save_dir must be an absolute path (got {save_dir!r}).",
+                hint=(
+                    "The MCP server has its own working directory, so a relative path is "
+                    "ambiguous. Pass a full path, or omit save_dir to use the configured "
+                    "download directory."
+                ),
+            )
+    elif settings.download_dir is not None:
+        directory = Path(settings.download_dir).expanduser()
+    else:
+        directory = Path.cwd() / DEFAULT_DOWNLOAD_DIRNAME
+
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise InputValidationError(
+            f"Could not create the download directory {directory}: {exc.strerror}.",
+            hint="Pass a save_dir the server process may write to.",
+        ) from exc
+    if not directory.is_dir():
+        raise InputValidationError(
+            f"The download target {directory} is not a directory.",
+            hint="Pass a save_dir that is a directory, not a file.",
+        )
+    return directory
+
+
+def _pending_scan_error(
+    attachment_id: int, file_name: str, status: str | None, exc: AuthenticationError
+) -> AuthenticationError:
+    """Turn the bare 401 on ``/content`` into an answerable explanation."""
+    if status is not None and status not in READABLE_STATUSES:
+        hint = (
+            f"The antivirus scan of this attachment has not finished (status {status!r}). "
+            "Until it does, only the user who uploaded the file may download it. Wait and "
+            "retry, or ask the uploader for the file."
+        )
+    else:
+        hint = (
+            "OpenProject refused the download. This is either a credential problem (check "
+            "OPENPROJECT_API_KEY) or an attachment whose virus scan is still running, which "
+            "only its uploader may fetch until the scan completes."
+        )
+    return AuthenticationError(
+        f"Downloading attachment {attachment_id} ({file_name}) was refused with HTTP 401.",
+        http_status=exc.http_status,
+        error_identifier=exc.error_identifier,
+        hint=hint,
+    )
+
+
+# --- upload plumbing (shared by the tool and the uncontainered helper) ------
+
+
+async def _configuration(ctx: ToolContext) -> dict[str, Any]:
+    """The cached ``GET /configuration`` document (SPEC §4.6)."""
+
+    async def fetch() -> dict[str, Any]:
+        return await ctx.client.get_json("configuration")
+
+    return await ctx.cache.get_or_set(CACHE_KEY_CONFIGURATION, fetch, scope=ctx.scope)
+
+
+def _maximum_attachment_bytes(configuration: Mapping[str, Any]) -> int | None:
+    """``maximumAttachmentFileSize`` in bytes, or ``None`` when unreported."""
+    raw = configuration.get("maximumAttachmentFileSize")
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        return None
+    return raw
+
+
+def _resolve_upload_file(file_path: str) -> Path:
+    source = Path(file_path).expanduser()
+    if not source.exists():
+        raise InputValidationError(
+            f"No such file: {source}.",
+            hint=(
+                "Pass an absolute path to a file on the machine running this MCP server. "
+                "Nothing was uploaded."
+            ),
+        )
+    if not source.is_file():
+        raise InputValidationError(
+            f"{source} is not a regular file.",
+            hint="Attachments are single files; archive a directory before uploading it.",
+        )
+    return source
+
+
+def _allowlist_error(exc: ValidationFailedError, file_name: str) -> ValidationFailedError:
+    """Re-raise a 422 with the attachment-specific allowlist hint (SPEC §7.2)."""
+    return ValidationFailedError(
+        exc.message,
+        http_status=exc.http_status,
+        error_identifier=exc.error_identifier,
+        violations=exc.violations,
+        hint=(
+            f"OpenProject rejected {file_name!r}. If the message mentions the file type or an "
+            "allowlist, this instance restricts uploads through the 'attachment_whitelist' "
+            "setting (Administration → Files): ask an administrator to allow the extension, or "
+            "convert the file. Nothing was stored."
+        ),
+    )
+
+
+async def _post_attachment(
+    ctx: ToolContext,
+    path: str,
+    *,
+    file_path: str,
+    file_name: str | None,
+    description: str | None,
+) -> dict[str, Any]:
+    """Pre-flight and POST one multipart attachment (SPEC §7.2).
+
+    The body carries exactly two parts: ``metadata`` (JSON) and ``file``. The
+    bytes are read into memory deliberately — the upload is already capped by
+    ``maximumAttachmentFileSize`` and a materialized body keeps the request
+    replay-free and inspectable.
+    """
+    source = _resolve_upload_file(file_path)
+    size = source.stat().st_size
+    limit = _maximum_attachment_bytes(await _configuration(ctx))
+    if limit is not None and size > limit:
+        raise AttachmentTooLargeError(
+            f"{source.name} is {size} bytes; this instance accepts at most {limit} bytes.",
+            hint=(
+                "Nothing was uploaded. Compress or split the file, or ask an administrator to "
+                "raise the maximum attachment size. get_instance_info reports the current limit."
+            ),
+        )
+
+    name = _sanitize_file_name(file_name or source.name, fallback="upload")
+    metadata: dict[str, Any] = {"fileName": name}
+    if description:
+        # The upload representer reads the description as a formattable; sending
+        # only ``raw`` lets OpenProject keep its own default format.
+        metadata["description"] = {"raw": description}
+
+    payload = source.read_bytes()
+    files = {
+        "metadata": (None, json.dumps(metadata).encode("utf-8"), "application/json"),
+        "file": (name, payload, "application/octet-stream"),
+    }
+    try:
+        return await ctx.client.post_json(path, files=files)
+    except ValidationFailedError as exc:
+        raise _allowlist_error(exc, name) from exc
+
+
+async def upload_uncontainered_attachment(
+    ctx: ToolContext,
+    file_path: str,
+    file_name: str | None = None,
+    description: str | None = None,
+) -> int:
+    """Upload a file with no container yet and return its attachment id.
+
+    This is the API-correct path for attaching files to a work package that
+    does not exist yet (SPEC §7.2): ``create_work_package`` uploads here and
+    claims the ids through ``_links.attachments`` in the create payload, because
+    posting to ``work_packages/{id}/attachments`` requires *edit* permission
+    that the author of a brand-new work package may not hold. Unclaimed uploads
+    are purged by OpenProject after roughly 180 minutes, so a failed create
+    leaves no junk behind.
+
+    Not an MCP tool — it is imported by the work-package tools.
+
+    Args:
+        ctx: the calling tool's :class:`ToolContext`.
+        file_path: path to a readable file on the server's machine.
+        file_name: name to store the file under; defaults to the path's basename.
+        description: optional caption stored with the attachment.
+
+    Returns:
+        The new attachment's numeric id.
+
+    Raises:
+        InputValidationError: the file is missing or is not a regular file.
+        AttachmentTooLargeError: the file exceeds ``maximumAttachmentFileSize``.
+        OpenProjectError: any upstream failure, unwrapped for the caller's own
+            ``@tool_errors`` decorator to shape.
+    """
+    payload = await _post_attachment(
+        ctx,
+        "attachments",
+        file_path=file_path,
+        file_name=file_name,
+        description=description,
+    )
+    attachment_id = hal.self_id(payload)
+    if not isinstance(attachment_id, int):
+        raise UnexpectedResponseError(
+            "OpenProject accepted the upload but returned no attachment id.",
+            hint=(
+                "The file may still have been stored; check the work package's attachments "
+                "before uploading it again."
+            ),
+        )
+    return attachment_id
+
+
+# --- registration ----------------------------------------------------------
 
 
 def register(mcp: FastMCP) -> None:
-    """Register the attachment tools. Phase 1 fills in list/download/upload."""
+    """Register the Phase 1 attachment tools."""
+
+    @mcp.tool(
+        name="list_attachments",
+        tags=tool_tags(GROUP_ATTACHMENTS, READ),
+        annotations=read_annotations(title="List attachments"),
+    )
+    @tool_errors
+    async def list_attachments(
+        container_type: Annotated[
+            ContainerType,
+            Field(
+                description=(
+                    "Kind of object that owns the files. Use 'comment' for files attached to a "
+                    "work-package comment — those live on the activity, so pass the activity id "
+                    "from list_work_package_comments as container_id."
+                )
+            ),
+        ],
+        container_id: Annotated[
+            int,
+            Field(
+                description=(
+                    "Numeric id of the container itself: the work package id, wiki page id, "
+                    "meeting id, document id, budget id, or activity id. Never an attachment id."
+                )
+            ),
+        ],
+    ) -> ListEnvelope[AttachmentRow]:
+        """List the files attached to one container.
+
+        Containers are work packages, wiki pages, meetings, documents, budgets and comments. Use
+        this to discover attachment ids before calling download_attachment, or to check what a
+        work package already carries. The upstream collection is not paginated, so it is fetched
+        in full: the envelope always reports has_more=false and a total equal to the row count.
+
+        Returns the standard list envelope; each row has id, file_name, size_bytes, content_type,
+        description, author, created_at and status. status is the virus-scan state — 'uploaded'
+        and 'scanned' are downloadable, 'quarantined' files are not, and anything else is still
+        being scanned and is readable only by its uploader.
+
+        Pitfalls: container_id identifies the container, not the file. A 404 means the container
+        does not exist or the module providing it (meetings, budgets, documents) is not enabled on
+        this instance. Forum posts are a valid API container but have no discovery path here.
+
+        Related: download_attachment fetches the bytes for one row, upload_attachment adds a file
+        to the same containers, and get_work_package(include=['attachments']) returns these rows
+        inline for a single work package.
+        """
+        ctx = get_tool_context()
+        payload = await ctx.client.get_json(_container_path(container_type, container_id))
+        unwrapped = hal.collection(payload)
+        rows = [_attachment_row(element) for element in unwrapped]
+        return envelope_from_collection(unwrapped, rows, page=1, page_size=max(len(rows), 1))
+
+    @mcp.tool(
+        name="download_attachment",
+        tags=tool_tags(GROUP_ATTACHMENTS, READ),
+        annotations=read_annotations(title="Download attachment", idempotent=False),
+    )
+    @tool_errors
+    async def download_attachment(
+        attachment_id: Annotated[
+            int,
+            Field(
+                description=(
+                    "Numeric attachment id from list_attachments or "
+                    "get_work_package(include=['attachments']). Not a work package id."
+                )
+            ),
+        ],
+        save_dir: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Absolute directory to save into; it is created when missing. Defaults to "
+                    "OPENPROJECT_MCP_DOWNLOAD_DIR, and otherwise to an 'openproject-downloads' "
+                    "folder beside the server's working directory. Relative paths are rejected "
+                    "because the server's working directory is not the user's."
+                )
+            ),
+        ] = None,
+        return_image: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Also return the file as an inline image so the model can look at it. "
+                    "Honored only for image/* content of at most 1 MB; otherwise the file is "
+                    "still saved and a note explains why nothing was shown."
+                )
+            ),
+        ] = False,
+    ) -> DownloadResult:
+        """Download an attachment's bytes to a file on the machine running this server.
+
+        Use it once list_attachments (or get_work_package(include=['attachments'])) has given you
+        an attachment_id. Metadata is read first, then the bytes are streamed to disk in chunks
+        with progress notifications, so a large file neither stalls the call nor buffers in memory.
+
+        Returns path, file_name, size_bytes, content_type and the SHA-256 of the bytes (use it to
+        verify or de-duplicate). With return_image=true an image of at most 1 MB comes back as an
+        inline image block as well.
+
+        Pitfalls: the file is written on the server's machine, which is the user's machine only in
+        a local (stdio) deployment — tell the user the returned path rather than assuming they can
+        see it. Quarantined attachments fail with attachment_quarantined and are never fetched. An
+        attachment whose virus scan is unfinished answers 401 for everyone except its uploader.
+        Transfers above OPENPROJECT_MCP_MAX_DOWNLOAD_MB (default 100) are refused up front and
+        aborted mid-stream, leaving no partial file. A name collision in the target directory saves
+        as 'name (2).ext' and says so in notes.
+
+        Related: list_attachments produces attachment_id; upload_attachment is the reverse
+        direction.
+        """
+        ctx = get_tool_context()
+        metadata = await ctx.client.get_json(f"attachments/{attachment_id}")
+
+        status = _str_or_none(metadata.get("status"))
+        content_type = _str_or_none(metadata.get("contentType"))
+        declared_size = _int_or_none(metadata.get("fileSize"))
+        file_name = _sanitize_file_name(
+            _str_or_none(metadata.get("fileName")), fallback=f"attachment-{attachment_id}"
+        )
+
+        if status == QUARANTINED_STATUS:
+            raise AttachmentQuarantinedError(
+                f"Attachment {attachment_id} ({file_name}) is quarantined by the virus scanner.",
+                hint=(
+                    "OpenProject will not serve the bytes of a quarantined file and neither will "
+                    "this tool. An administrator must review and release it before it can be "
+                    "downloaded."
+                ),
+                extra={"attachment_id": attachment_id, "file_name": file_name},
+            )
+
+        cap = ctx.settings.max_download_bytes
+        if declared_size is not None and declared_size > cap:
+            raise AttachmentTooLargeError(
+                f"Attachment {attachment_id} ({file_name}) is {declared_size} bytes, above the "
+                f"{cap} byte download limit.",
+                hint=(
+                    "Nothing was downloaded. Raise OPENPROJECT_MCP_MAX_DOWNLOAD_MB (currently "
+                    f"{ctx.settings.max_download_mb}) if this file really is wanted, or fetch it "
+                    "from the OpenProject web UI."
+                ),
+                extra={"attachment_id": attachment_id, "size_bytes": declared_size},
+            )
+
+        directory = _resolve_download_dir(save_dir, ctx.settings)
+        target = _unique_path(directory, file_name)
+
+        digest = hashlib.sha256()
+        written = 0
+        deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
+        try:
+            async with ctx.client.stream("GET", f"attachments/{attachment_id}/content") as response:
+                with target.open("wb") as handle:
+                    async for chunk in response.aiter_bytes(DOWNLOAD_CHUNK_BYTES):
+                        written += len(chunk)
+                        if written > cap:
+                            raise AttachmentTooLargeError(
+                                f"Attachment {attachment_id} ({file_name}) exceeded the {cap} "
+                                "byte download limit while streaming.",
+                                hint=(
+                                    "The transfer was aborted and the partial file removed. The "
+                                    "attachment's reported size was smaller than what it actually "
+                                    "sent; raise OPENPROJECT_MCP_MAX_DOWNLOAD_MB to fetch it."
+                                ),
+                            )
+                        if time.monotonic() > deadline:
+                            raise NetworkError(
+                                f"Downloading attachment {attachment_id} ({file_name}) exceeded "
+                                f"the {DOWNLOAD_DEADLINE_SECONDS:.0f}s limit after {written} "
+                                "bytes.",
+                                hint=(
+                                    "The connection stalled; the partial file was removed. Retry, "
+                                    "or download the file from the OpenProject web UI."
+                                ),
+                            )
+                        handle.write(chunk)
+                        digest.update(chunk)
+                        await report_progress(
+                            written,
+                            declared_size if declared_size else None,
+                            f"{file_name}: {written} bytes",
+                        )
+        except AuthenticationError as exc:
+            target.unlink(missing_ok=True)
+            raise _pending_scan_error(attachment_id, file_name, status, exc) from exc
+        except BaseException:
+            target.unlink(missing_ok=True)
+            raise
+
+        notes: list[str] = []
+        if target.name != file_name:
+            notes.append(
+                f"{file_name} already existed in {directory}; saved as {target.name} instead."
+            )
+        inline_image = None
+        if return_image:
+            if content_type is None or not content_type.startswith("image/"):
+                notes.append(
+                    f"return_image was ignored: the content type is {content_type or 'unknown'}, "
+                    "not an image."
+                )
+            elif written > IMAGE_INLINE_MAX_BYTES:
+                notes.append(
+                    f"return_image was ignored: {written} bytes exceeds the "
+                    f"{IMAGE_INLINE_MAX_BYTES} byte inline limit. The file is saved at {target}."
+                )
+            else:
+                inline_image = Image(data=target.read_bytes()).to_image_content(
+                    mime_type=content_type
+                )
+
+        result = DownloadResult(
+            path=str(target),
+            file_name=target.name,
+            size_bytes=written,
+            content_type=content_type,
+            sha256=digest.hexdigest(),
+            notes=notes or None,
+        )
+        if inline_image is None:
+            return result
+
+        # FastMCP passes a ToolResult straight through (Tool.convert_result), so
+        # the declared outputSchema still validates against structured_content
+        # while the extra image block rides along in content.
+        return cast(
+            "DownloadResult",
+            ToolResult(
+                content=[
+                    TextContent(type="text", text=result.model_dump_json(exclude_none=True)),
+                    inline_image,
+                ],
+                structured_content=result.model_dump(mode="json"),
+            ),
+        )
+
+    @mcp.tool(
+        name="upload_attachment",
+        tags=tool_tags(GROUP_ATTACHMENTS, WRITE),
+        annotations=write_annotations(title="Upload attachment"),
+    )
+    @tool_errors
+    async def upload_attachment(
+        container_type: Annotated[
+            ContainerType,
+            Field(
+                description=(
+                    "Kind of object to attach the file to. Use 'comment' to attach to a "
+                    "work-package comment and pass its activity id as container_id."
+                )
+            ),
+        ],
+        container_id: Annotated[
+            int,
+            Field(
+                description=(
+                    "Numeric id of the container: work package id, wiki page id, meeting id, "
+                    "document id, budget id, or activity id for 'comment'."
+                )
+            ),
+        ],
+        file_path: Annotated[
+            str,
+            Field(
+                description=(
+                    "Absolute path of the file to upload, on the machine running this server. "
+                    "Existence and size are checked locally before anything is transferred."
+                )
+            ),
+        ],
+        file_name: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Name to store the file under, with extension. This is the only thing that "
+                    "decides the stored name: OpenProject ignores the multipart filename and "
+                    "re-detects the content type from the bytes. Defaults to the basename of "
+                    "file_path."
+                )
+            ),
+        ] = None,
+        description: Annotated[
+            str | None,
+            Field(description="Optional caption shown next to the file in OpenProject."),
+        ] = None,
+    ) -> AttachmentRow:
+        """Attach a local file to a work package, wiki page, meeting, document, budget or comment.
+
+        Use it when a file that already exists on the server's machine should be added to an
+        existing container. The file's existence and its size against this instance's
+        maximumAttachmentFileSize are checked locally first, so an oversized file fails instantly
+        instead of after the transfer.
+
+        Returns the created attachment row (id, file_name, size_bytes, content_type, description,
+        author, created_at, status) — the id feeds download_attachment.
+
+        Pitfalls: uploading to a container needs *edit* permission on that container, so to give a
+        brand-new work package its files use create_work_package(attachment_paths=[...]) instead,
+        which uploads the files unattached and claims them on create. Instances may restrict
+        extensions; a rejected type comes back as validation_failed with the allowlist hint and
+        nothing is stored. The stored name comes from file_name (or the path's basename), never
+        from the multipart part.
+
+        Related: list_attachments shows what a container already holds; download_attachment is the
+        reverse direction.
+        """
+        ctx = get_tool_context()
+        payload = await _post_attachment(
+            ctx,
+            _container_path(container_type, container_id),
+            file_path=file_path,
+            file_name=file_name,
+            description=description,
+        )
+        return _attachment_row(payload)
