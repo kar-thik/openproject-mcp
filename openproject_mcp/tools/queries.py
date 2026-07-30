@@ -7,7 +7,7 @@ Tool                     Phase   Endpoint(s)
 =======================  ======  ==================================================
 🔍 ``list_queries``      2       ``GET /queries?filters=[project]``
 🔍 ``run_query``         2       ``GET /queries/{id}`` (results embedded)
-✏️ ``save_query``        3       form → ``POST /queries`` (+ ``/star``)
+✏️ ``save_query``        3       form → ``POST /queries`` (+ ``PATCH …/star``)
 =======================  ======  ==================================================
 
 Non-negotiables for this module:
@@ -31,14 +31,19 @@ Non-negotiables for this module:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Annotated, Any
+from urllib.parse import quote
 
 from pydantic import BaseModel, Field
 
 from openproject_mcp.client import hal
+from openproject_mcp.client.errors import InputValidationError, OpenProjectError
 from openproject_mcp.client.filters import (
     DEFAULT_PAGE_SIZE,
+    WORK_PACKAGE_SORT_KEYS,
+    Filter,
     FilterType,
     Op,
     RawFilter,
@@ -47,14 +52,17 @@ from openproject_mcp.client.filters import (
     pagination_params,
     register_filter_type,
     serialize_filters,
+    serialize_sort_by,
+    to_wire_name,
 )
+from openproject_mcp.client.payloads import build_write_payload, link
 from openproject_mcp.projections import ListEnvelope, Ref, WorkPackageRow
-from openproject_mcp.tools import _shared
+from openproject_mcp.tools import _forms, _shared
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-__all__ = ["QueryInfo", "QueryResults", "QueryRow", "register"]
+__all__ = ["QueryInfo", "QueryResults", "QueryRow", "SavedQuery", "register"]
 
 #: Resource key for the queries endpoint's own filter set.
 QUERIES_RESOURCE = "queries"
@@ -192,6 +200,157 @@ def _query_info(payload: Mapping[str, Any]) -> QueryInfo:
         group_by=_link_title(payload, "groupBy"),
         sort_by=[item.name for item in hal.refs(payload, "sortBy") if item.name],
         display_sums=_bool(payload.get("sums")),
+    )
+
+
+# --- Phase 3: saving a view (SPEC §6.7, §4.5) -----------------------------
+
+#: A query's parts are written as links into the query metadata collections, not
+#: as names: the filter, its operator, the sort criteria and the grouping column
+#: all address ``/api/v3/queries/...`` resources.
+QUERY_FILTER_HREF = "/api/v3/queries/filters/{name}"
+QUERY_OPERATOR_HREF = "/api/v3/queries/operators/{operator}"
+QUERY_SORT_HREF = "/api/v3/queries/sort_bys/{column}-{direction}"
+QUERY_GROUP_HREF = "/api/v3/queries/group_bys/{column}"
+
+#: Filter names whose values a query stores as *resources*, mapped to the API
+#: collection those ids live in. Their values must be written as
+#: ``_links.values`` hrefs, not as a plain array: the filter representer branches
+#: on the filter being object-backed and reads each entry's href to get the id,
+#: so a bare ``["12"]`` is a parse failure upstream rather than a validation
+#: error. Only the id is taken out of the href, which is why the principal
+#: filters may name ``principals`` even though a value can be a user, a group or
+#: a placeholder user.
+#:
+#: The table is explicit rather than derived from :class:`FilterType`, because
+#: "list-valued" is a different question: ``reason`` and ``entityType`` are list
+#: filters over plain strings and would be corrupted by an href. Names that are
+#: absent — custom fields, instance-specific filters — keep the plain array;
+#: ``/api/v3/queries/filter_instance_schemas/{name}`` is where an unknown one's
+#: value type can be looked up.
+QUERY_FILTER_VALUE_RESOURCES: dict[str, str] = {
+    "id": "work_packages",
+    "parent": "work_packages",
+    "ancestor": "work_packages",
+    "children": "work_packages",
+    "status": "statuses",
+    "type": "types",
+    "priority": "priorities",
+    "version": "versions",
+    "category": "categories",
+    "project": "projects",
+    "subprojectId": "projects",
+    "onlySubproject": "projects",
+    "author": "principals",
+    "assignee": "principals",
+    "assigneeOrGroup": "principals",
+    "responsible": "principals",
+    "watcher": "principals",
+    "group": "groups",
+    "role": "roles",
+}
+
+STAR_FAILED_NOTE = (
+    "The query was saved but starring it failed ({message}). The view exists and is usable — "
+    "star it in the OpenProject UI, or ignore it; nothing is retried automatically."
+)
+STAR_NO_ECHO_NOTE = (
+    "OpenProject accepted the star request but did not return the updated query, so 'starred' "
+    "below is the state at creation time. Re-read it with list_queries if it matters."
+)
+FILTERS_CHANGED_NOTE = (
+    "{sent} filters were sent but the saved query stores {stored}: OpenProject dropped or merged "
+    "some. 'filters' below is what it actually kept — check it before relying on the view."
+)
+
+
+class SavedQuery(QueryInfo):
+    """The query ``save_query`` created, exactly as OpenProject stored it."""
+
+    notes: list[str] = Field(
+        default_factory=list[str],
+        description="What happened beyond the create itself: a failed star, filters OpenProject "
+        "did not keep. Empty when everything landed as asked.",
+    )
+
+
+def _query_filter_payload(entry: Filter) -> dict[str, Any]:
+    """One filter as the create payload spells it.
+
+    The filter and its operator are always links. The values depend on the
+    filter: a resource-valued one (status, assignee, type, version, …) writes
+    them as ``_links.values`` hrefs, because OpenProject reads the id back out of
+    each href; everything else (dates, subject, custom fields) keeps the plain
+    array. The form is asked to re-render the whole set before the commit, so an
+    instance that spells a filter differently still gets its own shape.
+    """
+    links: dict[str, Any] = {
+        "filter": {"href": QUERY_FILTER_HREF.format(name=entry.name)},
+        "operator": {"href": QUERY_OPERATOR_HREF.format(operator=quote(entry.operator, safe=""))},
+    }
+    resource = QUERY_FILTER_VALUE_RESOURCES.get(entry.name)
+    if resource is None:
+        return {"_links": links, "values": list(entry.values)}
+    links["values"] = [link(resource, value) for value in entry.values]
+    return {"_links": links}
+
+
+def _sort_by_links(sort_by: Sequence[Sequence[str]] | None) -> list[dict[str, str]]:
+    """``[["due_date", "asc"]]`` → the ``sortBy`` link array.
+
+    Validation (known key, known direction) is the shared sort validator's, so an
+    unknown key fails locally with the allowed set listed instead of costing a
+    round trip (G2).
+    """
+    serialized = serialize_sort_by(sort_by, allowed_keys=WORK_PACKAGE_SORT_KEYS)
+    if serialized is None:
+        return []
+    pairs: list[list[str]] = json.loads(serialized)
+    return [
+        {"href": QUERY_SORT_HREF.format(column=column, direction=direction)}
+        for column, direction in pairs
+    ]
+
+
+def _query_form_hints(form: Mapping[str, Any], errors: Mapping[str, Any]) -> list[str]:
+    """The query-specific half of a form rejection: what a valid value looks like."""
+    hints: list[str] = []
+    if "name" in errors:
+        hints.append("A query needs a non-empty name; list_queries shows the ones in use.")
+    if "filters" in errors:
+        hints.append(
+            "Every filter name must exist in this query's context — a project-scoped filter "
+            "(version, category, subprojectId) is invalid on a global query, and custom fields "
+            "are spelled customField{N} (get_work_package_schema lists them). The same names "
+            "work in list_work_packages(raw_filters=...)."
+        )
+    if "sortBy" in errors or "sortCriteria" in errors:
+        hints.append(
+            "sort_by keys are snake_case work-package columns, e.g. [['due_date', 'asc']]."
+        )
+    if "groupBy" in errors:
+        hints.append(
+            "group_by is a single work-package column such as 'status', 'assignee', 'type' or "
+            "'version' — not a list, and not a custom sort key."
+        )
+    if "project" in errors:
+        hints.append(
+            "project_id must be a numeric project id you may save queries in; list_projects "
+            "shows the candidates. Omit it for a global (cross-project) view."
+        )
+    return hints
+
+
+def _raise_query_form_validation_errors(form: Mapping[str, Any]) -> None:
+    """Turn a query form's ``validationErrors`` into a typed 422 with a usable hint."""
+    _forms.raise_validation_errors(
+        form,
+        subject="query",
+        hints=_query_form_hints,
+        fallback_hint=(
+            "Fix the attributes listed in 'violations'. list_queries shows the views that "
+            "already exist, and list_work_packages proves a filter set before it is saved."
+        ),
     )
 
 
@@ -362,3 +521,165 @@ def register(mcp: FastMCP) -> None:
             sums=envelope.sums,
             notes=envelope.notes,
         )
+
+    @mcp.tool(
+        name="save_query",
+        tags=_shared.tool_tags(_shared.GROUP_QUERIES, _shared.WRITE),
+        annotations=_shared.write_annotations(title="Save a query"),
+    )
+    @_shared.tool_errors
+    async def save_query(
+        name: Annotated[
+            str,
+            Field(
+                description="Name the view is saved under, e.g. 'Overdue in Platform'. Names are "
+                "not unique upstream, so a second save with the same name creates a second view."
+            ),
+        ],
+        filters: Annotated[
+            list[RawFilter],
+            Field(
+                description="The filters to store, in the same shape run_query's "
+                "override_filters and list_work_packages' raw_filters take — e.g. "
+                "[{'name': 'status', 'operator': 'o', 'values': []}, {'name': 'assignee', "
+                "'operator': '=', 'values': ['12']}]. Values are ids (or 'me'), not display "
+                "names. Pass [] deliberately for a view that filters nothing: unlike a listing, "
+                "a stored query with no filters shows every status.",
+            ),
+        ],
+        project_id: Annotated[
+            int | str | None,
+            Field(
+                description="Numeric project id the view belongs to, from list_projects. Omit "
+                "for a global (cross-project) view — but project-scoped filters such as "
+                "version, category or subprojectId are then rejected."
+            ),
+        ] = None,
+        public: Annotated[
+            bool,
+            Field(
+                description="true shares the view with everyone who can see the project; false "
+                "(default) keeps it private to the authenticated user. Sharing usually needs the "
+                "'manage public queries' permission."
+            ),
+        ] = False,
+        star: Annotated[
+            bool,
+            Field(
+                description="Also star (favorite) the view for the authenticated user, so it "
+                "appears in their sidebar. Done as a second call after the query exists; if it "
+                "fails the query is still saved and 'notes' says so."
+            ),
+        ] = False,
+        sort_by: Annotated[
+            list[list[str]] | None,
+            Field(
+                description="Stored sort order, e.g. [['due_date', 'asc'], ['id', 'desc']]. Keys "
+                "are the snake_case work-package columns list_work_packages sorts by; unknown "
+                "keys are rejected locally with the allowed set listed. Omit for the default."
+            ),
+        ] = None,
+        group_by: Annotated[
+            str | None,
+            Field(
+                description="Column to group the results by, e.g. 'status', 'assignee', 'type' "
+                "or 'version'. Grouping is what makes run_query return 'groups' with per-group "
+                "counts. Omit for a flat list."
+            ),
+        ] = None,
+    ) -> SavedQuery:
+        """Save a filter set as a reusable OpenProject view the whole team can open.
+
+        Use it when a filter combination is worth keeping — "Overdue in Platform", "My open
+        bugs" — instead of rebuilding it every session: the saved view shows up in the
+        OpenProject UI as well, and `run_query` reproduces it exactly. Prove the filters with
+        `list_work_packages` first; whatever works there works here.
+
+        The call runs `POST /queries/form` before committing, so an invalid filter name, an
+        operator the filter does not support, or a project-scoped filter on a global view comes
+        back as `violations` naming the attribute — nothing is saved. Returns the stored
+        definition: `{id, name, project, public, starred, filters (as readable sentences),
+        group_by, sort_by, display_sums, updated_at, notes}`. Keep the `id`: it is what
+        `run_query` takes.
+
+        Pitfalls. Filter values are ids, not names — 'Grace Hopper' is not a value, `12` is.
+        `star=true` is a second request after the query exists; if it fails the query is still
+        saved and `notes` says so, so never re-save on a starring failure. If OpenProject keeps
+        fewer filters than were sent, `notes` says that too — read `filters` rather than
+        assuming the view matches the request. Custom-field filters (`customField12`) are sent
+        as plain values because a list-typed one cannot be told apart from a text one without
+        asking the instance; if such a filter makes the call fail, nothing was saved — save that
+        view in the UI. Editing and deleting saved views is deliberately not offered here:
+        change or remove them in the OpenProject UI.
+
+        Cross-references: `list_queries` lists what already exists (and gives ids);
+        `run_query(query_id=...)` runs this view; `list_work_packages` is the ad-hoc equivalent
+        and the place to validate filters first; `list_projects` supplies `project_id`.
+        """
+        context = _shared.get_tool_context()
+        if not name or not name.strip():
+            raise InputValidationError(
+                "name is empty.",
+                hint="Pass the name the view is saved under, e.g. 'Overdue in Platform'.",
+            )
+
+        wire_filters = [filter_from_raw(entry) for entry in filters]
+        attributes: dict[str, Any] = {
+            "name": name.strip(),
+            "public": public,
+            "filters": [_query_filter_payload(entry) for entry in wire_filters],
+        }
+
+        links: dict[str, Any] = {}
+        if project_id is not None:
+            links["project"] = link("projects", project_id)
+        if group_by is not None and group_by.strip():
+            links["groupBy"] = {"href": QUERY_GROUP_HREF.format(column=to_wire_name(group_by))}
+        sort_links = _sort_by_links(sort_by)
+        if sort_links:
+            links["sortBy"] = sort_links
+
+        payload = build_write_payload(attributes, links)
+        form = await context.client.post_json("queries/form", json=payload)
+        _raise_query_form_validation_errors(form)
+
+        echoed = _forms.form_payload(form)
+        body = _forms.merge_form_payload(echoed or {}, payload)
+        echoed_filters = hal.as_objects(echoed.get("filters")) if echoed is not None else []
+        if len(echoed_filters) == len(wire_filters):
+            # The form re-rendered our filters the way this instance stores them;
+            # committing its version keeps resource-valued filters (status,
+            # assignee) in whichever spelling it expects. The length guard stops a
+            # form that dropped filters from silently shrinking the view (G2).
+            body["filters"] = [dict(entry) for entry in echoed_filters]
+
+        created = await context.client.post_json("queries", json=body)
+
+        notes: list[str] = []
+        stored_filters = hal.as_objects(created.get("filters"))
+        if len(stored_filters) != len(wire_filters):
+            notes.append(
+                FILTERS_CHANGED_NOTE.format(sent=len(wire_filters), stored=len(stored_filters))
+            )
+
+        query_id = hal.self_id(created)
+        if star and query_id is not None:
+            try:
+                # Starring is a PATCH upstream: the star namespace mounts the
+                # generic Update endpoint, so POST is not routed at all.
+                starred = await context.client.patch_json(f"queries/{query_id}/star")
+            except OpenProjectError as exc:
+                # The query exists; failing the whole call would hide its id.
+                notes.append(STAR_FAILED_NOTE.format(message=exc.message))
+            else:
+                if hal.self_id(starred) is not None:
+                    created = starred
+                else:
+                    notes.append(STAR_NO_ECHO_NOTE)
+        elif star:
+            notes.append(
+                "The query was saved but OpenProject returned no id for it, so it could not be "
+                "starred. Find it with list_queries and star it in the UI."
+            )
+
+        return SavedQuery(**_query_info(created).model_dump(), notes=notes)

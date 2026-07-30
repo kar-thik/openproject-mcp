@@ -70,14 +70,18 @@ from openproject_mcp.tools._shared import (
     tool_tags,
     write_annotations,
 )
+from openproject_mcp.version_probe import PROJECT_FAVORITES_MIN, parse_version
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 __all__ = [
     "KEEP",
+    "JobStatusResult",
+    "ProjectCopyResult",
     "ProjectDeletionResult",
     "ProjectDetail",
+    "ProjectFavoriteResult",
     "ProjectRow",
     "register",
 ]
@@ -330,6 +334,222 @@ def _register_filters() -> None:
     register_filter_type("name_and_identifier", FilterType.SEARCH, PROJECTS_RESOURCE)
     register_filter_type("parent_id", FilterType.RELATION, PROJECTS_RESOURCE)
     register_filter_type("active", FilterType.BOOLEAN, PROJECTS_RESOURCE)
+
+
+# --- Phase 3: copy, background jobs, favorites (SPEC §6.6, §4.7) ----------
+
+#: ``_meta`` keys of the copy payload. Only these two are exposed as tool
+#: parameters; every other copy flag keeps whatever default the copy form filled
+#: in, which is why the form's ``_meta`` is merged instead of replaced.
+COPY_WORK_PACKAGES_META = "copyWorkPackages"
+COPY_NOTIFICATIONS_META = "sendNotifications"
+
+#: Job states that mean the job is over. Anything else is still running, so
+#: ``finished`` is derived from this set rather than assumed from a 200.
+JOB_TERMINAL_STATUSES: frozenset[str] = frozenset({"success", "failure", "error", "cancelled"})
+#: The terminal states that mean it did not work.
+JOB_FAILED_STATUSES: frozenset[str] = frozenset({"failure", "error", "cancelled"})
+
+COPY_POLL_NOTE = (
+    "The copy runs as a background job: this is the job's INITIAL state, not a finished copy. "
+    "Poll get_job_status(job_id=...) until status is 'success' or 'failure' before telling the "
+    "user the new project exists."
+)
+COPY_NO_JOB_NOTE = (
+    "This instance accepted the copy but reported no job id, so it cannot be polled. Watch for "
+    "the new project with list_projects(search=<new_name>) instead of assuming it appeared."
+)
+JOB_DERIVED_PROJECT_NOTE = (
+    "'project' was derived from the URL the job stored, not from a link OpenProject rendered — "
+    "confirm it with get_project before using the id anywhere else."
+)
+
+#: A finished copy/export job stores a UI URL rather than an API link, so the
+#: project it produced is read out of that URL when no link names it.
+_PROJECT_URL_RE = re.compile(r"/projects/(?P<key>[^/?#]+)")
+
+
+class ProjectCopyResult(BaseModel):
+    """Outcome of ``copy_project`` — a *started* job, never a finished copy."""
+
+    source: int | str = Field(description="The project id or identifier that was copied.")
+    new_name: str = Field(description="Name requested for the copy.")
+    scheduled: bool = Field(
+        description="True once OpenProject accepted the request. The copy itself runs in the "
+        "background and is not finished when this is true."
+    )
+    job_id: str | None = Field(
+        default=None,
+        description="Background job id — pass it to get_job_status. Null when the instance "
+        "reported none; 'notes' then says what to do instead.",
+    )
+    status: str | None = Field(
+        default=None,
+        description="Job state at the moment the copy was accepted, normally 'in_queue'. "
+        "Null when the instance reported none.",
+    )
+    message: str | None = Field(
+        default=None, description="Message the job reported, when it carried one."
+    )
+    project: Ref | None = Field(
+        default=None,
+        description="The copy itself ({id, name}) — only populated on the rare instance that "
+        "finishes the job before answering. Normally null: read it from get_job_status.",
+    )
+    notes: list[str] = Field(
+        default_factory=list[str],
+        description="What is still outstanding (G5). Always says the copy has to be polled.",
+    )
+
+
+class JobStatusResult(BaseModel):
+    """One background job as ``GET /job_statuses/{uuid}`` reports it."""
+
+    id: str | None = Field(default=None, description="Job id (a uuid) this status belongs to.")
+    status: str | None = Field(
+        default=None,
+        description="Job state: 'in_queue' or 'in_process' while it runs, 'success', 'failure', "
+        "'error' or 'cancelled' once it is over.",
+    )
+    finished: bool = Field(
+        description="True once status is terminal. False means the job is still running — "
+        "poll again rather than reporting a result."
+    )
+    successful: bool | None = Field(
+        default=None,
+        description="True when the job finished successfully, false when it failed, null while "
+        "it is still running. Never guess from 'finished' alone.",
+    )
+    message: str | None = Field(
+        default=None, description="What the job reported, e.g. why it failed."
+    )
+    project: Ref | None = Field(
+        default=None,
+        description="Project the job produced or acted on ({id, name}), when it names one — "
+        "this is how a finished copy_project job hands back the new project.",
+    )
+    result_url: str | None = Field(
+        default=None,
+        description="Web URL the job stored for its result (the new project, an export "
+        "download). A UI URL, not an API endpoint.",
+    )
+    notes: list[str] = Field(
+        default_factory=list[str],
+        description="Degradation markers: still running, or a reference that had to be derived.",
+    )
+
+
+class ProjectFavoriteResult(BaseModel):
+    """Outcome of ``set_project_favorite`` (OpenProject >= 17)."""
+
+    id: int | str = Field(description="Project id or identifier that was changed.")
+    favorite: bool = Field(
+        description="The state now in effect: true when the project was favorited, false when "
+        "the favorite was removed."
+    )
+    message: str = Field(description="Human-readable confirmation.")
+
+
+def _copy_meta(include_work_packages: bool, notify: bool) -> dict[str, Any]:
+    """The two ``_meta`` flags ``copy_project`` exposes."""
+    return {
+        COPY_WORK_PACKAGES_META: include_work_packages,
+        COPY_NOTIFICATIONS_META: notify,
+    }
+
+
+def _merged_copy_meta(
+    form_payload: Mapping[str, Any] | None, meta: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Our copy flags on top of the ones the form defaulted.
+
+    ``merge_form_payload`` replaces whole keys, which would drop every copy flag
+    the form filled in (members, versions, wiki, …) and silently narrow the copy.
+    The ``_meta`` block is therefore merged key by key instead.
+    """
+    echoed = hal.as_object(form_payload.get("_meta")) if form_payload is not None else None
+    merged: dict[str, Any] = dict(echoed) if echoed is not None else {}
+    merged.update(meta)
+    return merged
+
+
+def _job_payload(document: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The job's stored payload, which is where a finished job keeps its result."""
+    return hal.as_object(document.get("payload"))
+
+
+def _job_result_url(document: Mapping[str, Any]) -> str | None:
+    """The URL a finished job points at, from its payload or its links."""
+    payload = _job_payload(document)
+    if payload is not None:
+        for key in ("redirect", "url", "link", "download"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+    for key in ("redirect", "download"):
+        resolved = hal.ref(document, key)
+        if resolved is not None and resolved.href:
+            return resolved.href
+    return None
+
+
+def _job_project(
+    document: Mapping[str, Any], result_url: str | None
+) -> tuple[Ref | None, str | None]:
+    """The project a job produced: from the link it rendered, else from its URL.
+
+    A finished copy job keeps the new project *inside* its payload
+    (``payload._links.project``, carrying the numeric id and the name) next to
+    the UI URL it redirects to; the job document itself renders no project link
+    at the root. The root is still read as a fallback, and the URL is the last
+    resort — it only yields the identifier slug and no name, which is what
+    :data:`JOB_DERIVED_PROJECT_NOTE` warns about.
+    """
+    linked = Ref.from_hal(_job_payload(document), "project") or Ref.from_hal(document, "project")
+    if linked is not None:
+        return linked, None
+    if result_url is None:
+        return None, None
+    match = _PROJECT_URL_RE.search(result_url)
+    if match is None:
+        return None, None
+    return Ref(id=match.group("key")), JOB_DERIVED_PROJECT_NOTE
+
+
+def _job_status(payload: Mapping[str, Any], *, requested_id: str | None = None) -> JobStatusResult:
+    """Project a JobStatus document, deriving nothing the document does not say."""
+    raw_status = payload.get("status")
+    status = raw_status if isinstance(raw_status, str) else None
+    result_url = _job_result_url(payload)
+    project, derived_note = _job_project(payload, result_url)
+
+    finished = status in JOB_TERMINAL_STATUSES if status is not None else False
+    successful = None if not finished or status is None else status not in JOB_FAILED_STATUSES
+
+    notes: list[str] = []
+    if status is None:
+        notes.append(
+            "this instance reported no status for the job, so whether it finished is unknown — "
+            "verify the result itself (get_project, list_projects) instead"
+        )
+    elif not finished:
+        notes.append(
+            f"the job is still {status}: nothing it produces exists yet. Poll get_job_status "
+            "again in a few seconds."
+        )
+    if derived_note:
+        notes.append(derived_note)
+
+    return JobStatusResult(
+        id=_job_id(payload) or requested_id,
+        status=status,
+        finished=finished,
+        successful=successful,
+        message=hal.formattable(payload.get("message")),
+        project=project,
+        result_url=result_url,
+        notes=notes,
+    )
 
 
 def register(mcp: FastMCP) -> None:
@@ -862,4 +1082,278 @@ def register(mcp: FastMCP) -> None:
                 "background job, so it and its work packages may still be readable for a "
                 "while; re-check with get_project."
             ),
+        )
+
+    @mcp.tool(
+        name="copy_project",
+        tags=tool_tags(GROUP_PROJECTS, WRITE),
+        annotations=write_annotations(title="Copy project"),
+    )
+    @tool_errors
+    async def copy_project(
+        id_or_identifier: Annotated[
+            int | str,
+            Field(
+                description=(
+                    "Numeric id or URL identifier of the project to copy (the TEMPLATE, not the "
+                    "copy). Both are accepted and come from list_projects or get_project."
+                )
+            ),
+        ],
+        new_name: Annotated[
+            str,
+            Field(
+                description=(
+                    "Display name of the copy, e.g. 'Apollo migration (2027)'. OpenProject "
+                    "derives the copy's URL identifier from it; the derived value is reported by "
+                    "get_job_status once the job succeeds."
+                )
+            ),
+        ],
+        include_work_packages: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Copy the template's work packages too (default). false copies the project "
+                    "shell — members, versions, categories, wiki and the other settings the "
+                    "instance defaults to — without any tickets."
+                )
+            ),
+        ] = True,
+        notify: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Send OpenProject notification emails for everything the copy creates. "
+                    "false (default) keeps a large copy quiet; the copy itself is identical."
+                )
+            ),
+        ] = False,
+    ) -> ProjectCopyResult:
+        """Copy a project — its settings, and optionally its work packages — into a new one.
+
+        Use it to spin a new engagement or release off a template project, which is the only
+        way to reproduce a project's members, versions, categories and enabled modules in one
+        call. The request goes through ``POST /projects/{id}/copy/form`` first, so a name that
+        derives a taken identifier comes back as ``violations`` naming the attribute instead of
+        a failed background job.
+
+        Copying is ASYNCHRONOUS: OpenProject queues a job and answers immediately. This tool
+        therefore returns ``{scheduled: true, job_id, status, message, notes}`` and NEVER
+        claims the copy exists — a large project takes minutes. Poll
+        ``get_job_status(job_id=...)`` until ``status`` is 'success' (it then reports the new
+        project) or 'failure'.
+
+        Pitfalls: only ``include_work_packages`` and ``notify`` are exposed; every other copy
+        flag (members, versions, wiki, boards, file links) keeps this instance's own default,
+        which the form fills in — so the copy can contain more than the two parameters
+        suggest. A 403 means the account may not copy this project (it needs the 'copy project'
+        permission on the template plus the right to create projects). Work packages come
+        across with their relations, but time entries and comment histories do not.
+
+        Cross-references: ``get_job_status`` follows the job to completion; ``list_projects``
+        or ``get_project`` confirms the result; ``create_project`` makes an empty project
+        instead; ``update_project`` renames the copy afterwards.
+        """
+        ctx = get_tool_context()
+        key = _project_key(id_or_identifier)
+        if not new_name or not new_name.strip():
+            raise InputValidationError(
+                "new_name is empty.",
+                hint="Pass the display name for the copy, e.g. 'Apollo migration (2027)'.",
+            )
+
+        meta = _copy_meta(include_work_packages, notify)
+        payload = build_write_payload({"name": new_name.strip(), "_meta": meta})
+
+        path = f"projects/{quote(key, safe='')}/copy"
+        try:
+            form = await ctx.client.post_json(f"{path}/form", json=payload)
+        except NotFoundError as exc:
+            raise _with_not_found_hint(exc, key) from exc
+        _raise_form_validation_errors(form)
+
+        echoed = _forms.form_payload(form)
+        body = _forms.merge_form_payload(echoed or {}, payload)
+        body["_meta"] = _merged_copy_meta(echoed, meta)
+
+        accepted = await ctx.client.post_json(path, json=body)
+        job = _job_status(accepted)
+
+        notes = [COPY_POLL_NOTE]
+        if job.id is None:
+            notes.append(COPY_NO_JOB_NOTE)
+        # The job's own "still queued" note would only repeat COPY_POLL_NOTE; the
+        # derivation caveat is the one thing a caller could not infer.
+        notes.extend(note for note in job.notes if note == JOB_DERIVED_PROJECT_NOTE)
+
+        return ProjectCopyResult(
+            source=id_or_identifier,
+            new_name=new_name.strip(),
+            scheduled=True,
+            job_id=job.id,
+            status=job.status,
+            message=job.message,
+            project=job.project,
+            notes=notes,
+        )
+
+    @mcp.tool(
+        name="get_job_status",
+        tags=tool_tags(GROUP_PROJECTS, READ),
+        annotations=read_annotations(title="Get background job status"),
+    )
+    @tool_errors
+    async def get_job_status(
+        job_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "Background job id — a uuid such as "
+                    "'9f4c1d5e-0e2a-4f2b-9a11-2f1b3c4d5e6f'. It comes from copy_project or "
+                    "delete_project ('job_id' in their results), never from a project id."
+                )
+            ),
+        ],
+    ) -> JobStatusResult:
+        """Check whether a background job (a project copy, a scheduled deletion) has finished.
+
+        OpenProject runs copies, deletions and exports asynchronously and hands back a job id.
+        This is the only way to learn what happened to one: call it after ``copy_project`` or
+        ``delete_project`` and wait for a terminal state before reporting an outcome to the
+        user.
+
+        Returns ``{id, status, finished, successful, message, project, result_url, notes}``.
+        ``status`` is 'in_queue' or 'in_process' while the job runs and 'success', 'failure',
+        'error' or 'cancelled' once it is over; ``finished`` and ``successful`` are derived
+        from it, and ``successful`` stays null while the job runs rather than defaulting to
+        false. A finished copy reports the new project in ``project`` and the URL it lives at
+        in ``result_url``.
+
+        Pitfalls: a 200 does not mean the job worked — read ``status``. Polling is on you:
+        wait a few seconds between calls rather than looping tightly. OpenProject drops job
+        statuses after a while, so a 404 can mean 'long finished' as easily as 'wrong id';
+        confirm with ``get_project`` or ``list_projects``. When a job fails, ``message`` is
+        what OpenProject recorded — there is no API to retry it, so the underlying tool has to
+        be called again deliberately.
+
+        Cross-references: ``copy_project`` and ``delete_project`` produce the ``job_id``;
+        ``get_project`` / ``list_projects`` verify what the job actually did.
+        """
+        ctx = get_tool_context()
+        key = str(job_id).strip()
+        if not key:
+            raise InputValidationError(
+                "job_id must not be empty.",
+                hint="Pass the 'job_id' from copy_project or delete_project.",
+            )
+        try:
+            payload = await ctx.client.get_json(f"job_statuses/{quote(key, safe='')}")
+        except NotFoundError as exc:
+            raise NotFoundError(
+                exc.message,
+                http_status=exc.http_status,
+                error_identifier=exc.error_identifier,
+                hint=(
+                    f"No background job with id {key!r}. Job ids come from copy_project or "
+                    "delete_project and are uuids, not project ids. OpenProject also discards "
+                    "job statuses after a while, so a job that finished long ago answers 404 — "
+                    "check the outcome directly with get_project or list_projects."
+                ),
+            ) from exc
+        return _job_status(payload, requested_id=key)
+
+    @mcp.tool(
+        name="set_project_favorite",
+        tags=tool_tags(GROUP_PROJECTS, WRITE),
+        annotations=write_annotations(title="Set project favorite", idempotent=True),
+    )
+    @tool_errors
+    async def set_project_favorite(
+        id_or_identifier: Annotated[
+            int | str,
+            Field(
+                description=(
+                    "Numeric project id or URL identifier to favorite or un-favorite; both are "
+                    "accepted and come from list_projects or get_project."
+                )
+            ),
+        ],
+        favorite: Annotated[
+            bool,
+            Field(
+                description=(
+                    "true adds the project to the authenticated user's favorites, false removes "
+                    "it. Required — there is no toggle, so read the current state with "
+                    "list_projects(favorites_only=true) if you do not know it."
+                )
+            ),
+        ],
+    ) -> ProjectFavoriteResult:
+        """Add or remove a project from the authenticated user's favorites (OpenProject 17+).
+
+        Favorites are per user, not per project: this changes what the account behind
+        OPENPROJECT_API_KEY sees starred on its own overview page, and nothing about the
+        project itself or about anybody else's view. Use it when the user asks to pin, star or
+        favorite a project they work in.
+
+        Returns ``{id, favorite, message}`` — ``favorite`` is the state now in effect. The call
+        is idempotent: favoriting an already-favorited project succeeds again.
+
+        Pitfalls: this endpoint only exists from OpenProject 17. When the instance reports a
+        version older than that the call is REFUSED before anything is sent, with the detected
+        version in the message, because there is no downgrade that would achieve the same
+        thing — favorite the project in the web UI instead. When it reports no version at all
+        the request IS sent, since an unreported version says nothing about the endpoint. A 404
+        is ambiguous on purpose in the hint: it means either the project does not exist for
+        this account or the endpoint is missing. This is not project 'status' and not a
+        work-package watcher.
+
+        Cross-references: ``list_projects(favorites_only=true)`` lists the current favorites
+        (and works on older instances too); ``get_project`` resolves an identifier first;
+        ``get_instance_info`` reports the detected OpenProject version.
+        """
+        ctx = get_tool_context()
+        key = _project_key(id_or_identifier)
+
+        probe = await ctx.probe()
+        # Refuse only what is *known* to be too old. An instance that reports no
+        # version at all is not evidence the endpoint is missing, so the request
+        # goes out and the 404 handler below reports what actually happened (G5).
+        detected = parse_version(probe.core_version)
+        if detected is not None and detected < PROJECT_FAVORITES_MIN:
+            raise InputValidationError(
+                f"Project favorites require OpenProject 17; this instance reports "
+                f"{probe.core_version}.",
+                hint=(
+                    "POST/DELETE /projects/{id}/favorite does not exist before OpenProject 17, "
+                    "so nothing was changed rather than being silently dropped. Favorite the "
+                    "project in the web UI, or upgrade the instance. "
+                    "list_projects(favorites_only=true) still reads existing favorites, and "
+                    "get_instance_info reports the detected version."
+                ),
+            )
+
+        path = f"projects/{quote(key, safe='')}/favorite"
+        try:
+            await ctx.client.request("POST" if favorite else "DELETE", path)
+        except NotFoundError as exc:
+            raise NotFoundError(
+                exc.message,
+                http_status=exc.http_status,
+                error_identifier=exc.error_identifier,
+                hint=(
+                    f"Either no project matches {key!r} for this account, or this instance does "
+                    f"not expose /projects/{{id}}/favorite even though it reports "
+                    f"{probe.core_version or 'no version'} (the endpoint arrived in OpenProject "
+                    "17 and can be disabled). Nothing was changed. Check the project with "
+                    "get_project, and set the favorite in the web UI if the endpoint is absent."
+                ),
+            ) from exc
+
+        state = "is now a favorite" if favorite else "is no longer a favorite"
+        return ProjectFavoriteResult(
+            id=id_or_identifier,
+            favorite=favorite,
+            message=f"Project {key!r} {state} of the authenticated user.",
         )
