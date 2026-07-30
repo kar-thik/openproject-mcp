@@ -63,14 +63,17 @@ from openproject_mcp.client.errors import (
 from openproject_mcp.config import Settings
 from openproject_mcp.projections import ListEnvelope, Ref
 from openproject_mcp.tools._shared import (
+    DESTRUCTIVE,
     GROUP_ATTACHMENTS,
     READ,
     WRITE,
     ToolContext,
+    destructive_annotations,
     envelope_from_collection,
     get_tool_context,
     read_annotations,
     report_progress,
+    require_confirmation,
     tool_errors,
     tool_tags,
     write_annotations,
@@ -80,6 +83,7 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 __all__ = [
+    "AttachmentDeletionResult",
     "AttachmentQuarantinedError",
     "AttachmentRow",
     "AttachmentTooLargeError",
@@ -159,6 +163,22 @@ class AttachmentRow(BaseModel):
             "anything else is still being scanned."
         ),
     )
+
+
+class AttachmentDeletionResult(BaseModel):
+    """Outcome of ``delete_attachment`` (SPEC §6.4)."""
+
+    id: int = Field(description="Id of the attachment that was deleted.")
+    deleted: bool = Field(description="True once OpenProject accepted the deletion.")
+    file_name: str | None = Field(
+        default=None, description="Name of the file that was removed, read before deleting it."
+    )
+    container: Ref | None = Field(
+        default=None,
+        description="Object the file was attached to (work package, wiki page, meeting, ...); "
+        "null for an uploaded file that was never claimed by one.",
+    )
+    message: str = Field(description="Human-readable confirmation.")
 
 
 class DownloadResult(BaseModel):
@@ -779,3 +799,76 @@ def register(mcp: FastMCP) -> None:
             description=description,
         )
         return _attachment_row(payload)
+
+    @mcp.tool(
+        name="delete_attachment",
+        tags=tool_tags(GROUP_ATTACHMENTS, WRITE, DESTRUCTIVE),
+        annotations=destructive_annotations(title="Delete attachment"),
+    )
+    @tool_errors
+    async def delete_attachment(
+        attachment_id: Annotated[
+            int,
+            Field(
+                description=(
+                    "Numeric attachment id from list_attachments or "
+                    "get_work_package(include=['attachments']). Never a work package or container "
+                    "id — deleting the wrong id cannot be undone."
+                )
+            ),
+        ],
+        confirm: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Must be true. Ask the user to confirm first: OpenProject offers no undo and "
+                    "no trash. Calling with confirm=false returns a confirmation_required error "
+                    "and nothing is read or deleted."
+                )
+            ),
+        ] = False,
+    ) -> AttachmentDeletionResult:
+        """Permanently delete one attached file from OpenProject.
+
+        Use it only on explicit user instruction, for example to remove a file uploaded to the
+        wrong work package or a superseded document. The attachment's metadata is read first so
+        the result names the file and the container it was attached to, and so an unknown id fails
+        before anything is removed.
+
+        Returns the attachment id, the file name, its container and a confirmation message.
+
+        Pitfalls: this deletes the file itself, not a link to it — every work package, wiki page
+        or comment that embedded it loses the image or download. Deleting needs *edit* permission
+        on the container (or authorship for a file that has no container yet), so a 403 can follow
+        a successful read. A 404 means the id is unknown or already deleted; a second call on the
+        same id answers 404 rather than succeeding. Removing a file does not remove the comment or
+        work package that referenced it.
+
+        Related: list_attachments shows the ids and file names of everything a container holds;
+        upload_attachment adds a replacement; download_attachment saves a copy first if the bytes
+        are still wanted.
+        """
+        require_confirmation(
+            confirm,
+            action="delete attachment",
+            target=f"#{attachment_id}",
+            consequence=(
+                "The file is removed from OpenProject permanently and every work package, wiki "
+                "page or comment that embedded it loses it."
+            ),
+        )
+        ctx = get_tool_context()
+        metadata = await ctx.client.get_json(f"attachments/{attachment_id}")
+        row = _attachment_row(metadata)
+        container = Ref.from_hal(metadata, "container")
+
+        await ctx.client.delete(f"attachments/{attachment_id}")
+
+        where = f" from {container.name}" if container and container.name else ""
+        return AttachmentDeletionResult(
+            id=attachment_id,
+            deleted=True,
+            file_name=row.file_name,
+            container=container,
+            message=f"Attachment {row.file_name or attachment_id}{where} was deleted permanently.",
+        )
