@@ -218,6 +218,20 @@ class Settings(BaseSettings):
     def max_download_bytes(self) -> int:
         return self.max_download_mb * 1024 * 1024
 
+    @property
+    def bearer_tokens(self) -> tuple[str, ...]:
+        """Parsed HTTP bearer tokens (SPEC §11); raw secret material, never log.
+
+        ``OPENPROJECT_MCP_AUTH_TOKENS`` is split on commas, surrounding
+        whitespace is stripped and empty entries are dropped, so ``"alpha,
+        beta,"`` yields exactly ``("alpha", "beta")``. Unset — or set but
+        containing no tokens — parses to ``()``.
+        """
+        if self.auth_tokens is None:
+            return ()
+        raw = self.auth_tokens.get_secret_value()
+        return tuple(part.strip() for part in raw.split(",") if part.strip())
+
 
 def check_runtime_config(settings: Settings, transport: TransportName) -> list[str]:
     """Return human-readable configuration problems, empty when good to run.
@@ -249,5 +263,11 @@ def check_runtime_config(settings: Settings, transport: TransportName) -> list[s
             "HTTP transport requires authentication: set OPENPROJECT_MCP_AUTH_TOKENS "
             "(comma-separated bearer tokens) or, for local development only, "
             "OPENPROJECT_MCP_INSECURE=1"
+        )
+    if transport == "http" and settings.auth_tokens is not None and not settings.bearer_tokens:
+        problems.append(
+            "OPENPROJECT_MCP_AUTH_TOKENS is set but contains no tokens — "
+            "provide at least one non-empty bearer token (or unset it and use "
+            "OPENPROJECT_MCP_INSECURE=1, local development only)"
         )
     return problems

@@ -129,7 +129,7 @@ Tool modules are plain `def register(mcp: FastMCP) -> None` functions called fro
 ### 3.3 Transports
 
 - **stdio** (default): single-user; credentials from env. Logging strictly to stderr.
-- **streamable HTTP** (`--transport http`): binds `127.0.0.1` by default; **refuses to start without an auth provider configured** unless `OPENPROJECT_MCP_INSECURE=1` is set explicitly (dev only). §11.
+- **streamable HTTP** (`--transport http`): binds `127.0.0.1` by default; **refuses to start without auth tokens configured** unless `OPENPROJECT_MCP_INSECURE=1` is set explicitly (dev only), and verifies a bearer token on every request. §11.
 - No SSE transport — deprecated in both the MCP spec and Claude clients.
 
 ### 3.4 Lifespan & state
@@ -551,7 +551,7 @@ Typed params cover the 95% case. `raw_filters` covers the rest — **typed, not 
 
 - **Credentials**: `OPENPROJECT_API_KEY` as `SecretStr`; never in logs (Authorization redacted; body logging is opt-in `OPENPROJECT_MCP_LOG_BODIES=1`, dev-only). TLS verified always; `OPENPROJECT_MCP_CA_BUNDLE` for private CAs (no verify-off switch).
 - **Redirect hygiene**: Authorization stripped on cross-origin redirects (presigned URLs) — explicit httpx event hook, unit-tested.
-- **HTTP transport**: requires a FastMCP auth provider (static bearer set, JWT verifier, or OAuth proxy — FastMCP 3.x built-ins). Binds localhost by default. Multi-user mode maps the **verified MCP principal → per-user OpenProject API key** (`user_keys.toml`) or forwards an OAuth token — the shared-impersonation-key anti-pattern is not reproduced. Without auth configured, HTTP mode exits with an error naming the required env vars. Filesystem-coupled tools switch to resource/blob mode (§7.1).
+- **HTTP transport**: requires a static bearer-token set (`OPENPROJECT_MCP_AUTH_TOKENS`, comma-separated); every request must present `Authorization: Bearer <token>` matching a configured token (constant-time comparison) or is rejected with a 401 + `WWW-Authenticate`. JWT verifier / OAuth proxy remain possible later via FastMCP 3.x built-ins. Binds localhost by default; TLS termination is out of scope (localhost bind or TLS-terminating reverse proxy). Multi-user mode maps the **verified MCP principal → per-user OpenProject API key** (`user_keys.toml`) or forwards an OAuth token — the shared-impersonation-key anti-pattern is not reproduced. Without auth configured, HTTP mode exits with an error naming the required env vars. Filesystem-coupled tools switch to resource/blob mode (§7.1).
 - **Blast-radius controls**: `OPENPROJECT_MCP_READ_ONLY=1` (drops all ✏️/🗑/⚙️), `OPENPROJECT_MCP_ADMIN_TOOLS` (membership writes), `OPENPROJECT_MCP_DISABLE` (group opt-outs), `confirm` + `requiresUserInteraction` on every 🗑 tool.
 - **Output hygiene**: upstream error bodies never echoed verbatim (G4); HTML stripped; attachment filenames sanitized before filesystem use.
 

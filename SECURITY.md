@@ -35,4 +35,10 @@ key:
   returned for verification.
 - **HTTP transport** — binds `127.0.0.1` by default and refuses to start
   without `OPENPROJECT_MCP_AUTH_TOKENS` unless `OPENPROJECT_MCP_INSECURE=1` is
-  set explicitly (local development only).
+  set explicitly (local development only). With tokens configured, every
+  request must carry `Authorization: Bearer <token>` matching a configured
+  token — comparison is constant-time, anything else is rejected with a 401 —
+  and a set-but-empty token list refuses to start rather than serving an open
+  endpoint. The server does not terminate TLS or rate-limit the endpoint:
+  keep the localhost bind, or front it with a TLS-terminating reverse proxy
+  and use long random tokens.
