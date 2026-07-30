@@ -34,25 +34,46 @@ Non-negotiables for this module:
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
 from openproject_mcp.client import hal
-from openproject_mcp.client.errors import NotFoundError, OpenProjectError
+from openproject_mcp.client.errors import (
+    InputValidationError,
+    NotFoundError,
+    OpenProjectError,
+    UnexpectedResponseError,
+    ValidationFailedError,
+)
+from openproject_mcp.client.filters import (
+    Filter,
+    FilterType,
+    Op,
+    make_filter,
+    query_params,
+    register_filter_type,
+)
 from openproject_mcp.client.payloads import build_write_payload, links_payload
 from openproject_mcp.config import PROBE_CACHE_TTL
-from openproject_mcp.projections import Ref
+from openproject_mcp.projections import ListEnvelope, Ref
 from openproject_mcp.tools._shared import (
     GROUP_METADATA,
     READ,
     ToolContext,
+    build_envelope,
     get_tool_context,
     read_annotations,
+    report_progress,
     tool_errors,
     tool_tags,
 )
-from openproject_mcp.version_probe import CACHE_KEY_ROOT, InstanceProbe
+from openproject_mcp.version_probe import (
+    CACHE_KEY_CAPABILITIES_CONTEXT,
+    CACHE_KEY_ROOT,
+    CapabilitiesContextPrefix,
+    InstanceProbe,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -60,7 +81,9 @@ if TYPE_CHECKING:
 __all__ = [
     "CACHE_KEY_CONFIGURATION",
     "CACHE_KEY_CURRENT_USER",
+    "CapabilityGroup",
     "InstanceInfo",
+    "PermissionsResult",
     "ProjectMetadata",
     "WorkPackageSchema",
     "register",
@@ -463,6 +486,140 @@ def _schema_rows(
     return fields, custom_fields, notes
 
 
+# --- capabilities (SPEC §6.1, §4.7) ---------------------------------------
+
+#: Resource key for the filter registry — ``/capabilities`` has its own names.
+CAPABILITIES_RESOURCE = "capabilities"
+
+#: Page size and hard cap for the capability sweep; the cap is reported (G1).
+CAPABILITIES_PAGE_SIZE = 100
+MAX_CAPABILITIES = 500
+
+#: The caveat the capabilities API documents about itself, surfaced in-band.
+CAPABILITIES_CAVEAT = (
+    "OpenProject's capabilities API exposes only a subset of its permissions, so the absence "
+    "of an action here is not proof that the user lacks the permission."
+)
+
+
+class CapabilityGroup(BaseModel):
+    """The actions the current user may perform in one context."""
+
+    id: str = Field(description="Stable row id: 'global' or 'project:<id>'. Also the grouping key.")
+    context: Literal["global", "project"] = Field(
+        description="'global' for instance-wide actions, 'project' for actions inside one project."
+    )
+    project: Ref | None = Field(
+        default=None, description="The project this row is about; null for the global context."
+    )
+    actions: list[str] = Field(
+        default_factory=list,
+        description="Action names as OpenProject spells them, e.g. 'memberships/create', "
+        "'work_packages/read'. Sorted; always a list.",
+    )
+
+
+class PermissionCheck(BaseModel):
+    """The answer to the optional ``permission`` predicate."""
+
+    checked: str = Field(description="The permission string that was checked, as normalized.")
+    allowed: bool = Field(
+        description="True when the action appears in the capabilities listed here. False means "
+        "'not listed' — see the tool's caveat, it is not proof of a denial."
+    )
+    granted_in: list[str] = Field(
+        default_factory=list,
+        description="Ids of the CapabilityGroup rows that carry the action; empty when not found.",
+    )
+
+
+class PermissionsResult(ListEnvelope[CapabilityGroup]):
+    """The §9.3 envelope of capability rows, plus who was asked about and the check."""
+
+    principal: Ref = Field(
+        description="The user the capabilities were resolved for — always the authenticated "
+        "account, by numeric id."
+    )
+    capability_count: int = Field(
+        default=0, description="Individual capabilities read from the API before grouping."
+    )
+    check: PermissionCheck | None = Field(
+        default=None, description="Present only when the 'permission' parameter was given."
+    )
+
+
+def _register_capability_filters() -> None:
+    """Teach the filter validator the capability filter names (never edit the shared table)."""
+    register_filter_type("context", FilterType.LIST, CAPABILITIES_RESOURCE)
+    register_filter_type("principal", FilterType.LIST, CAPABILITIES_RESOURCE)
+
+
+async def _current_user(ctx: ToolContext) -> dict[str, Any]:
+    """The cached ``users/me`` document; fetched and cached on a miss."""
+    cached = ctx.cache.get(CACHE_KEY_CURRENT_USER, scope=ctx.scope)
+    if isinstance(cached, Mapping):
+        return dict(cached)
+    me = await ctx.client.get_json("users/me")
+    ctx.cache.set(CACHE_KEY_CURRENT_USER, me, scope=ctx.scope, ttl=ctx.settings.cache_ttl)
+    return me
+
+
+def _action_name(element: Mapping[str, Any]) -> str | None:
+    """``/api/v3/actions/memberships/create`` → ``memberships/create``.
+
+    The action name has a slash in it, so the generic href parser (which takes the
+    last segment) would return ``create`` and lose the resource.
+    """
+    action = hal.ref(element, "action")
+    if action is not None and isinstance(action.href, str) and "/actions/" in action.href:
+        name = action.href.split("/actions/", 1)[1].strip("/")
+        if name:
+            return name
+    if action is not None and action.name:
+        return action.name
+    return None
+
+
+def _context_of(element: Mapping[str, Any]) -> tuple[str, Literal["global", "project"], Ref | None]:
+    """Classify a capability's context link into ``(row id, kind, project ref)``."""
+    context = hal.ref(element, "context")
+    href = context.href if context is not None else None
+    if isinstance(href, str) and "/projects/" in href:
+        project_id = hal.id_from_href(href)
+        name = context.name if context is not None else None
+        return f"project:{project_id}", "project", Ref(id=project_id, name=name)
+    return "global", "global", None
+
+
+def _group_capabilities(elements: Sequence[Mapping[str, Any]]) -> list[CapabilityGroup]:
+    """Collapse capability resources into one row per context."""
+    rows: dict[str, CapabilityGroup] = {}
+    actions: dict[str, set[str]] = {}
+    for element in elements:
+        row_id, kind, project = _context_of(element)
+        row = rows.get(row_id)
+        if row is None:
+            row = CapabilityGroup(id=row_id, context=kind, project=project)
+            rows[row_id] = row
+            actions[row_id] = set()
+        elif row.project is None and project is not None:
+            row.project = project
+        action = _action_name(element)
+        if action:
+            actions[row_id].add(action)
+    for row_id, row in rows.items():
+        row.actions = sorted(actions[row_id])
+    return [rows[key] for key in sorted(rows)]
+
+
+def _capability_params(principal_id: int | str, context: str, page: int) -> dict[str, Any]:
+    filters: list[Filter] = [
+        make_filter("principal", Op.EQ, [principal_id], resource=CAPABILITIES_RESOURCE),
+        make_filter("context", Op.EQ, [context], resource=CAPABILITIES_RESOURCE),
+    ]
+    return query_params(filters=filters, page=page, page_size=CAPABILITIES_PAGE_SIZE)
+
+
 def register(mcp: FastMCP) -> None:
     """Register the metadata tools. Phase 1 fills in the three read tools."""
 
@@ -733,4 +890,158 @@ def register(mcp: FastMCP) -> None:
             fields=fields,
             custom_fields=custom_fields,
             notes=notes or None,
+        )
+
+    _register_capability_filters()
+
+    @mcp.tool(
+        name="list_permissions",
+        tags=tool_tags(GROUP_METADATA, READ),
+        annotations=read_annotations(title="List permissions"),
+    )
+    @tool_errors
+    async def list_permissions(
+        project_id: Annotated[
+            int | str | None,
+            Field(
+                description=(
+                    "Numeric project id or URL identifier to scope the question to that "
+                    "project ('may I create work packages HERE'). Omit it for the "
+                    "instance-wide (global) actions such as creating projects or "
+                    "administering users. An identifier is resolved to its numeric id first, "
+                    "because the capabilities API only accepts numeric project ids."
+                )
+            ),
+        ] = None,
+        permission: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional single action to check, spelled the way OpenProject does: "
+                    "'<resource>/<action>', e.g. 'work_packages/create', "
+                    "'memberships/create', 'projects/update'. Adds a "
+                    "{checked, allowed, granted_in} predicate to the result; the full "
+                    "grouped listing is returned either way, so you can see the exact "
+                    "spellings this instance uses."
+                )
+            ),
+        ] = None,
+    ) -> PermissionsResult:
+        """List what the authenticated user is allowed to do, globally or in one project.
+
+        Use it before attempting a write that might 403, to explain to a user why an action
+        failed, or to pick between tools ("can I add a member here, or should I ask an
+        admin?"). It reads the real capabilities API for the current user — it does not
+        return a user profile and it never guesses from the admin flag.
+
+        Returns the standard list envelope whose ``items`` are one row per context —
+        ``{id, context, project, actions}`` with ``actions`` such as
+        ``work_packages/create`` — plus ``principal`` (the user asked about),
+        ``capability_count``, and ``check`` when ``permission`` was given.
+
+        CAVEAT, straight from the API: OpenProject exposes only a SUBSET of its permissions
+        as capabilities. An action missing from this list is not proof that the user lacks
+        the permission — it may simply not be modelled. Treat a hit as reliable and a miss as
+        "unknown, try it and read the 403".
+
+        Pitfalls: the capabilities API has no ``"me"`` value, so the numeric id of the
+        authenticated user is resolved first (from the cached ``users/me``) — you cannot ask
+        about another user with this tool. Results are capped at 500 capabilities with a note
+        in ``notes`` when the cap is hit; scope with ``project_id`` to stay well under it.
+        Capabilities are about permission only: a permitted action can still fail validation.
+
+        Cross-references: ``get_instance_info`` reports who this server is authenticated as
+        and what the instance version supports; ``list_memberships`` and ``list_roles`` show
+        where the permissions come from; ``get_project_metadata`` lists the ids a permitted
+        action needs.
+        """
+        ctx = get_tool_context()
+        notes: list[str] = []
+
+        if permission is not None and not permission.strip():
+            raise InputValidationError(
+                "permission is empty.",
+                hint=(
+                    "Pass an action such as 'work_packages/create', or omit permission to get "
+                    "the full listing."
+                ),
+            )
+
+        me = await _current_user(ctx)
+        principal_id = hal.self_id(me)
+        if not isinstance(principal_id, int):
+            raise UnexpectedResponseError(
+                "Could not resolve the numeric id of the authenticated user.",
+                hint=(
+                    "The capabilities API filters by numeric principal id and has no 'me' "
+                    "value. Check the connection with get_instance_info."
+                ),
+            )
+        principal = Ref(id=principal_id, name=me.get("name"))
+
+        context_value = "g"
+        prefix: CapabilitiesContextPrefix | None = None
+        if project_id is not None:
+            numeric = project_id
+            if not str(project_id).isdigit():
+                project = await ctx.client.get_json(f"projects/{project_id}")
+                numeric = hal.self_id(project) or project_id
+            prefix = ctx.cache.get(CACHE_KEY_CAPABILITIES_CONTEXT, scope=ctx.scope) or "p"
+            context_value = f"{prefix}{numeric}"
+
+        elements: list[Mapping[str, Any]] = []
+        total = 0
+        page = 1
+        while True:
+            params = _capability_params(principal_id, context_value, page)
+            try:
+                payload = await ctx.client.get_json("capabilities", params=params)
+            except ValidationFailedError:
+                # The project context prefix moved from 'p{id}' to 'w{id}' in 17.2 (SPEC §4.7).
+                # Retry once with the other spelling and remember what worked.
+                if page > 1 or prefix is None or prefix == "w":
+                    raise
+                prefix = "w"
+                context_value = f"w{context_value[1:]}"
+                payload = await ctx.client.get_json(
+                    "capabilities", params=_capability_params(principal_id, context_value, page)
+                )
+            if prefix is not None:
+                ctx.cache.set(
+                    CACHE_KEY_CAPABILITIES_CONTEXT, prefix, scope=ctx.scope, ttl=PROBE_CACHE_TTL
+                )
+
+            collection = hal.collection(payload)
+            total = collection.total
+            elements.extend(collection.elements)
+            reachable = min(total, MAX_CAPABILITIES)
+            if not collection.elements or len(elements) >= reachable:
+                break
+            page += 1
+            await report_progress(len(elements), reachable, "reading capabilities")
+
+        if total > MAX_CAPABILITIES:
+            notes.append(
+                f"capped at {MAX_CAPABILITIES} of {total} capabilities; the grouped actions and "
+                "any permission check may be incomplete — pass project_id to narrow the scope"
+            )
+        notes.append(CAPABILITIES_CAVEAT)
+
+        rows = _group_capabilities(elements)
+        check: PermissionCheck | None = None
+        if permission is not None:
+            wanted = permission.strip().strip("/").lower()
+            granted = [row.id for row in rows if wanted in {a.lower() for a in row.actions}]
+            check = PermissionCheck(checked=wanted, allowed=bool(granted), granted_in=granted)
+
+        envelope = build_envelope(
+            rows, total=len(rows), page=1, page_size=max(len(rows), 1), notes=notes
+        )
+        return PermissionsResult(
+            items=rows,
+            pagination=envelope.pagination,
+            notes=envelope.notes,
+            principal=principal,
+            capability_count=len(elements),
+            check=check,
         )
