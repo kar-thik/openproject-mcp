@@ -15,8 +15,14 @@ from typing import TYPE_CHECKING
 
 from openproject_mcp.tools import (
     attachments,
+    git_activity,
     metadata,
+    notifications,
+    people,
     projects,
+    queries,
+    time_entries,
+    versions,
     work_packages,
     wp_collaboration,
 )
@@ -32,7 +38,13 @@ TOOL_MODULES: tuple[ModuleType, ...] = (
     work_packages,
     wp_collaboration,
     attachments,
+    git_activity,
     projects,
+    queries,
+    notifications,
+    time_entries,
+    versions,
+    people,
     metadata,
 )
 

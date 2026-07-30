@@ -44,18 +44,31 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from openproject_mcp.client import hal
-from openproject_mcp.client.errors import InputValidationError
-from openproject_mcp.client.payloads import formattable_field
+from openproject_mcp.client.errors import InputValidationError, ValidationFailedError
+from openproject_mcp.client.payloads import (
+    build_write_payload,
+    formattable_field,
+    link,
+    links_payload,
+)
 from openproject_mcp.projections import ListEnvelope, Ref
 from openproject_mcp.tools import _shared
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-__all__ = ["ActivityDetail", "ActivityEntry", "register"]
+__all__ = [
+    "ActivityDetail",
+    "ActivityEntry",
+    "RelationDeletionResult",
+    "RelationResult",
+    "WatcherResult",
+    "register",
+]
 
 #: ``anthropic/maxResultSizeChars`` for the comment thread (SPEC §5.4).
 MAX_RESULT_CHARS = 100_000
@@ -258,6 +271,183 @@ def _require_range(name: str, value: int, low: int, high: int) -> None:
             f"{name}={value} is out of range.",
             hint=f"{name} must be between {low} and {high}.",
         )
+
+
+# --- Phase 2: watchers and relations --------------------------------------
+
+#: The relation vocabulary OpenProject accepts (``Relation::TYPES``).
+RelationType = Literal[
+    "relates",
+    "precedes",
+    "follows",
+    "blocks",
+    "blocked",
+    "duplicates",
+    "duplicated",
+    "includes",
+    "partof",
+    "requires",
+    "required",
+]
+
+#: Only scheduling relations carry a lag; every other type ignores it.
+LAG_RELATION_TYPES: frozenset[str] = frozenset({"follows", "precedes"})
+
+
+class WatcherResult(BaseModel):
+    """Outcome of adding or removing one watcher."""
+
+    work_package_id: int = Field(description="Work package whose watcher list was changed.")
+    user: Ref | None = Field(
+        default=None,
+        description="The watcher. 'id' is the user id; 'name' is filled in only when "
+        "OpenProject returned the user resource (it does on add, not on remove).",
+    )
+    watching: bool = Field(
+        description="Watch state after the call: true after adding, false after removing."
+    )
+    changed: bool | None = Field(
+        default=None,
+        description="True when this call actually changed the watcher list, false when the user "
+        "was already watching. Null when OpenProject does not report it — removals answer "
+        "204 whether or not the user was watching.",
+    )
+    message: str = Field(description="Human-readable confirmation.")
+
+
+class RelationResult(BaseModel):
+    """One work-package relation (SPEC §6.3)."""
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    id: int | str | None = Field(
+        default=None,
+        description="Relation id. Pass it to update_work_package_relation or "
+        "delete_work_package_relation — it is not a work package id.",
+    )
+    type: str | None = Field(
+        default=None,
+        description="Relation type as OpenProject stored it, read from the 'from' work package "
+        "(e.g. 'follows' means 'from' is scheduled after 'to').",
+    )
+    reverse_type: str | None = Field(
+        default=None,
+        description="The same relation read from the 'to' work package: 'follows' <-> 'precedes', "
+        "'blocks' <-> 'blocked', 'relates' <-> 'relates'.",
+    )
+    from_: Ref | None = Field(
+        default=None,
+        alias="from",
+        description="Work package the relation starts at.",
+    )
+    to: Ref | None = Field(default=None, description="Work package the relation points to.")
+    lag: int | None = Field(
+        default=None,
+        description="Working days kept between the predecessor and the successor. Only "
+        "follows/precedes relations carry one; null everywhere else.",
+    )
+    description: str | None = Field(
+        default=None, description="Free-text note stored on the relation; null when unset."
+    )
+
+
+class RelationDeletionResult(BaseModel):
+    """Outcome of ``delete_work_package_relation``."""
+
+    id: int = Field(description="Id of the relation that was deleted.")
+    deleted: bool = Field(description="True once OpenProject accepted the deletion.")
+    message: str = Field(description="Human-readable confirmation.")
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _json_object(response: httpx.Response) -> dict[str, Any]:
+    """Best-effort JSON body of a write response; ``{}`` when there is none.
+
+    Used where the *status code* carries meaning the body does not, so the
+    response object has to be handled directly instead of via ``post_json``.
+    """
+    if not response.content:
+        return {}
+    try:
+        payload = response.json()
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _is_comment_activity(payload: Mapping[str, Any]) -> bool:
+    """True when a journal entry carries comment text — only those are editable."""
+    if hal.formattable(payload.get("comment")):
+        return True
+    return payload.get("_type") == "Activity::Comment"
+
+
+def _relation_result(payload: Mapping[str, Any]) -> RelationResult:
+    return RelationResult(
+        id=hal.self_id(payload),
+        type=_text(payload.get("type")),
+        reverse_type=_text(payload.get("reverseType")),
+        from_=Ref.from_hal(payload, "from"),
+        to=Ref.from_hal(payload, "to"),
+        lag=_int_or_none(payload.get("lag")),
+        description=hal.formattable(payload.get("description")),
+    )
+
+
+def _user_ref(payload: Mapping[str, Any], fallback_id: int) -> Ref:
+    resolved = hal.self_id(payload)
+    return Ref(
+        id=resolved if resolved is not None else fallback_id,
+        name=_text(payload.get("name")),
+    )
+
+
+def _validate_lag(relation_type: str | None, lag: int | None) -> None:
+    """Refuse a lag on a relation type that cannot schedule (SPEC §6.3)."""
+    if lag is None or relation_type in LAG_RELATION_TYPES:
+        return
+    raise InputValidationError(
+        f"lag is only valid on 'follows' and 'precedes' relations (this one is "
+        f"{relation_type or 'of unknown type'}).",
+        hint=(
+            "Lag is the scheduling gap between a predecessor and its successor, so OpenProject "
+            "stores it for follows/precedes only. Drop lag, or set type='follows' (the 'from' "
+            "work package runs after the 'to' one) or type='precedes' (it runs before) in the "
+            "same call."
+        ),
+    )
+
+
+async def _patch_comment(
+    context: _shared.ToolContext, activity_id: int, comment: str
+) -> dict[str, Any]:
+    """PATCH an activity's comment, tolerating both wire shapes it has shipped with.
+
+    ``PATCH /activities/{id}`` declares ``comment`` as a plain string — that is
+    what OpenProject's own request specs send and it has not changed since the
+    endpoint was written — while the published OpenAPI schema documents the
+    formattable ``{"raw": ...}`` object. A rejected parameter is refused before
+    the journal is touched, so nothing has been written when the second shape is
+    tried; the first rejection is what gets reported if that fails too.
+    """
+    path = f"activities/{activity_id}"
+    try:
+        return await context.client.patch_json(path, json={"comment": comment})
+    except ValidationFailedError as rejected:
+        first = rejected
+    try:
+        return await context.client.patch_json(path, json={"comment": formattable_field(comment)})
+    except ValidationFailedError:
+        raise first from None
 
 
 def register(mcp: FastMCP) -> None:
@@ -464,3 +654,430 @@ def register(mcp: FastMCP) -> None:
             params={"notify": "true" if notify else "false"},
         )
         return _activity_entry(payload, max_chars=None)
+
+    @mcp.tool(
+        name="edit_work_package_comment",
+        tags=_shared.tool_tags(_shared.GROUP_WP_COLLABORATION, _shared.WRITE),
+        annotations=_shared.write_annotations(title="Edit work package comment", idempotent=True),
+    )
+    @_shared.tool_errors
+    async def edit_work_package_comment(
+        activity_id: Annotated[
+            int,
+            Field(
+                description="Id of the journal entry to rewrite. It comes from "
+                "list_work_package_comments (the 'id' of an entry with kind='comment') or from "
+                "add_work_package_comment's result. It is an activity id, not a work package id."
+            ),
+        ],
+        comment: Annotated[
+            str,
+            Field(
+                description="The replacement body in markdown. It replaces the whole comment — "
+                "there is no append mode, so read the current text first if you mean to add to "
+                "it. @-mentions need OpenProject's mention syntax; plain names notify nobody."
+            ),
+        ],
+    ) -> ActivityEntry:
+        """Rewrite the text of an existing work-package comment.
+
+        Use this to fix a typo, correct a wrong statement, or extend a note you
+        just posted. Returns the updated journal entry (activity id, author,
+        markdown text, internal flag, timestamps) in the same shape
+        ``list_work_package_comments`` returns.
+
+        Pitfalls. Only **comment** entries are editable: the journal also holds
+        field-change entries ("Status changed from New to In progress"), which
+        OpenProject records automatically and refuses to alter — this tool
+        rejects those locally, before any write. Editing needs the
+        edit-work-package-comments permission (or edit-own for your own
+        comments); a 403 means the account may read the thread but not rewrite
+        it. The edit replaces the text entirely and OpenProject keeps no
+        API-visible history of the previous version, so do not use it to
+        "undo" — post a correcting comment when the record matters. Editing does
+        not notify anyone.
+
+        Cross-references: read the thread and get activity ids with
+        ``list_work_package_comments``; post a new comment with
+        ``add_work_package_comment``; change fields (status, assignee, dates)
+        with ``update_work_package`` instead of describing them in prose.
+        """
+        context = _shared.get_tool_context()
+        if not comment or not comment.strip():
+            raise InputValidationError(
+                "comment is empty.",
+                hint=(
+                    "Pass the replacement markdown text. OpenProject rejects a blank comment, and "
+                    "clearing a comment is not what editing is for — delete nothing, post a "
+                    "correction instead."
+                ),
+            )
+
+        current = await context.client.get_json(f"activities/{activity_id}")
+        if not _is_comment_activity(current):
+            raise InputValidationError(
+                f"Activity {activity_id} is a field-change journal entry, not a comment.",
+                hint=(
+                    "Only comment entries can be edited; OpenProject writes field-change entries "
+                    "itself and keeps them immutable. list_work_package_comments marks the "
+                    "editable ones with kind='comment'. To change a field, call "
+                    "update_work_package."
+                ),
+            )
+
+        payload = await _patch_comment(context, activity_id, comment)
+        return _activity_entry(payload, max_chars=None)
+
+    @mcp.tool(
+        name="add_work_package_watcher",
+        tags=_shared.tool_tags(_shared.GROUP_WP_COLLABORATION, _shared.WRITE),
+        annotations=_shared.write_annotations(title="Add work package watcher", idempotent=True),
+    )
+    @_shared.tool_errors
+    async def add_work_package_watcher(
+        work_package_id: Annotated[
+            int,
+            Field(
+                description="Work package to watch. Ids come from search_work_packages, "
+                "list_work_packages or get_work_package."
+            ),
+        ],
+        user_id: Annotated[
+            int,
+            Field(
+                description="Numeric id of the user to add. Get it from list_users, from "
+                "get_instance_info for the current user, or from any Ref in a work-package "
+                "result. The string 'me' is not accepted here — the API needs a real id."
+            ),
+        ],
+    ) -> WatcherResult:
+        """Subscribe a user to a work package's notifications.
+
+        Use this when someone should be kept in the loop on a ticket without
+        being assigned to it. Watchers receive OpenProject's notifications for
+        comments and changes. Returns the watcher (user id and name), the watch
+        state after the call, and whether this call actually changed anything.
+
+        Pitfalls. The user must already be able to see the work package;
+        OpenProject answers 422 with a violation on ``user`` otherwise, and
+        adding someone other than yourself needs the add-work-package-watchers
+        permission (adding yourself only needs view access). Calling twice is
+        harmless: the second call reports ``changed: false``. Watching is not
+        assignment — use ``update_work_package(assignee=...)`` for that.
+
+        Cross-references: ``get_work_package(include=['watchers'])`` lists who
+        already watches; ``remove_work_package_watcher`` is the reverse;
+        ``list_work_package_comments`` shows what watchers are being notified
+        about.
+        """
+        context = _shared.get_tool_context()
+        response = await context.client.request(
+            "POST",
+            f"work_packages/{work_package_id}/watchers",
+            json=build_write_payload(links=links_payload(user=user_id)),
+        )
+        payload = _json_object(response)
+        # OpenProject answers 201 for a new watcher and 200 when the user was
+        # already watching — the only signal that distinguishes the two.
+        created = response.status_code == 201
+        user = _user_ref(payload, user_id)
+        return WatcherResult(
+            work_package_id=work_package_id,
+            user=user,
+            watching=True,
+            changed=created,
+            message=(
+                f"{user.name or f'User {user_id}'} now watches work package #{work_package_id}."
+                if created
+                else (
+                    f"{user.name or f'User {user_id}'} already watched work package "
+                    f"#{work_package_id}; nothing changed."
+                )
+            ),
+        )
+
+    @mcp.tool(
+        name="remove_work_package_watcher",
+        tags=_shared.tool_tags(_shared.GROUP_WP_COLLABORATION, _shared.WRITE),
+        annotations=_shared.write_annotations(title="Remove work package watcher", idempotent=True),
+    )
+    @_shared.tool_errors
+    async def remove_work_package_watcher(
+        work_package_id: Annotated[
+            int,
+            Field(
+                description="Work package to unsubscribe the user from. Ids come from "
+                "search_work_packages, list_work_packages or get_work_package."
+            ),
+        ],
+        user_id: Annotated[
+            int,
+            Field(
+                description="Numeric id of the watcher to remove. "
+                "get_work_package(include=['watchers']) lists the current watchers with their "
+                "ids. The string 'me' is not accepted here."
+            ),
+        ],
+    ) -> WatcherResult:
+        """Unsubscribe a user from a work package's notifications.
+
+        Use this to stop notifying someone who no longer needs the updates.
+        Returns the user, the watch state after the call (always not watching)
+        and a confirmation message.
+
+        Pitfalls. OpenProject answers the same 204 whether or not the user was
+        watching, so ``changed`` comes back null — do not report "removed" as
+        proof that they were subscribed. Removing another user needs the
+        delete-work-package-watchers permission; removing yourself only needs
+        view access. A 404 means the *user* id is unknown (or the work package
+        is), not that they were not watching. This does not unassign anyone and
+        does not remove them from the project.
+
+        Cross-references: ``get_work_package(include=['watchers'])`` shows who
+        watches today; ``add_work_package_watcher`` is the reverse.
+        """
+        context = _shared.get_tool_context()
+        await context.client.delete(f"work_packages/{work_package_id}/watchers/{user_id}")
+        return WatcherResult(
+            work_package_id=work_package_id,
+            user=Ref(id=user_id),
+            watching=False,
+            changed=None,
+            message=(
+                f"User {user_id} no longer watches work package #{work_package_id}. "
+                "OpenProject reports the same result whether or not they were watching before."
+            ),
+        )
+
+    @mcp.tool(
+        name="create_work_package_relation",
+        tags=_shared.tool_tags(_shared.GROUP_WP_COLLABORATION, _shared.WRITE),
+        annotations=_shared.write_annotations(title="Create work package relation"),
+    )
+    @_shared.tool_errors
+    async def create_work_package_relation(
+        from_id: Annotated[
+            int,
+            Field(
+                description="Work package the relation is read from — 'type' describes what this "
+                "one does to the other. Ids come from search_work_packages or list_work_packages."
+            ),
+        ],
+        to_id: Annotated[
+            int,
+            Field(
+                description="The other work package. It must be visible to the account and "
+                "different from from_id."
+            ),
+        ],
+        type: Annotated[
+            RelationType,
+            Field(
+                description="How from_id relates to to_id. 'follows' schedules from_id after "
+                "to_id, 'precedes' before it; 'blocks'/'blocked' express dependency without "
+                "scheduling; 'duplicates'/'duplicated', 'includes'/'partof', "
+                "'requires'/'required' come in mirrored pairs; 'relates' is the neutral link. "
+                "Parent/child hierarchy is NOT a relation — set it with "
+                "update_work_package(parent_id=...)."
+            ),
+        ],
+        lag: Annotated[
+            int | None,
+            Field(
+                description="Working days to keep between the two work packages. Valid only on "
+                "'follows' and 'precedes'; passing it with any other type is refused here before "
+                "the request is sent."
+            ),
+        ] = None,
+        description: Annotated[
+            str | None,
+            Field(description="Optional note explaining why the two work packages are linked."),
+        ] = None,
+    ) -> RelationResult:
+        """Link two work packages (blocks, follows, duplicates, relates, ...).
+
+        Use this to record a dependency the schedule or the reader needs to
+        know about: "ship the client layer follows design sign-off", "this
+        duplicates #4321". Returns the created relation with its id, type,
+        reverse_type, both work packages, lag and description.
+
+        Pitfalls. OpenProject stores one canonical direction per pair, so the
+        passive spellings are rewritten on save: creating ``precedes`` from A to
+        B comes back as B ``follows`` A, with ``from``/``to`` swapped. That is
+        the same fact, not an error — read ``type`` and ``reverse_type`` from
+        the result rather than assuming what you sent. Only one relation may
+        exist between two work packages: a second one answers 409 conflict, and
+        changing it means ``update_work_package_relation`` on the existing id. A
+        relation that would close a scheduling cycle is rejected with a
+        validation error. Creating a ``follows`` relation can move dates, since
+        OpenProject reschedules the successor.
+
+        Cross-references: ``get_work_package(include=['relations'])`` lists what
+        a work package is already linked to and produces relation ids;
+        ``update_work_package_relation`` edits one;
+        ``delete_work_package_relation`` removes it; parent/child hierarchy goes
+        through ``update_work_package(parent_id=...)``.
+        """
+        context = _shared.get_tool_context()
+        if from_id == to_id:
+            raise InputValidationError(
+                f"A work package cannot be related to itself (from_id and to_id are both "
+                f"{from_id}).",
+                hint="Pass the two different work packages that should be linked.",
+            )
+        _validate_lag(type, lag)
+
+        attributes: dict[str, Any] = {"type": type}
+        if lag is not None:
+            attributes["lag"] = lag
+        if description is not None:
+            attributes["description"] = description
+
+        payload = await context.client.post_json(
+            f"work_packages/{from_id}/relations",
+            json=build_write_payload(attributes, {"to": link("work_packages", to_id)}),
+        )
+        return _relation_result(payload)
+
+    @mcp.tool(
+        name="update_work_package_relation",
+        tags=_shared.tool_tags(_shared.GROUP_WP_COLLABORATION, _shared.WRITE),
+        annotations=_shared.write_annotations(
+            title="Update work package relation", idempotent=True
+        ),
+    )
+    @_shared.tool_errors
+    async def update_work_package_relation(
+        relation_id: Annotated[
+            int,
+            Field(
+                description="Id of the relation to change. It comes from "
+                "create_work_package_relation or get_work_package(include=['relations']) — it is "
+                "not a work package id."
+            ),
+        ],
+        type: Annotated[
+            RelationType | None,
+            Field(
+                description="New relation type. Omit to keep the current one. Switching to or "
+                "from 'follows'/'precedes' changes whether the relation schedules dates."
+            ),
+        ] = None,
+        lag: Annotated[
+            int | None,
+            Field(
+                description="New lag in working days; valid only while the relation is "
+                "'follows' or 'precedes'. Omit to leave it untouched, pass 0 to remove an "
+                "existing lag. When lag is given without type, the current type is read first "
+                "and a lag on a non-scheduling relation is refused before any write."
+            ),
+        ] = None,
+        description: Annotated[
+            str | None,
+            Field(
+                description="New note for the relation. Omit to leave it untouched; pass an "
+                "empty string to clear it."
+            ),
+        ] = None,
+    ) -> RelationResult:
+        """Change an existing relation's type, lag or description.
+
+        Use it to widen the gap between a predecessor and its successor, to
+        correct a link that was created with the wrong type, or to explain why
+        two work packages are connected. Returns the updated relation.
+
+        Pitfalls. At least one of type, lag or description must be given.
+        Relations carry no lock version, so this is a plain overwrite with no
+        conflict detection — a concurrent edit is silently replaced; re-read the
+        relation if that matters. The two work packages cannot be changed here:
+        delete the relation and create a new one instead. Raising the lag on a
+        ``follows`` relation reschedules the successor, so dates can move.
+
+        Cross-references: ``create_work_package_relation`` makes one;
+        ``delete_work_package_relation`` removes it;
+        ``get_work_package(include=['relations'])`` lists the ids.
+        """
+        context = _shared.get_tool_context()
+        if type is None and lag is None and description is None:
+            raise InputValidationError(
+                "Nothing to update: type, lag and description were all omitted.",
+                hint=(
+                    "Pass at least one of type, lag or description. To remove the relation "
+                    "entirely use delete_work_package_relation."
+                ),
+            )
+
+        effective_type = type
+        if lag is not None and type is None:
+            current = await context.client.get_json(f"relations/{relation_id}")
+            effective_type = _text(current.get("type"))
+        _validate_lag(effective_type, lag)
+
+        attributes: dict[str, Any] = {}
+        if type is not None:
+            attributes["type"] = type
+        if lag is not None:
+            attributes["lag"] = lag
+        if description is not None:
+            attributes["description"] = description
+
+        payload = await context.client.patch_json(
+            f"relations/{relation_id}", json=build_write_payload(attributes)
+        )
+        return _relation_result(payload)
+
+    @mcp.tool(
+        name="delete_work_package_relation",
+        tags=_shared.tool_tags(_shared.GROUP_WP_COLLABORATION, _shared.WRITE, _shared.DESTRUCTIVE),
+        annotations=_shared.destructive_annotations(title="Delete work package relation"),
+    )
+    @_shared.tool_errors
+    async def delete_work_package_relation(
+        relation_id: Annotated[
+            int,
+            Field(
+                description="Id of the relation to remove permanently. It comes from "
+                "create_work_package_relation or get_work_package(include=['relations'])."
+            ),
+        ],
+        confirm: Annotated[
+            bool,
+            Field(
+                description="Must be true. Ask the user first — the API offers no undo. Calling "
+                "with confirm=false returns a confirmation_required error and deletes nothing."
+            ),
+        ] = False,
+    ) -> RelationDeletionResult:
+        """Remove the link between two work packages.
+
+        Use it when a dependency no longer holds. Neither work package is
+        touched, only the relation between them. Returns a small confirmation
+        object.
+
+        Pitfalls. Deleting a ``follows`` relation drops the scheduling
+        constraint, so OpenProject may reschedule the work package that was
+        waiting. There is no undo; recreating the relation with
+        ``create_work_package_relation`` is the only way back. A second delete
+        of the same id answers 404. Parent/child hierarchy is not a relation —
+        clear it with ``update_work_package(parent_id=null)``.
+
+        Cross-references: ``get_work_package(include=['relations'])`` shows what
+        would be removed; ``update_work_package_relation`` changes a relation
+        instead of removing it.
+        """
+        _shared.require_confirmation(
+            confirm,
+            action="delete relation",
+            target=f"#{relation_id}",
+            consequence=(
+                "The link between the two work packages is removed permanently and any "
+                "scheduling it enforced is dropped."
+            ),
+        )
+        context = _shared.get_tool_context()
+        await context.client.delete(f"relations/{relation_id}")
+        return RelationDeletionResult(
+            id=relation_id,
+            deleted=True,
+            message=f"Relation #{relation_id} was deleted; both work packages are unchanged.",
+        )
