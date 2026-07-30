@@ -11,10 +11,17 @@ instead of tracebacks.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic.fields import FieldInfo
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    EnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 LogFormat = Literal["text", "json"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -22,6 +29,48 @@ TransportName = Literal["stdio", "http"]
 
 DEFAULT_CACHE_TTL = 300.0
 PROBE_CACHE_TTL = 3600.0
+
+
+class _AliasOnlyEnvSource(EnvSettingsSource):
+    """Environment source that reads declared validation aliases only.
+
+    ``populate_by_name=True`` (kept so callers can construct
+    ``Settings(url=...)`` with plain field names) also makes pydantic-settings
+    read bare field names from the environment: a stray ``READ_TIMEOUT`` or
+    ``API_KEY`` in the user's shell would silently populate a field — or crash
+    startup when it fails validation. Dropping that fallback pins the
+    environment surface to exactly the documented ``OPENPROJECT*`` names
+    (SPEC §14).
+    """
+
+    def _extract_field_info(
+        self, field: FieldInfo, field_name: str
+    ) -> list[tuple[str, str, bool]]:
+        infos = super()._extract_field_info(field, field_name)
+        if field.validation_alias is None:
+            return infos
+        return [info for info in infos if info[0] != field_name]
+
+
+class _AliasOnlyDotEnvSource(_AliasOnlyEnvSource, DotEnvSettingsSource):
+    """``.env`` source with the same alias-only lookup.
+
+    Dropping the field-name fallback is not enough here:
+    ``DotEnvSettingsSource.__call__`` re-injects ``.env`` keys that match no
+    known env name as *extra* data, and ``extra="ignore"`` only discards them
+    after model validation — where ``populate_by_name=True`` would first map a
+    bare ``read_timeout`` onto the field. Popping those keys keeps the ``.env``
+    surface identical to the shell one.
+    """
+
+    def __call__(self) -> dict[str, Any]:
+        data = super().__call__()
+        for field_name, field in self.settings_cls.model_fields.items():
+            if field.validation_alias is not None:
+                # ``case_sensitive=False`` lowercases ``.env`` keys, so a bare
+                # ``READ_TIMEOUT=…`` line arrives here exactly as ``read_timeout``.
+                data.pop(field_name, None)
+        return data
 
 
 class Settings(BaseSettings):
@@ -80,12 +129,47 @@ class Settings(BaseSettings):
     )
 
     # --- timeouts (SPEC §4.1) -------------------------------------------
-    connect_timeout: float = Field(default=10.0, gt=0)
-    read_timeout: float = Field(default=30.0, gt=0)
-    write_timeout: float = Field(default=60.0, gt=0)
-    pool_timeout: float = Field(default=5.0, gt=0)
-    max_connections: int = Field(default=10, gt=0)
-    max_retries: int = Field(default=3, ge=1)
+    connect_timeout: float = Field(
+        default=10.0, gt=0, validation_alias="OPENPROJECT_MCP_CONNECT_TIMEOUT"
+    )
+    read_timeout: float = Field(
+        default=30.0, gt=0, validation_alias="OPENPROJECT_MCP_READ_TIMEOUT"
+    )
+    write_timeout: float = Field(
+        default=60.0, gt=0, validation_alias="OPENPROJECT_MCP_WRITE_TIMEOUT"
+    )
+    pool_timeout: float = Field(
+        default=5.0, gt=0, validation_alias="OPENPROJECT_MCP_POOL_TIMEOUT"
+    )
+    max_connections: int = Field(
+        default=10, gt=0, validation_alias="OPENPROJECT_MCP_MAX_CONNECTIONS"
+    )
+    max_retries: int = Field(default=3, ge=1, validation_alias="OPENPROJECT_MCP_MAX_RETRIES")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Swap the environment and ``.env`` sources for alias-only variants."""
+        if isinstance(dotenv_settings, DotEnvSettingsSource):
+            dotenv: PydanticBaseSettingsSource = _AliasOnlyDotEnvSource(
+                settings_cls,
+                env_file=dotenv_settings.env_file,
+                env_file_encoding=dotenv_settings.env_file_encoding,
+            )
+        else:  # pragma: no cover — pydantic-settings always passes one
+            dotenv = _AliasOnlyDotEnvSource(settings_cls)
+        return (
+            init_settings,
+            _AliasOnlyEnvSource(settings_cls),
+            dotenv,
+            file_secret_settings,
+        )
 
     @field_validator("url", mode="after")
     @classmethod
