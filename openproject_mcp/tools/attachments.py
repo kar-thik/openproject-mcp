@@ -44,7 +44,7 @@ import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 from fastmcp.tools.base import ToolResult
 from fastmcp.utilities.types import Image
@@ -53,10 +53,13 @@ from pydantic import BaseModel, Field
 
 from openproject_mcp.client import hal
 from openproject_mcp.client.errors import (
+    AttachmentQuarantinedError,
+    AttachmentTooLargeError,
     AuthenticationError,
     InputValidationError,
     NetworkError,
-    OpenProjectError,
+    NotFoundError,
+    PermissionDeniedError,
     UnexpectedResponseError,
     ValidationFailedError,
 )
@@ -68,8 +71,10 @@ from openproject_mcp.tools._shared import (
     READ,
     WRITE,
     ToolContext,
+    build_envelope,
     destructive_annotations,
     envelope_from_collection,
+    get_configuration,
     get_tool_context,
     read_annotations,
     report_progress,
@@ -84,10 +89,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AttachmentDeletionResult",
-    "AttachmentQuarantinedError",
     "AttachmentRow",
-    "AttachmentTooLargeError",
     "DownloadResult",
+    "FileLinkRow",
     "register",
     "upload_uncontainered_attachment",
 ]
@@ -120,23 +124,7 @@ IMAGE_INLINE_MAX_BYTES = 1024 * 1024
 DEFAULT_DOWNLOAD_DIRNAME = "openproject-downloads"
 MAX_FILE_NAME_CHARS = 200
 
-#: Cache key for ``GET /configuration``. Namespaced to this module so it cannot
-#: collide with a differently-shaped value cached by another tool module.
-CACHE_KEY_CONFIGURATION = "attachments:configuration"
-
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
-
-
-class AttachmentQuarantinedError(OpenProjectError):
-    """The antivirus scanner quarantined the file; the bytes are unreachable."""
-
-    error_type: ClassVar[str] = "attachment_quarantined"
-
-
-class AttachmentTooLargeError(InputValidationError):
-    """A local size cap refused the transfer before or during it."""
-
-    error_type: ClassVar[str] = "attachment_too_large"
 
 
 # --- output models ---------------------------------------------------------
@@ -328,15 +316,6 @@ def _pending_scan_error(
 # --- upload plumbing (shared by the tool and the uncontainered helper) ------
 
 
-async def _configuration(ctx: ToolContext) -> dict[str, Any]:
-    """The cached ``GET /configuration`` document (SPEC §4.6)."""
-
-    async def fetch() -> dict[str, Any]:
-        return await ctx.client.get_json("configuration")
-
-    return await ctx.cache.get_or_set(CACHE_KEY_CONFIGURATION, fetch, scope=ctx.scope)
-
-
 def _maximum_attachment_bytes(configuration: Mapping[str, Any]) -> int | None:
     """``maximumAttachmentFileSize`` in bytes, or ``None`` when unreported."""
     raw = configuration.get("maximumAttachmentFileSize")
@@ -396,7 +375,7 @@ async def _post_attachment(
     """
     source = _resolve_upload_file(file_path)
     size = source.stat().st_size
-    limit = _maximum_attachment_bytes(await _configuration(ctx))
+    limit = _maximum_attachment_bytes(await get_configuration(ctx))
     if limit is not None and size > limit:
         raise AttachmentTooLargeError(
             f"{source.name} is {size} bytes; this instance accepts at most {limit} bytes.",
@@ -474,6 +453,131 @@ async def upload_uncontainered_attachment(
             ),
         )
     return attachment_id
+
+
+# --- file links (SPEC §6.4, §18 — storages module Ⓜ) -----------------------
+
+FILE_LINKS_MISSING_NOTE = (
+    "No file links could be read (404): either work package {id} does not exist, or the "
+    "storages module is not installed/enabled here — remote file links need an administrator to "
+    "connect a Nextcloud or OneDrive storage and enable it in the project. This is NOT proof "
+    "that the work package has no linked files."
+)
+FILE_LINKS_FORBIDDEN_NOTE = (
+    "No file links could be read (403): this account may not view the file links of work "
+    "package {id}. The storage is connected, the permission is missing — ask for the 'view file "
+    "links' permission. This is NOT proof that the work package has no linked files."
+)
+FILE_LINKS_EMPTY_NOTE = (
+    "The endpoint answered with no rows. That usually means nothing is linked, but it is not "
+    "proof: an account without the 'view file links' permission gets the same empty answer with "
+    "the same 200, so absence here cannot be reported as certainty. Files uploaded straight into "
+    "OpenProject are attachments, not file links — list them with list_attachments."
+)
+
+
+class FileLinkRow(BaseModel):
+    """One file on an external storage linked to a work package (SPEC §6.4)."""
+
+    id: int | str | None = Field(
+        default=None, description="File-link id inside OpenProject; not the file's own id."
+    )
+    file_name: str | None = Field(
+        default=None, description="Name of the file as the storage reports it."
+    )
+    storage: Ref | None = Field(
+        default=None,
+        description="The external storage the file lives on ({id, name}), e.g. a Nextcloud "
+        "instance.",
+    )
+    origin_id: str | None = Field(
+        default=None,
+        description="The file's id INSIDE that storage (Nextcloud/OneDrive), not an OpenProject "
+        "id.",
+    )
+    mime_type: str | None = Field(
+        default=None, description="MIME type reported by the storage, when it reports one."
+    )
+    open_url: str | None = Field(
+        default=None,
+        description="Absolute OpenProject URL that opens the file: it redirects to the storage "
+        "after resolving the link server-side. Give it to the user — it needs their own "
+        "OpenProject login, and this server cannot fetch the bytes.",
+    )
+    download_url: str | None = Field(
+        default=None,
+        description="Absolute OpenProject URL that redirects to the file's download on the "
+        "storage. Also an OpenProject endpoint needing the user's login, so "
+        "download_attachment cannot use it.",
+    )
+    permission: str | None = Field(
+        default=None,
+        description="What the storage said about this account's access to the file: 'View "
+        "allowed', 'View not allowed', 'Not found' or 'Error'. Null means the storage did not "
+        "report a status, not that access is fine.",
+    )
+    creator: Ref | None = Field(
+        default=None, description="OpenProject user who linked the file to the work package."
+    )
+    created_at: str | None = Field(
+        default=None, description="ISO 8601 UTC time the link was created."
+    )
+
+
+def _link_href(payload: Mapping[str, Any], key: str) -> str | None:
+    """A raw href from ``_links`` — the exception to 'hrefs stop at hal.py'.
+
+    ``staticOriginOpen``/``staticOriginDownload`` are endpoints to hand to a
+    person rather than resources to parse an id out of, so the href *is* the
+    useful value.
+    """
+    resolved = hal.ref(payload, key)
+    return resolved.href if resolved is not None else None
+
+
+def _absolute_url(base_url: str | None, href: str | None) -> str | None:
+    """Make a file-link href clickable.
+
+    ``staticOriginOpen``/``staticOriginDownload`` render as instance-relative API
+    paths (``/api/v3/file_links/601/open``). Those are OpenProject endpoints that
+    resolve the storage URL and 303 to it, so the value only becomes usable once
+    it carries the configured instance URL.
+    """
+    if href is None or href.startswith(("http://", "https://")):
+        return href
+    if not base_url:
+        return href
+    return f"{base_url.rstrip('/')}/{href.lstrip('/')}"
+
+
+def _origin_value(raw: Any) -> str | None:
+    """A value from ``originData``: storages send ids as strings, some as ints."""
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, int):
+        return str(raw)
+    return raw if isinstance(raw, str) else None
+
+
+def _file_link_row(payload: Mapping[str, Any], base_url: str | None) -> FileLinkRow:
+    origin = hal.as_object(payload.get("originData"))
+    # The access state rides on the ``status`` link, whose title is the storage's
+    # own wording ("View allowed", "View not allowed", "Not found", "Error"). The
+    # link is omitted entirely when the storage reported nothing, and that stays
+    # null rather than being read as permission granted.
+    status = hal.ref(payload, "status")
+    return FileLinkRow(
+        id=hal.self_id(payload),
+        file_name=_origin_value(origin.get("name")) if origin is not None else None,
+        storage=Ref.from_hal(payload, "storage"),
+        origin_id=_origin_value(origin.get("id")) if origin is not None else None,
+        mime_type=_origin_value(origin.get("mimeType")) if origin is not None else None,
+        open_url=_absolute_url(base_url, _link_href(payload, "staticOriginOpen")),
+        download_url=_absolute_url(base_url, _link_href(payload, "staticOriginDownload")),
+        permission=status.name if status is not None else None,
+        creator=Ref.from_hal(payload, "creator"),
+        created_at=_str_or_none(payload.get("createdAt")),
+    )
 
 
 # --- registration ----------------------------------------------------------
@@ -871,4 +975,79 @@ def register(mcp: FastMCP) -> None:
             file_name=row.file_name,
             container=container,
             message=f"Attachment {row.file_name or attachment_id}{where} was deleted permanently.",
+        )
+
+    @mcp.tool(
+        name="list_file_links",
+        tags=tool_tags(GROUP_ATTACHMENTS, READ),
+        annotations=read_annotations(title="List file links"),
+    )
+    @tool_errors
+    async def list_file_links(
+        work_package_id: Annotated[
+            int,
+            Field(
+                description=(
+                    "Numeric work package id whose linked storage files to list. It comes from "
+                    "search_work_packages, list_work_packages or get_work_package — never an "
+                    "attachment id and never a project id."
+                )
+            ),
+        ],
+    ) -> ListEnvelope[FileLinkRow]:
+        """List the external-storage files (Nextcloud, OneDrive/SharePoint) linked to a work
+        package.
+
+        File links are OpenProject's other kind of file: instead of living inside OpenProject
+        like an attachment, the document stays in a connected storage and the work package
+        points at it. Use this to answer "which documents belong to this ticket" — and pair it
+        with list_attachments, because the two lists are disjoint and neither implies the other.
+
+        Returns the standard list envelope, fetched in full (has_more is always false). Each
+        row carries file_name, the storage it lives on, the file's origin_id inside that
+        storage, mime_type, the creator and — the useful part — open_url and download_url.
+        Those are absolute OpenProject URLs that redirect to the storage once OpenProject has
+        resolved the link, so hand them to the user: they need the user's own OpenProject
+        login, this server cannot fetch the bytes, and download_attachment does not work on
+        them.
+
+        Pitfalls: this needs the storages module and a storage connected to the project. When
+        it is missing (404) or this account may not read the links (403) the call still
+        succeeds with an EMPTY list and a note explaining which — read notes before saying a
+        ticket has no documents. An empty list is never proof either: an account lacking the
+        'view file links' permission gets an empty 200 rather than a 403, which is exactly what
+        that note says. permission carries the storage's own wording — 'View allowed' means the
+        URLs will work, 'View not allowed', 'Not found' and 'Error' mean they will not, and
+        null means the storage said nothing. Creating and deleting file links, and browsing the
+        remote storage, are out of scope for this server — do them in the OpenProject UI.
+
+        Related: list_attachments covers files stored inside OpenProject, download_attachment
+        fetches those bytes, and get_work_package gives the ticket the links belong to.
+        """
+        ctx = get_tool_context()
+        try:
+            payload = await ctx.client.get_json(f"work_packages/{work_package_id}/file_links")
+        except NotFoundError:
+            # Ⓜ module absent — a note, never an empty answer that reads as "none" (G5).
+            return build_envelope(
+                [],
+                total=0,
+                page=1,
+                page_size=1,
+                notes=[FILE_LINKS_MISSING_NOTE.format(id=work_package_id)],
+            )
+        except PermissionDeniedError:
+            return build_envelope(
+                [],
+                total=0,
+                page=1,
+                page_size=1,
+                notes=[FILE_LINKS_FORBIDDEN_NOTE.format(id=work_package_id)],
+            )
+
+        unwrapped = hal.collection(payload)
+        rows = [_file_link_row(element, ctx.settings.url) for element in unwrapped]
+        notes = [FILE_LINKS_EMPTY_NOTE] if not rows else None
+        return envelope_from_collection(
+            unwrapped, rows, page=1, page_size=max(len(rows), 1), notes=notes
         )

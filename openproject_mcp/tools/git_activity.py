@@ -200,7 +200,7 @@ class _CodeRequest(BaseModel):
     html_url: str | None = Field(default=None, description="Provider URL of the request.")
     repository: str | None = Field(default=None, description="Repository slug, e.g. 'acme/web'.")
     labels: list[str] = Field(
-        default_factory=list, description="Label names; always a list, empty when unlabelled."
+        default_factory=list[str], description="Label names; always a list, empty when unlabelled."
     )
     author: Ref | None = Field(
         default=None,
@@ -213,7 +213,7 @@ class PullRequestRow(_CodeRequest):
     """A GitHub pull request linked to a work package, with its CI status."""
 
     check_runs: list[CheckRun] = Field(
-        default_factory=list,
+        default_factory=list[CheckRun],
         description="CI check runs GitHub reported for this pull request; always a list.",
     )
 
@@ -231,7 +231,7 @@ class PullRequestDetail(PullRequestRow):
     review_comments_count: int | None = Field(default=None, description="Inline review comments.")
     merged_by: Ref | None = Field(default=None, description="Provider account that merged it.")
     work_packages: list[Ref] = Field(
-        default_factory=list,
+        default_factory=list[Ref],
         description="Work packages this pull request is linked to; a PR may reference several.",
     )
     created_at: str | None = Field(default=None, description="ISO 8601 UTC creation time.")
@@ -244,7 +244,7 @@ class MergeRequestRow(_CodeRequest):
     """A GitLab merge request linked to a work package, with its pipelines."""
 
     pipelines: list[Pipeline] = Field(
-        default_factory=list,
+        default_factory=list[Pipeline],
         description="GitLab pipelines for this merge request; always a list. GitLab's "
         "equivalent of GitHub check runs.",
     )
@@ -259,7 +259,7 @@ class GitlabIssueRow(BaseModel):
     state: str | None = Field(default=None, description="GitLab state: 'opened' or 'closed'.")
     html_url: str | None = Field(default=None, description="GitLab URL of the issue.")
     repository: str | None = Field(default=None, description="Repository slug.")
-    labels: list[str] = Field(default_factory=list, description="Label names; always a list.")
+    labels: list[str] = Field(default_factory=list[str], description="Label names; always a list.")
     author: Ref | None = Field(default=None, description="GitLab account that opened it.")
     created_at: str | None = Field(default=None, description="ISO 8601 UTC creation time.")
     updated_at: str | None = Field(default=None, description="ISO 8601 UTC last-update time.")
@@ -289,19 +289,22 @@ class GitActivity(BaseModel):
         description="Per-source availability, derived from the work package's own links."
     )
     revisions: list[Revision] = Field(
-        default_factory=list, description="Commits referencing this work package; always a list."
+        default_factory=list[Revision],
+        description="Commits referencing this work package; always a list.",
     )
     github_pull_requests: list[PullRequestRow] = Field(
-        default_factory=list, description="Linked GitHub pull requests; always a list."
+        default_factory=list[PullRequestRow],
+        description="Linked GitHub pull requests; always a list.",
     )
     gitlab_merge_requests: list[MergeRequestRow] = Field(
-        default_factory=list, description="Linked GitLab merge requests; always a list."
+        default_factory=list[MergeRequestRow],
+        description="Linked GitLab merge requests; always a list.",
     )
     gitlab_issues: list[GitlabIssueRow] = Field(
-        default_factory=list, description="Linked GitLab issues; always a list."
+        default_factory=list[GitlabIssueRow], description="Linked GitLab issues; always a list."
     )
     notes: list[str] = Field(
-        default_factory=list,
+        default_factory=list[str],
         description="Degradation markers (G5): which sources were skipped and why. Read them "
         "before reporting 'there are no pull requests'.",
     )
@@ -311,24 +314,23 @@ class GitActivity(BaseModel):
 
 
 def _links_of(payload: Mapping[str, Any] | None) -> set[str]:
-    if not isinstance(payload, Mapping):
-        return set()
-    links = payload.get("_links")
-    return set(links) if isinstance(links, Mapping) else set()
+    links = hal.as_object(payload.get("_links")) if payload is not None else None
+    return set(links) if links is not None else set()
 
 
 def _labels(raw: Any) -> list[str]:
     """Label names from ``[{name, color}]`` or a bare list of strings."""
-    if not isinstance(raw, Sequence) or isinstance(raw, str | bytes):
-        return []
     names: list[str] = []
-    for item in raw:
+    for item in hal.as_array(raw) or ():
         if isinstance(item, str):
             names.append(item)
-        elif isinstance(item, Mapping):
-            name = item.get("name") or item.get("title")
-            if isinstance(name, str):
-                names.append(name)
+            continue
+        entry = hal.as_object(item)
+        if entry is None:
+            continue
+        name = entry.get("name") or entry.get("title")
+        if isinstance(name, str):
+            names.append(name)
     return names
 
 
@@ -336,10 +338,11 @@ def _embedded_elements(payload: Mapping[str, Any], *keys: str) -> list[dict[str,
     """Embedded sub-resources, whether sent as a bare list or a HAL collection."""
     for key in keys:
         raw = hal.embedded(payload, key)
-        if isinstance(raw, Mapping):
-            return hal.collection(raw).elements
-        if isinstance(raw, Sequence) and not isinstance(raw, str | bytes):
-            return [item for item in raw if isinstance(item, Mapping)]
+        wrapped = hal.as_object(raw)
+        if wrapped is not None:
+            return hal.collection(wrapped).elements
+        if hal.as_array(raw) is not None:
+            return [dict(item) for item in hal.as_objects(raw)]
     return []
 
 

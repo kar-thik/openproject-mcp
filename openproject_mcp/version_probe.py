@@ -18,6 +18,9 @@ time-entry WP filter name     try ``entityId``; a 400 falls back to the
                               pre-15.x ``workPackage``
 capabilities context prefix   try ``p{id}``; a rejection falls back to
                               ``w{id}`` (17.2+ spelling)
+meetings ``time`` dialect     discovered by ``list_meetings``: value-less
+                              ``upcoming`` operator (17.6+) vs ``=`` with
+                              ``past``/``future`` values (older)
 ============================  ===========================================
 
 Every probe function takes the client explicitly and performs ordinary HTTP,
@@ -39,6 +42,8 @@ from openproject_mcp.config import PROBE_CACHE_TTL
 
 __all__ = [
     "InstanceProbe",
+    "cached_capabilities_context",
+    "cached_meetings_time_dialect",
     "get_probe",
     "parse_version",
     "probe_capabilities_context",
@@ -50,6 +55,7 @@ CACHE_KEY_ROOT = "probe:root"
 CACHE_KEY_PROBE = "probe:instance"
 CACHE_KEY_TIME_ENTRY_FILTER = "probe:time_entry_filter"
 CACHE_KEY_CAPABILITIES_CONTEXT = "probe:capabilities_context"
+CACHE_KEY_MEETINGS_TIME_FILTER = "probe:meetings_time_filter"
 
 INTERNAL_COMMENTS_MIN = (16, 0, 0)
 EMOJI_REACTIONS_MIN = (16, 0, 0)
@@ -85,7 +91,7 @@ class InstanceProbe(BaseModel):
         default=None, description="Project context prefix for the capabilities API."
     )
     notes: list[str] = Field(
-        default_factory=list, description="Degradation markers for anything undetectable."
+        default_factory=list[str], description="Degradation markers for anything undetectable."
     )
 
 
@@ -215,6 +221,42 @@ def probe_from_root(root: dict[str, Any]) -> InstanceProbe:
     )
 
 
+#: How the meetings ``time`` filter is spelled on the wire. 17.6 turned its
+#: list values (``=`` + ``past``/``future``) into the value-less ``upcoming``/
+#: ``past`` operators; older instances 400 the new spelling.
+MeetingsTimeDialect = Literal["operator", "values"]
+
+
+def cached_meetings_time_dialect(cache: TTLCache | None, scope: str) -> MeetingsTimeDialect | None:
+    """The meetings ``time``-filter dialect discovered so far, or ``None``.
+
+    A dry probe would cost a request against a module endpoint that may not
+    even be installed, so the dialect is discovered by ``list_meetings``'s own
+    retry — whichever spelling succeeds is written under
+    :data:`CACHE_KEY_MEETINGS_TIME_FILTER` and read here on later calls.
+    """
+    if cache is None:
+        return None
+    dialect = cache.get(CACHE_KEY_MEETINGS_TIME_FILTER, scope=scope)
+    return dialect if dialect in ("operator", "values") else None
+
+
+def cached_capabilities_context(
+    cache: TTLCache | None, scope: str
+) -> CapabilitiesContextPrefix | None:
+    """The context prefix discovered so far, or ``None`` before anything asked.
+
+    The prefix cannot be probed without a project, so it is discovered lazily by
+    whichever tool needs a project context first (``probe_capabilities_context``
+    or ``list_permissions`` retrying the other spelling) and left in the cache
+    under one key for everybody else.
+    """
+    if cache is None:
+        return None
+    prefix = cache.get(CACHE_KEY_CAPABILITIES_CONTEXT, scope=scope)
+    return prefix if prefix in ("p", "w") else None
+
+
 async def get_probe(
     client: OpenProjectClient,
     cache: TTLCache | None = None,
@@ -241,6 +283,13 @@ async def get_probe(
 
     if cache is None:
         return await run()
-    return await cache.get_or_set(
+    probe = await cache.get_or_set(
         CACHE_KEY_PROBE, run, scope=client.scope, ttl=PROBE_CACHE_TTL, refresh=refresh
     )
+    # Overlaid rather than probed inside ``run``: the capabilities context needs
+    # a project id, so it is learned later than the probe itself and would
+    # otherwise stay null for the whole hour the probe is cached.
+    prefix = cached_capabilities_context(cache, client.scope)
+    if prefix is not None:
+        probe.capabilities_context_prefix = prefix
+    return probe

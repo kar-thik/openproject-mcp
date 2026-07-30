@@ -14,14 +14,16 @@ per tool (``ListEnvelope[WorkPackageRow]``) and FastMCP derives the
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable, Mapping
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from openproject_mcp.client import hal
+from openproject_mcp.client.filters import to_snake_name
 
 __all__ = [
+    "CUSTOM_FIELD_TYPE_NAMES",
     "CustomFieldValue",
     "ErrorDetail",
     "ErrorEnvelope",
@@ -29,10 +31,51 @@ __all__ = [
     "ListEnvelope",
     "Pagination",
     "Ref",
+    "RelationRow",
     "TruncatedList",
     "WorkPackageDetail",
     "WorkPackageRow",
+    "custom_field_type_name",
 ]
+
+#: Schema type → the one vocabulary custom-field types are surfaced in. Both
+#: ``get_work_package`` and ``get_work_package_schema`` speak it, so a type read
+#: from one can be matched against the other.
+CUSTOM_FIELD_TYPE_NAMES: dict[str, str] = {
+    "CustomOption": "list",
+    "User": "user",
+    "Group": "group",
+    "Principal": "principal",
+    "Version": "version",
+    "Project": "project",
+    "Category": "category",
+    "String": "string",
+    "Text": "text",
+    "Formattable": "text",
+    "Int": "integer",
+    "Integer": "integer",
+    "Float": "float",
+    "Boolean": "boolean",
+    "Date": "date",
+    "DateTime": "date_time",
+    "Duration": "duration",
+    "Link": "link",
+}
+
+
+def custom_field_type_name(raw: Any) -> str | None:
+    """Normalize an API schema type to the custom-field vocabulary.
+
+    ``"String"`` → ``"string"``, ``"[]User"`` → ``"user"`` (the ``[]`` marks a
+    multi-value field, which the values themselves already show), and anything
+    this instance invented falls back to snake_case rather than being dropped.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    base = raw[2:] if raw.startswith("[]") else raw
+    if not base:
+        return None
+    return CUSTOM_FIELD_TYPE_NAMES.get(base, to_snake_name(base))
 
 
 class Ref(BaseModel):
@@ -82,7 +125,10 @@ class ListEnvelope[ItemT](BaseModel):
     ``has_more: false`` — one shape everywhere.
     """
 
-    items: list[ItemT] = Field(default_factory=list, description="The page of results.")
+    items: list[ItemT] = Field(
+        default_factory=cast("Callable[[], list[ItemT]]", list),
+        description="The page of results.",
+    )
     pagination: Pagination = Field(description="Total/page/page_size/has_more.")
     groups: list[Group] | None = Field(
         default=None, description="Present only when group_by was requested."
@@ -99,7 +145,10 @@ class ListEnvelope[ItemT](BaseModel):
 class TruncatedList[ItemT](BaseModel):
     """A capped include (SPEC §6.2): the first N items plus an honest marker."""
 
-    items: list[ItemT] = Field(default_factory=list, description="Items included (capped).")
+    items: list[ItemT] = Field(
+        default_factory=cast("Callable[[], list[ItemT]]", list),
+        description="Items included (capped).",
+    )
     truncated: bool = Field(default=False, description="True when items were dropped.")
     total: int = Field(default=0, description="Total available items.")
     more_via: str | None = Field(default=None, description="Tool call that returns the full list.")
@@ -132,6 +181,84 @@ class WorkPackageRow(BaseModel):
     percentage_done: int | None = Field(default=None, description="Progress, 0-100.")
     updated_at: str | None = Field(default=None, description="ISO 8601 UTC timestamp.")
 
+    @classmethod
+    def from_hal(cls, element: Mapping[str, Any]) -> WorkPackageRow:
+        """Project one HAL work package onto the compact row.
+
+        The single construction site: list, search, query results, children and
+        the detail projections all go through it, so a row means the same thing
+        whichever tool produced it.
+        """
+        return WorkPackageRow(
+            id=hal.self_id(element),
+            subject=element.get("subject"),
+            type=Ref.from_hal(element, "type"),
+            status=Ref.from_hal(element, "status"),
+            priority=Ref.from_hal(element, "priority"),
+            assignee=Ref.from_hal(element, "assignee"),
+            project=Ref.from_hal(element, "project"),
+            start_date=element.get("startDate"),
+            due_date=element.get("dueDate"),
+            percentage_done=element.get("percentageDone"),
+            updated_at=element.get("updatedAt"),
+        )
+
+
+class RelationRow(BaseModel):
+    """One work-package relation (SPEC §6.3).
+
+    The two endpoints that produce relations — the ``relations`` include of
+    ``get_work_package`` and the relation write tools — return this same shape.
+    ``from_work_package``/``to_work_package`` are spelled out because the wire's
+    ``from``/``to`` read as prepositions rather than as the two ends of an edge.
+    """
+
+    id: int | str | None = Field(
+        default=None,
+        description="Relation id. Pass it to update_work_package_relation or "
+        "delete_work_package_relation — it is not a work package id.",
+    )
+    type: str | None = Field(
+        default=None,
+        description="Relation type as OpenProject stored it, read from the 'from' work package "
+        "(e.g. 'follows' means 'from' is scheduled after 'to').",
+    )
+    reverse_type: str | None = Field(
+        default=None,
+        description="The same relation read from the 'to' work package: 'follows' <-> 'precedes', "
+        "'blocks' <-> 'blocked', 'relates' <-> 'relates'.",
+    )
+    from_work_package: Ref | None = Field(
+        default=None, description="Work package the relation starts at."
+    )
+    to_work_package: Ref | None = Field(
+        default=None, description="Work package the relation points to."
+    )
+    lag: int | None = Field(
+        default=None,
+        description="Working days kept between the predecessor and the successor. Only "
+        "follows/precedes relations carry one; null everywhere else.",
+    )
+    description: str | None = Field(
+        default=None, description="Free-text note stored on the relation; null when unset."
+    )
+
+    @classmethod
+    def from_hal(cls, element: Mapping[str, Any]) -> RelationRow:
+        """Project one HAL relation resource onto the row."""
+        lag = element.get("lag")
+        return RelationRow(
+            id=hal.self_id(element),
+            type=element.get("type") if isinstance(element.get("type"), str) else None,
+            reverse_type=(
+                element.get("reverseType") if isinstance(element.get("reverseType"), str) else None
+            ),
+            from_work_package=Ref.from_hal(element, "from"),
+            to_work_package=Ref.from_hal(element, "to"),
+            lag=None if isinstance(lag, bool) or not isinstance(lag, int) else lag,
+            description=hal.formattable(element.get("description")),
+        )
+
 
 class WorkPackageDetail(WorkPackageRow):
     """Full work-package detail (SPEC §6.2): the row plus text and relations."""
@@ -151,7 +278,8 @@ class WorkPackageDetail(WorkPackageRow):
         default=None, description="Optimistic-locking version; pass to update_work_package."
     )
     custom_fields: list[CustomFieldValue] = Field(
-        default_factory=list, description="Always a list; empty when none are set."
+        default_factory=list[CustomFieldValue],
+        description="Always a list; empty when none are set.",
     )
     available: dict[str, bool] | None = Field(
         default=None,

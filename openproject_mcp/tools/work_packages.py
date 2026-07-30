@@ -49,12 +49,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from pydantic import BaseModel, Field
 
 from openproject_mcp.client import hal
-from openproject_mcp.client.errors import (
-    InputValidationError,
-    OpenProjectError,
-    ValidationFailedError,
-    violations_from_form,
-)
+from openproject_mcp.client.errors import InputValidationError, OpenProjectError
 from openproject_mcp.client.filters import (
     WORK_PACKAGE_SORT_KEYS,
     Filter,
@@ -66,7 +61,6 @@ from openproject_mcp.client.filters import (
     principal_filter,
     query_params,
     status_filter,
-    to_snake_name,
 )
 from openproject_mcp.client.locking import (
     extract_lock_version,
@@ -84,11 +78,13 @@ from openproject_mcp.projections import (
     CustomFieldValue,
     ListEnvelope,
     Ref,
+    RelationRow,
     TruncatedList,
     WorkPackageDetail,
     WorkPackageRow,
+    custom_field_type_name,
 )
-from openproject_mcp.tools import _shared
+from openproject_mcp.tools import _forms, _shared
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -120,28 +116,6 @@ NAMED_COLLECTIONS: dict[str, str] = {
     "priority": "priorities",
 }
 
-#: Schema type → the friendlier name surfaced in ``custom_fields[].type``.
-CUSTOM_FIELD_TYPE_NAMES: dict[str, str] = {
-    "CustomOption": "list",
-    "User": "user",
-    "Group": "group",
-    "Principal": "principal",
-    "Version": "version",
-    "Project": "project",
-    "Category": "category",
-    "String": "string",
-    "Text": "text",
-    "Formattable": "text",
-    "Int": "integer",
-    "Integer": "integer",
-    "Float": "float",
-    "Boolean": "boolean",
-    "Date": "date",
-    "DateTime": "date_time",
-    "Duration": "duration",
-    "Link": "link",
-}
-
 
 # --- models ---------------------------------------------------------------
 
@@ -156,18 +130,6 @@ class WorkPackageFull(WorkPackageDetail):
     date: str | None = Field(
         default=None, description="Milestone date (ISO YYYY-MM-DD); null for non-milestones."
     )
-
-
-class RelationRow(BaseModel):
-    """One work-package relation."""
-
-    id: int | str | None = Field(default=None, description="Relation id.")
-    type: str | None = Field(default=None, description="Relation type, e.g. 'follows', 'blocks'.")
-    reverse_type: str | None = Field(default=None, description="Type as seen from the other side.")
-    lag: int | None = Field(default=None, description="Lag in days; only on follows/precedes.")
-    description: str | None = Field(default=None, description="Free-text description.")
-    from_work_package: Ref | None = Field(default=None, description="Origin work package.")
-    to_work_package: Ref | None = Field(default=None, description="Target work package.")
 
 
 class WatcherRow(BaseModel):
@@ -277,62 +239,11 @@ def _api_path(href: Any) -> str | None:
 
 
 def _links_of(payload: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    if not isinstance(payload, Mapping):
-        return {}
-    links = payload.get("_links")
-    return links if isinstance(links, Mapping) else {}
-
-
-def _allowed_titles(entry: Any) -> list[str]:
-    """Titles of a schema entry's ``allowedValues``, wherever the API put them."""
-    if not isinstance(entry, Mapping):
-        return []
-    for container_key, inner_key in (("_links", "allowedValues"), ("_embedded", "allowedValues")):
-        container = entry.get(container_key)
-        if not isinstance(container, Mapping):
-            continue
-        values = container.get(inner_key)
-        if not isinstance(values, Sequence) or isinstance(values, str | bytes):
-            continue
-        titles: list[str] = []
-        for item in values:
-            if not isinstance(item, Mapping):
-                continue
-            title = item.get("title") or item.get("name") or item.get("value")
-            if isinstance(title, str):
-                titles.append(title)
-        return titles
-    return []
+    links = hal.as_object(payload.get("_links")) if payload is not None else None
+    return links if links is not None else {}
 
 
 # --- projections ----------------------------------------------------------
-
-
-def _row(element: Mapping[str, Any]) -> WorkPackageRow:
-    """The compact list projection (SPEC §5.2)."""
-    return WorkPackageRow(
-        id=hal.self_id(element),
-        subject=element.get("subject"),
-        type=Ref.from_hal(element, "type"),
-        status=Ref.from_hal(element, "status"),
-        priority=Ref.from_hal(element, "priority"),
-        assignee=Ref.from_hal(element, "assignee"),
-        project=Ref.from_hal(element, "project"),
-        start_date=element.get("startDate"),
-        due_date=element.get("dueDate"),
-        percentage_done=element.get("percentageDone"),
-        updated_at=element.get("updatedAt"),
-    )
-
-
-def _custom_field_type(entry: Mapping[str, Any] | None) -> str | None:
-    if not isinstance(entry, Mapping):
-        return None
-    raw = entry.get("type")
-    if not isinstance(raw, str) or not raw:
-        return None
-    base = raw[2:] if raw.startswith("[]") else raw
-    return CUSTOM_FIELD_TYPE_NAMES.get(base, to_snake_name(base))
 
 
 def _is_custom_field_key(key: str) -> bool:
@@ -362,16 +273,15 @@ def _custom_fields(
 
     values: list[CustomFieldValue] = []
     for key in sorted(attribute_keys | link_keys, key=_custom_field_order):
-        entry = schema.get(key) if isinstance(schema, Mapping) else None
-        entry = entry if isinstance(entry, Mapping) else None
-        name = entry.get("name") if entry else None
+        entry = hal.as_object(schema.get(key)) if schema is not None else None
+        name = entry.get("name") if entry is not None else None
 
         value: Any = None
         value_ids: list[int | str] | None = None
 
         if key in link_keys:
             raw_link = links[key]
-            if isinstance(raw_link, Sequence) and not isinstance(raw_link, str | bytes | Mapping):
+            if hal.as_object(raw_link) is None and hal.as_array(raw_link) is not None:
                 resolved = hal.refs(payload, key)
                 if resolved:
                     value = [item.name for item in resolved]
@@ -383,7 +293,7 @@ def _custom_fields(
                     value_ids = [single.id] if single.id is not None else None
         else:
             raw = payload.get(key)
-            value = hal.formattable(raw) if isinstance(raw, Mapping) else raw
+            value = hal.formattable(raw) if hal.as_object(raw) is not None else raw
 
         if value is None and not value_ids:
             continue
@@ -391,7 +301,7 @@ def _custom_fields(
             CustomFieldValue(
                 key=key,
                 name=name if isinstance(name, str) else None,
-                type=_custom_field_type(entry),
+                type=custom_field_type_name(entry.get("type")) if entry is not None else None,
                 value=value,
                 value_ids=value_ids or None,
             )
@@ -416,7 +326,7 @@ def _detail_fields(
 ) -> dict[str, Any]:
     """Every field of the full detail projection, as constructor kwargs."""
     return {
-        **_row(payload).model_dump(),
+        **WorkPackageRow.from_hal(payload).model_dump(),
         "date": payload.get("date"),
         "description": hal.formattable(payload.get("description")),
         "author": Ref.from_hal(payload, "author"),
@@ -539,8 +449,8 @@ async def _schema_for(
     ctx: ToolContext, payload: Mapping[str, Any]
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Fetch the work package's own schema; failure degrades to a note, never raises (G5)."""
-    entry = _links_of(payload).get("schema")
-    path = _api_path(entry.get("href") if isinstance(entry, Mapping) else None)
+    entry = hal.as_object(_links_of(payload).get("schema"))
+    path = _api_path(entry.get("href") if entry is not None else None)
     if not path:
         return None, "custom-field names and types unavailable: no schema link on this work package"
     try:
@@ -558,69 +468,22 @@ async def _schema_for_project_type(
 # --- form flow (SPEC §4.5) ------------------------------------------------
 
 
-def _form_section(form: Mapping[str, Any], key: str) -> Any:
-    embedded = form.get("_embedded")
-    return embedded.get(key) if isinstance(embedded, Mapping) else None
-
-
 def _raise_form_validation_errors(form: Mapping[str, Any]) -> None:
     """Turn a form's ``validationErrors`` into a typed error with allowed values.
 
-    This is the half the old server threw away: the form response knows both
-    what is wrong *and* which values would be accepted, so an invalid status
-    transition lists the statuses that are actually reachable.
+    The generic half lives in :mod:`openproject_mcp.tools._forms`; what is
+    domain knowledge is the fallback hint naming the tool that shows this
+    project and type's required fields.
     """
-    errors = _form_section(form, "validationErrors")
-    if not isinstance(errors, Mapping) or not errors:
-        return
-
-    violations = violations_from_form(errors)
-    schema = _form_section(form, "schema")
-    hints: list[str] = []
-    for attribute in errors:
-        entry = schema.get(attribute) if isinstance(schema, Mapping) else None
-        titles = _allowed_titles(entry)
-        if titles:
-            listed = ", ".join(titles[:25]) + ("…" if len(titles) > 25 else "")
-            hints.append(f"Allowed values for {attribute}: {listed}.")
-    if not hints:
-        hints.append(
+    _forms.raise_validation_errors(
+        form,
+        subject="work package",
+        hints=_forms.allowed_value_hints,
+        fallback_hint=(
             "Fix the attributes listed in 'violations'; get_work_package_schema shows required "
             "fields and allowed values for this project and type."
-        )
-
-    identifier: str | None = None
-    first = next((value for value in errors.values() if isinstance(value, Mapping)), None)
-    if first is not None and isinstance(first.get("errorIdentifier"), str):
-        identifier = first["errorIdentifier"]
-
-    message = violations[0]["message"] if violations else "OpenProject rejected the work package."
-    raise ValidationFailedError(
-        message,
-        http_status=422,
-        error_identifier=identifier,
-        hint=" ".join(hints),
-        violations=violations,
+        ),
     )
-
-
-def _merge_payload(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
-    """Merge the form's defaulted payload with ours; ours wins, ``_links`` merges.
-
-    Merging matters in both directions: the form fills in instance defaults
-    (status, priority, scheduling flags) while our payload carries the caller's
-    intent *and* the ``_links.attachments`` claims, which the form never echoes.
-    """
-    merged: dict[str, Any] = {
-        key: value for key, value in base.items() if key not in ("_links", "_type")
-    }
-    merged.update({key: value for key, value in override.items() if key != "_links"})
-    links: dict[str, Any] = dict(_links_of(base))
-    links.update(_links_of(override))
-    links.pop("self", None)
-    if links:
-        merged["_links"] = links
-    return merged
 
 
 # --- includes (SPEC §6.2) -------------------------------------------------
@@ -631,18 +494,7 @@ async def _fetch_relations(ctx: ToolContext, work_package_id: int) -> TruncatedL
         f"work_packages/{work_package_id}/relations", params={"pageSize": INCLUDE_CAP}
     )
     unwrapped = hal.collection(payload)
-    rows = [
-        RelationRow(
-            id=hal.self_id(element),
-            type=element.get("type"),
-            reverse_type=element.get("reverseType"),
-            lag=element.get("lag"),
-            description=hal.formattable(element.get("description")),
-            from_work_package=Ref.from_hal(element, "from"),
-            to_work_package=Ref.from_hal(element, "to"),
-        )
-        for element in unwrapped
-    ]
+    rows = [RelationRow.from_hal(element) for element in unwrapped]
     return _truncated(
         TruncatedList[RelationRow],
         rows,
@@ -700,7 +552,7 @@ async def _fetch_children(ctx: ToolContext, work_package_id: int) -> TruncatedLi
         ),
     )
     unwrapped = hal.collection(payload)
-    rows = [_row(element) for element in unwrapped]
+    rows = [WorkPackageRow.from_hal(element) for element in unwrapped]
     return _truncated(
         TruncatedList[WorkPackageRow],
         rows,
@@ -807,7 +659,7 @@ def register(mcp: FastMCP) -> None:
             path, params=query_params(filters=filters, page=page, page_size=page_size)
         )
         unwrapped = hal.collection(payload)
-        rows = [_row(element) for element in unwrapped]
+        rows = [WorkPackageRow.from_hal(element) for element in unwrapped]
         notes = [ATTACHMENT_SEARCH_NOTE] if mode == "fulltext" else None
         return _shared.envelope_from_collection(
             unwrapped, rows, page=page, page_size=page_size, notes=notes
@@ -1097,7 +949,7 @@ def register(mcp: FastMCP) -> None:
             ),
         )
         unwrapped = hal.collection(payload)
-        rows = [_row(element) for element in unwrapped]
+        rows = [WorkPackageRow.from_hal(element) for element in unwrapped]
         return _shared.envelope_from_collection(unwrapped, rows, page=page, page_size=page_size)
 
     @mcp.tool(
@@ -1387,8 +1239,7 @@ def register(mcp: FastMCP) -> None:
 
         form = await ctx.client.post_json("work_packages/form", json=payload)
         _raise_form_validation_errors(form)
-        defaults = _form_section(form, "payload")
-        body = _merge_payload(defaults, payload) if isinstance(defaults, Mapping) else payload
+        body = _forms.merge_form_payload(_forms.form_payload(form) or {}, payload)
 
         created = await ctx.client.post_json(
             "work_packages", json=body, params={"notify": "true" if notify else "false"}

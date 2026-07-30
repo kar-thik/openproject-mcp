@@ -22,13 +22,13 @@ The tool set is fixed at startup; the server never emits
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastmcp import FastMCP
 
-from openproject_mcp import __version__
+from openproject_mcp import __version__, prompts, resources
 from openproject_mcp.client.cache import TTLCache
 from openproject_mcp.client.http import OpenProjectClient
 from openproject_mcp.config import Settings
@@ -65,7 +65,7 @@ def build_lifespan(settings: Settings) -> Any:
     """
 
     @asynccontextmanager
-    async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+    async def lifespan(server: FastMCP) -> AsyncGenerator[dict[str, Any]]:
         client = OpenProjectClient(settings)
         cache = TTLCache(ttl=settings.cache_ttl)
         logger.info(
@@ -124,5 +124,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         lifespan=build_lifespan(resolved),
     )
     register_all(mcp)
+    prompts.register(mcp)
+    resources.register(mcp)
     apply_tag_filters(mcp, resolved)
     return mcp

@@ -10,6 +10,7 @@ from openproject_mcp.client.cache import TTLCache
 from openproject_mcp.client.http import OpenProjectClient
 from openproject_mcp.version_probe import (
     InstanceProbe,
+    cached_capabilities_context,
     get_probe,
     parse_version,
     probe_capabilities_context,
@@ -99,6 +100,26 @@ async def test_capabilities_context_keeps_p_prefix(
 ) -> None:
     mock_api.get("capabilities").mock(return_value=httpx.Response(200, json={"total": 0}))
     assert await probe_capabilities_context(op_client, 7) == "p"
+
+
+async def test_capabilities_context_lands_on_the_probe_tools_see(
+    op_client: OpenProjectClient, mock_api: respx.MockRouter, cache: TTLCache
+) -> None:
+    """The prefix is discovered later than the probe, so it is overlaid on read."""
+    mock_api.get(url=f"{API_BASE}/").mock(return_value=httpx.Response(200, json=API_ROOT))
+    mock_api.get("time_entries").mock(return_value=httpx.Response(200, json={"total": 0}))
+    mock_api.get("capabilities").mock(return_value=httpx.Response(400, json=INVALID_FILTER))
+
+    assert (await get_probe(op_client, cache)).capabilities_context_prefix is None
+
+    assert await probe_capabilities_context(op_client, 7, cache) == "w"
+    assert cached_capabilities_context(cache, op_client.scope) == "w"
+    assert (await get_probe(op_client, cache)).capabilities_context_prefix == "w"
+
+
+def test_an_unprobed_capabilities_context_is_none(cache: TTLCache) -> None:
+    assert cached_capabilities_context(cache, "scope") is None
+    assert cached_capabilities_context(None, "scope") is None
 
 
 async def test_get_probe_runs_lazily_and_caches(

@@ -18,12 +18,15 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 from urllib.parse import unquote, urlsplit
 
 __all__ = [
     "HalCollection",
     "HalRef",
+    "as_array",
+    "as_object",
+    "as_objects",
     "collection",
     "duration_hours",
     "embedded",
@@ -69,13 +72,13 @@ class HalCollection:
     ``filters.pagination_params`` / the list envelope builder.
     """
 
-    elements: list[dict[str, Any]] = field(default_factory=list)
+    elements: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     total: int = 0
     count: int = 0
     page_size: int | None = None
     offset: int | None = None
-    groups: list[dict[str, Any]] = field(default_factory=list)
-    total_sums: dict[str, Any] = field(default_factory=dict)
+    groups: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    total_sums: dict[str, Any] = field(default_factory=dict[str, Any])
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         return iter(self.elements)
@@ -95,7 +98,7 @@ def id_from_href(href: str | None) -> int | str | None:
     Numeric tails become ints so ids round-trip into API paths and filters
     without string/int ambiguity.
     """
-    if not href or not isinstance(href, str):
+    if not href:
         return None
     path = urlsplit(href).path.rstrip("/")
     if not path:
@@ -110,13 +113,36 @@ def id_from_href(href: str | None) -> int | str | None:
     return tail
 
 
+def as_object(value: Any) -> Mapping[str, Any] | None:
+    """Narrow an untyped JSON value to an object; ``None`` for anything else.
+
+    A bare ``isinstance(value, Mapping)`` leaves the key and value types
+    unknown, and that spreads through every ``.get`` downstream. This is the one
+    place that pins them down, so parsing code stays both readable and typed.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    return cast(Mapping[str, Any], value)
+
+
+def as_array(value: Any) -> Sequence[Any] | None:
+    """Narrow an untyped JSON value to an array; strings and bytes are not one."""
+    if isinstance(value, str | bytes) or not isinstance(value, Sequence):
+        return None
+    return cast(Sequence[Any], value)
+
+
+def as_objects(value: Any) -> list[Mapping[str, Any]]:
+    """Every object inside an untyped JSON array; anything else is skipped."""
+    array = as_array(value)
+    if array is None:
+        return []
+    return [item for item in array if isinstance(item, Mapping)]
+
+
 def _link_entry(payload: Mapping[str, Any] | None, key: str) -> Any:
-    if not isinstance(payload, Mapping):
-        return None
-    links = payload.get("_links")
-    if not isinstance(links, Mapping):
-        return None
-    return links.get(key)
+    links = as_object(payload.get("_links") if payload is not None else None)
+    return links.get(key) if links is not None else None
 
 
 def ref(payload: Mapping[str, Any] | None, key: str) -> HalRef | None:
@@ -126,18 +152,17 @@ def ref(payload: Mapping[str, Any] | None, key: str) -> HalRef | None:
     (``{"href": null}`` means "no value", e.g. an unassigned work package).
     Falls back to ``_embedded[key]`` when the server inlined the resource.
     """
-    entry = _link_entry(payload, key)
-    if entry is None:
+    raw = _link_entry(payload, key)
+    if raw is None:
         return _ref_from_embedded(payload, key)
-    if isinstance(entry, Sequence) and not isinstance(entry, str | bytes):
-        first = next((item for item in entry if isinstance(item, Mapping)), None)
-        entry = first
-    if not isinstance(entry, Mapping):
+    # A link may also be an array (``_links.customField9``); the first object wins.
+    entry = next(iter(as_objects(raw)), None) if as_array(raw) is not None else as_object(raw)
+    if entry is None:
         return None
-    href = entry.get("href")
-    if href is None and not entry.get("title"):
+    raw_href = entry.get("href")
+    if raw_href is None and not entry.get("title"):
         return None
-    href = href if isinstance(href, str) else None
+    href = raw_href if isinstance(raw_href, str) else None
     title = entry.get("title")
     resolved = HalRef(
         id=id_from_href(href),
@@ -154,8 +179,8 @@ def ref(payload: Mapping[str, Any] | None, key: str) -> HalRef | None:
 
 
 def _ref_from_embedded(payload: Mapping[str, Any] | None, key: str) -> HalRef | None:
-    inlined = embedded(payload, key)
-    if not isinstance(inlined, Mapping):
+    inlined = as_object(embedded(payload, key))
+    if inlined is None:
         return None
     href = self_href(inlined)
     name = inlined.get("name") or inlined.get("subject") or inlined.get("title")
@@ -169,13 +194,8 @@ def _ref_from_embedded(payload: Mapping[str, Any] | None, key: str) -> HalRef | 
 
 def refs(payload: Mapping[str, Any] | None, key: str) -> list[HalRef]:
     """Extract a link *array* (e.g. ``_links.children``) as a list of refs."""
-    entry = _link_entry(payload, key)
-    if not isinstance(entry, Sequence) or isinstance(entry, str | bytes):
-        return []
     resolved: list[HalRef] = []
-    for item in entry:
-        if not isinstance(item, Mapping):
-            continue
+    for item in as_objects(_link_entry(payload, key)):
         href = item.get("href")
         title = item.get("title")
         candidate = HalRef(
@@ -190,17 +210,13 @@ def refs(payload: Mapping[str, Any] | None, key: str) -> list[HalRef]:
 
 def embedded(payload: Mapping[str, Any] | None, key: str) -> Any:
     """Return ``payload["_embedded"][key]`` or ``None``."""
-    if not isinstance(payload, Mapping):
-        return None
-    inner = payload.get("_embedded")
-    if not isinstance(inner, Mapping):
-        return None
-    return inner.get(key)
+    inner = as_object(payload.get("_embedded") if payload is not None else None)
+    return inner.get(key) if inner is not None else None
 
 
 def self_href(payload: Mapping[str, Any] | None) -> str | None:
-    entry = _link_entry(payload, "self")
-    if isinstance(entry, Mapping):
+    entry = as_object(_link_entry(payload, "self"))
+    if entry is not None:
         href = entry.get("href")
         if isinstance(href, str):
             return href
@@ -216,7 +232,7 @@ def self_id(payload: Mapping[str, Any] | None) -> int | str | None:
     resolved = id_from_href(self_href(payload))
     if resolved is not None:
         return resolved
-    if isinstance(payload, Mapping):
+    if payload is not None:
         raw = payload.get("id")
         if isinstance(raw, int | str):
             return raw
@@ -243,7 +259,7 @@ def _optional_int(value: Any) -> int | None:
     return None
 
 
-def collection(payload: Mapping[str, Any] | None) -> HalCollection:
+def collection(payload: Mapping[str, Any] | Sequence[Any] | None) -> HalCollection:
     """Unwrap a HAL collection response.
 
     Tolerates every shape OpenProject actually returns: a proper Collection
@@ -253,33 +269,22 @@ def collection(payload: Mapping[str, Any] | None) -> HalCollection:
     """
     if payload is None:
         return HalCollection()
-    if isinstance(payload, Sequence) and not isinstance(payload, str | bytes | Mapping):
-        elements = [item for item in payload if isinstance(item, Mapping)]
-        return HalCollection(elements=elements, total=len(elements), count=len(elements))
     if not isinstance(payload, Mapping):
-        return HalCollection()
+        # Some endpoints answer with a bare array of resources.
+        elements = [dict(item) for item in as_objects(payload)]
+        return HalCollection(elements=elements, total=len(elements), count=len(elements))
 
     raw_elements = embedded(payload, "elements")
     if raw_elements is None:
         raw_elements = payload.get("elements")
-    elements = (
-        [item for item in raw_elements if isinstance(item, Mapping)]
-        if isinstance(raw_elements, Sequence) and not isinstance(raw_elements, str | bytes)
-        else []
-    )
+    elements = [dict(item) for item in as_objects(raw_elements)]
 
     raw_groups = payload.get("groups")
     if raw_groups is None:
         raw_groups = embedded(payload, "groups")
-    groups = (
-        [item for item in raw_groups if isinstance(item, Mapping)]
-        if isinstance(raw_groups, Sequence) and not isinstance(raw_groups, str | bytes)
-        else []
-    )
+    groups = [dict(item) for item in as_objects(raw_groups)]
 
-    sums = payload.get("totalSums")
-    if not isinstance(sums, Mapping):
-        sums = {}
+    sums = as_object(payload.get("totalSums"))
 
     return HalCollection(
         elements=elements,
@@ -288,7 +293,7 @@ def collection(payload: Mapping[str, Any] | None) -> HalCollection:
         page_size=_optional_int(payload.get("pageSize")),
         offset=_optional_int(payload.get("offset")),
         groups=groups,
-        total_sums=dict(sums),
+        total_sums=dict(sums) if sums is not None else {},
     )
 
 
@@ -302,12 +307,11 @@ def formattable(value: Any) -> str | None:
         return None
     if isinstance(value, str):
         return value
-    if isinstance(value, Mapping):
-        raw = value.get("raw")
+    mapping = as_object(value)
+    if mapping is not None:
+        raw = mapping.get("raw")
         if isinstance(raw, str):
             return raw
-        if raw is None:
-            return None
     return None
 
 

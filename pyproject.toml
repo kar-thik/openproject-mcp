@@ -31,6 +31,7 @@ dev = [
     "respx>=0.22",
     "hypothesis>=6.100",
     "ruff>=0.6",
+    "pyright>=1.1.411",
 ]
 
 [build-system]
@@ -48,6 +49,17 @@ addopts = "-q"
 markers = [
     "integration: requires a live OpenProject instance (opt-in, never run by default)",
 ]
+
+[tool.pyright]
+include = ["openproject_mcp"]
+pythonVersion = "3.13"
+# openproject_mcp/client and openproject_mcp/tools are the layers every tool and
+# every future module builds on, so they must be strict; the rest of the package
+# is small enough to hold to the same bar rather than carve out an exception.
+typeCheckingMode = "strict"
+# Every tool is a nested function that only the @mcp.tool decorator ever calls,
+# so "unused" is structurally wrong for this codebase rather than a finding.
+reportUnusedFunction = false
 
 [tool.ruff]
 line-length = 100
