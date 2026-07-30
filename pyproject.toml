@@ -29,8 +29,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "fastmcp>=3.4,<4",
-    "httpx[http2]>=0.28",
+    "fastmcp>=3.4.5,<4",
+    "httpx[http2]>=0.28.1",
     "pydantic>=2.12",
     "pydantic-settings>=2",
 ]
@@ -50,7 +50,7 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "respx>=0.22",
-    "hypothesis>=6.100",
+    "hypothesis>=6.164.0",
     "ruff>=0.6",
     "pyright>=1.1.411",
 ]
