@@ -1,0 +1,110 @@
+# PyPI Trusted Publishing (OIDC, no secrets) is keyed to: this repo + this
+# filename (release.yml) + the environment names below (testpypi / pypi).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # setup-uv tags are immutable since v8 — pin the full version; Dependabot bumps it
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - name: Tag must match package version
+        # The version is dynamic: [tool.hatch.version] reads openproject_mcp/__init__.py,
+        # so ask hatchling (uv version cannot read dynamic versions).
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(uvx hatchling version)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v${tag} != package version ${version}"
+            exit 1
+          fi
+      - name: Build
+        run: uv build
+      - name: Validate metadata
+        run: uvx twine check --strict dist/*
+      - name: Smoke-test wheel entry point
+        run: uv run --isolated --no-project --with "$(ls dist/*.whl)" -- openproject-mcp-server --help
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/openproject-mcp-server
+    permissions:
+      id-token: write  # OIDC for Trusted Publishing — no secrets
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true  # allows re-running a release whose PyPI leg failed
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi  # protected: required reviewer approves before the real publish
+      url: https://pypi.org/p/openproject-mcp-server
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      # PEP 740 attestations are generated + uploaded by default; no input needed
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: GitHub Release
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Extract this version's CHANGELOG section
+        # Falls back to a pointer at CHANGELOG.md when the tagged section (or the
+        # file itself) is absent; `|| true` keeps `bash -e` from aborting on a
+        # missing file before the fallback line runs.
+        run: |
+          awk -v ver="${GITHUB_REF_NAME#v}" '
+            $0 ~ ("^## \\[" ver "\\]") {hit=1; next}
+            hit && /^## \[/ {exit}
+            hit {print}
+          ' CHANGELOG.md > release-notes.md || true
+          test -s release-notes.md || echo "See CHANGELOG.md" > release-notes.md
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md
