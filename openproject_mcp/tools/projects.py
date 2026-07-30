@@ -243,9 +243,7 @@ class ProjectDeletionResult(BaseModel):
     message: str = Field(description="What was scheduled, in plain language.")
 
 
-def _project_form_hints(
-    form: Mapping[str, Any], errors: Mapping[str, Any]
-) -> list[str]:
+def _project_form_hints(form: Mapping[str, Any], errors: Mapping[str, Any]) -> list[str]:
     """The project-specific half of a form rejection (SPEC §4.5).
 
     The form is asked first precisely so a taken identifier or an unknown parent

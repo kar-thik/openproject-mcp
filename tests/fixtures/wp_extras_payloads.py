@@ -87,9 +87,7 @@ def reaction_collection(*elements: dict[str, Any]) -> dict[str, Any]:
 REACTIONS_AFTER_ADD: dict[str, Any] = reaction_collection(HEART_REACTION_MINE, ROCKET_REACTION)
 
 #: After toggling the same heart off again: the caller is gone from the group.
-REACTIONS_AFTER_REMOVE: dict[str, Any] = reaction_collection(
-    HEART_REACTION_THEIRS, ROCKET_REACTION
-)
+REACTIONS_AFTER_REMOVE: dict[str, Any] = reaction_collection(HEART_REACTION_THEIRS, ROCKET_REACTION)
 
 #: The last reaction on a comment removed — an honestly empty collection.
 REACTIONS_EMPTY: dict[str, Any] = reaction_collection()

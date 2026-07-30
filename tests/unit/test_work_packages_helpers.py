@@ -224,4 +224,3 @@ def test_form_errors_without_allowed_values_still_point_at_the_schema_tool() -> 
     with pytest.raises(ValidationFailedError) as excinfo:
         _raise_form_validation_errors(form)
     assert "get_work_package_schema" in (excinfo.value.hint or "")
-

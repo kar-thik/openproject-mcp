@@ -285,9 +285,7 @@ class WorkPackageDetail(WorkPackageRow):
         default=None,
         description="Feature availability for this WP: dev links, meetings, files.",
     )
-    notes: list[str] | None = Field(
-        default=None, description="Degradation notes for this result."
-    )
+    notes: list[str] | None = Field(default=None, description="Degradation notes for this result.")
 
 
 class ErrorDetail(BaseModel):

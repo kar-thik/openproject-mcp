@@ -236,9 +236,7 @@ def register(mcp: FastMCP) -> None:
         except OpenProjectError as exc:
             raise _resource_error(exc) from exc
         return ResourceResult(
-            contents=[
-                ResourceContent(payload, mime_type=row.content_type or FALLBACK_MIME_TYPE)
-            ],
+            contents=[ResourceContent(payload, mime_type=row.content_type or FALLBACK_MIME_TYPE)],
             meta={"file_name": row.file_name, "size_bytes": len(payload)},
         )
 

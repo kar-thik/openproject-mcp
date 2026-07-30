@@ -803,9 +803,7 @@ async def _collect_roster(
     return roster, _cap_note("membership roster", paged, ROSTER_CAP)
 
 
-def _impediment_from(
-    row: ReportWorkPackage, relation: RelationRow
-) -> Impediment | None:
+def _impediment_from(row: ReportWorkPackage, relation: RelationRow) -> Impediment | None:
     """Read one relation from the perspective of ``row``, or ignore it.
 
     ``type`` is stored from the ``from`` end, so which end this work package sits

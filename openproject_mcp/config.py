@@ -43,9 +43,7 @@ class _AliasOnlyEnvSource(EnvSettingsSource):
     (SPEC §14).
     """
 
-    def _extract_field_info(
-        self, field: FieldInfo, field_name: str
-    ) -> list[tuple[str, str, bool]]:
+    def _extract_field_info(self, field: FieldInfo, field_name: str) -> list[tuple[str, str, bool]]:
         infos = super()._extract_field_info(field, field_name)
         if field.validation_alias is None:
             return infos
@@ -132,15 +130,11 @@ class Settings(BaseSettings):
     connect_timeout: float = Field(
         default=10.0, gt=0, validation_alias="OPENPROJECT_MCP_CONNECT_TIMEOUT"
     )
-    read_timeout: float = Field(
-        default=30.0, gt=0, validation_alias="OPENPROJECT_MCP_READ_TIMEOUT"
-    )
+    read_timeout: float = Field(default=30.0, gt=0, validation_alias="OPENPROJECT_MCP_READ_TIMEOUT")
     write_timeout: float = Field(
         default=60.0, gt=0, validation_alias="OPENPROJECT_MCP_WRITE_TIMEOUT"
     )
-    pool_timeout: float = Field(
-        default=5.0, gt=0, validation_alias="OPENPROJECT_MCP_POOL_TIMEOUT"
-    )
+    pool_timeout: float = Field(default=5.0, gt=0, validation_alias="OPENPROJECT_MCP_POOL_TIMEOUT")
     max_connections: int = Field(
         default=10, gt=0, validation_alias="OPENPROJECT_MCP_MAX_CONNECTIONS"
     )
