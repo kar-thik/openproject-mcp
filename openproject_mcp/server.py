@@ -22,7 +22,7 @@ The tool set is fixed at startup; the server never emits
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -65,7 +65,7 @@ def build_lifespan(settings: Settings) -> Any:
     """
 
     @asynccontextmanager
-    async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+    async def lifespan(server: FastMCP) -> AsyncGenerator[dict[str, Any]]:
         client = OpenProjectClient(settings)
         cache = TTLCache(ttl=settings.cache_ttl)
         logger.info(

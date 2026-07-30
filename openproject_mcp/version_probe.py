@@ -39,6 +39,7 @@ from openproject_mcp.config import PROBE_CACHE_TTL
 
 __all__ = [
     "InstanceProbe",
+    "cached_capabilities_context",
     "get_probe",
     "parse_version",
     "probe_capabilities_context",
@@ -85,7 +86,7 @@ class InstanceProbe(BaseModel):
         default=None, description="Project context prefix for the capabilities API."
     )
     notes: list[str] = Field(
-        default_factory=list, description="Degradation markers for anything undetectable."
+        default_factory=list[str], description="Degradation markers for anything undetectable."
     )
 
 
@@ -215,6 +216,22 @@ def probe_from_root(root: dict[str, Any]) -> InstanceProbe:
     )
 
 
+def cached_capabilities_context(
+    cache: TTLCache | None, scope: str
+) -> CapabilitiesContextPrefix | None:
+    """The context prefix discovered so far, or ``None`` before anything asked.
+
+    The prefix cannot be probed without a project, so it is discovered lazily by
+    whichever tool needs a project context first (``probe_capabilities_context``
+    or ``list_permissions`` retrying the other spelling) and left in the cache
+    under one key for everybody else.
+    """
+    if cache is None:
+        return None
+    prefix = cache.get(CACHE_KEY_CAPABILITIES_CONTEXT, scope=scope)
+    return prefix if prefix in ("p", "w") else None
+
+
 async def get_probe(
     client: OpenProjectClient,
     cache: TTLCache | None = None,
@@ -241,6 +258,13 @@ async def get_probe(
 
     if cache is None:
         return await run()
-    return await cache.get_or_set(
+    probe = await cache.get_or_set(
         CACHE_KEY_PROBE, run, scope=client.scope, ttl=PROBE_CACHE_TTL, refresh=refresh
     )
+    # Overlaid rather than probed inside ``run``: the capabilities context needs
+    # a project id, so it is learned later than the probe itself and would
+    # otherwise stay null for the whole hour the probe is cached.
+    prefix = cached_capabilities_context(cache, client.scope)
+    if prefix is not None:
+        probe.capabilities_context_prefix = prefix
+    return probe

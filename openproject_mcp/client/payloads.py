@@ -14,11 +14,11 @@ That is what fixes the two classic bugs:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from openproject_mcp.client.errors import InputValidationError
-from openproject_mcp.client.hal import id_from_href
+from openproject_mcp.client.hal import as_array, as_object, as_objects, id_from_href
 
 __all__ = [
     "build_write_payload",
@@ -79,7 +79,7 @@ def link(resource: str, resource_id: int | str | None) -> dict[str, str | None]:
     return {"href": href_for(resource, resource_id)}
 
 
-def links_payload(**values: Any) -> dict[str, dict[str, Any]]:
+def links_payload(**values: Any) -> dict[str, Any]:
     """Build a ``_links`` object from named parameters.
 
     Keys must be known link parameters (see :data:`LINK_RESOURCES`). A value of
@@ -91,7 +91,7 @@ def links_payload(**values: Any) -> dict[str, dict[str, Any]]:
         #  "status": {"href": "/api/v3/statuses/7"},
         #  "parent": {"href": None}}
     """
-    payload: dict[str, dict[str, Any]] = {}
+    payload: dict[str, Any] = {}
     for key, value in values.items():
         resource = LINK_RESOURCES.get(key)
         if resource is None:
@@ -99,10 +99,11 @@ def links_payload(**values: Any) -> dict[str, dict[str, Any]]:
                 f"Unknown link field {key!r}.",
                 hint=f"Known link fields: {', '.join(sorted(LINK_RESOURCES))}.",
             )
-        if isinstance(value, Sequence) and not isinstance(value, str | bytes):
-            payload[key] = [link(resource, item) for item in value]  # type: ignore[assignment]
-        else:
+        array = as_array(value)
+        if array is None:
             payload[key] = link(resource, value)
+        else:
+            payload[key] = [link(resource, item) for item in array]
     return payload
 
 
@@ -196,22 +197,19 @@ def _allowed_values(entry: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     impossible locally and the caller is told to pass ids.
     """
     for container_key, inner_key in (("_links", "allowedValues"), ("_embedded", "allowedValues")):
-        container = entry.get(container_key)
-        if isinstance(container, Mapping):
-            values = container.get(inner_key)
-            if isinstance(values, Sequence) and not isinstance(values, str | bytes):
-                return [item for item in values if isinstance(item, Mapping)]
+        container = as_object(entry.get(container_key))
+        if container is not None and as_array(container.get(inner_key)) is not None:
+            return as_objects(container.get(inner_key))
     return []
 
 
 def _option_id_and_name(option: Mapping[str, Any]) -> tuple[int | str | None, str | None]:
     href = option.get("href")
     if not isinstance(href, str):
-        links = option.get("_links")
-        if isinstance(links, Mapping):
-            self_link = links.get("self")
-            if isinstance(self_link, Mapping) and isinstance(self_link.get("href"), str):
-                href = self_link["href"]
+        links = as_object(option.get("_links"))
+        self_link = as_object(links.get("self")) if links is not None else None
+        if self_link is not None and isinstance(self_link.get("href"), str):
+            href = self_link["href"]
     name = option.get("title") or option.get("value") or option.get("name")
     return id_from_href(href if isinstance(href, str) else None), (
         name if isinstance(name, str) else None
@@ -227,8 +225,9 @@ def _resolve_option(
     """Resolve one link-valued custom-field value to an ``_links`` entry."""
     if value is None:
         return {"href": None}
-    if isinstance(value, Mapping) and "href" in value:
-        return dict(value)
+    mapping = as_object(value)
+    if mapping is not None and "href" in mapping:
+        return dict(mapping)
     if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
         return {"href": href_for(resource, value)}
 
@@ -289,11 +288,7 @@ def custom_field_payload(
 
         if resource is not None:
             if _is_multi_value(type_name):
-                items: Iterable[Any] = (
-                    raw_value
-                    if isinstance(raw_value, Sequence) and not isinstance(raw_value, str | bytes)
-                    else [raw_value]
-                )
+                items: Sequence[Any] = as_array(raw_value) or [raw_value]
                 links[key] = [_resolve_option(item, entry, raw_key, resource) for item in items]
             else:
                 links[key] = _resolve_option(raw_value, entry, raw_key, resource)

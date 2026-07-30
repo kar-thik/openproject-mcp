@@ -44,7 +44,7 @@ import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 from fastmcp.tools.base import ToolResult
 from fastmcp.utilities.types import Image
@@ -53,10 +53,11 @@ from pydantic import BaseModel, Field
 
 from openproject_mcp.client import hal
 from openproject_mcp.client.errors import (
+    AttachmentQuarantinedError,
+    AttachmentTooLargeError,
     AuthenticationError,
     InputValidationError,
     NetworkError,
-    OpenProjectError,
     UnexpectedResponseError,
     ValidationFailedError,
 )
@@ -70,6 +71,7 @@ from openproject_mcp.tools._shared import (
     ToolContext,
     destructive_annotations,
     envelope_from_collection,
+    get_configuration,
     get_tool_context,
     read_annotations,
     report_progress,
@@ -84,9 +86,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AttachmentDeletionResult",
-    "AttachmentQuarantinedError",
     "AttachmentRow",
-    "AttachmentTooLargeError",
     "DownloadResult",
     "register",
     "upload_uncontainered_attachment",
@@ -120,23 +120,7 @@ IMAGE_INLINE_MAX_BYTES = 1024 * 1024
 DEFAULT_DOWNLOAD_DIRNAME = "openproject-downloads"
 MAX_FILE_NAME_CHARS = 200
 
-#: Cache key for ``GET /configuration``. Namespaced to this module so it cannot
-#: collide with a differently-shaped value cached by another tool module.
-CACHE_KEY_CONFIGURATION = "attachments:configuration"
-
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
-
-
-class AttachmentQuarantinedError(OpenProjectError):
-    """The antivirus scanner quarantined the file; the bytes are unreachable."""
-
-    error_type: ClassVar[str] = "attachment_quarantined"
-
-
-class AttachmentTooLargeError(InputValidationError):
-    """A local size cap refused the transfer before or during it."""
-
-    error_type: ClassVar[str] = "attachment_too_large"
 
 
 # --- output models ---------------------------------------------------------
@@ -328,15 +312,6 @@ def _pending_scan_error(
 # --- upload plumbing (shared by the tool and the uncontainered helper) ------
 
 
-async def _configuration(ctx: ToolContext) -> dict[str, Any]:
-    """The cached ``GET /configuration`` document (SPEC §4.6)."""
-
-    async def fetch() -> dict[str, Any]:
-        return await ctx.client.get_json("configuration")
-
-    return await ctx.cache.get_or_set(CACHE_KEY_CONFIGURATION, fetch, scope=ctx.scope)
-
-
 def _maximum_attachment_bytes(configuration: Mapping[str, Any]) -> int | None:
     """``maximumAttachmentFileSize`` in bytes, or ``None`` when unreported."""
     raw = configuration.get("maximumAttachmentFileSize")
@@ -396,7 +371,7 @@ async def _post_attachment(
     """
     source = _resolve_upload_file(file_path)
     size = source.stat().st_size
-    limit = _maximum_attachment_bytes(await _configuration(ctx))
+    limit = _maximum_attachment_bytes(await get_configuration(ctx))
     if limit is not None and size > limit:
         raise AttachmentTooLargeError(
             f"{source.name} is {size} bytes; this instance accepts at most {limit} bytes.",

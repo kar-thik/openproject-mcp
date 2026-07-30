@@ -31,7 +31,7 @@ Non-negotiables for this module:
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import BaseModel, Field
@@ -107,7 +107,7 @@ class QueryInfo(QueryRow):
     """The stored definition of the query that just ran."""
 
     filters: list[str] = Field(
-        default_factory=list,
+        default_factory=list[str],
         description="The stored filters as readable sentences, e.g. 'Status open' or "
         "'Assignee is (OR) Grace Hopper'. Empty when the query filters nothing.",
     )
@@ -115,7 +115,7 @@ class QueryInfo(QueryRow):
         default=None, description="Column the results are grouped by, when the query groups."
     )
     sort_by: list[str] = Field(
-        default_factory=list, description="Stored sort order, e.g. ['Finish date asc']."
+        default_factory=list[str], description="Stored sort order, e.g. ['Finish date asc']."
     )
     display_sums: bool = Field(
         default=False,
@@ -136,23 +136,6 @@ class QueryResults(ListEnvelope[WorkPackageRow]):
 
 def _bool(value: Any) -> bool:
     return value is True
-
-
-def _work_package_row(element: Mapping[str, Any]) -> WorkPackageRow:
-    """The compact work-package projection (SPEC §5.2), as list_work_packages returns."""
-    return WorkPackageRow(
-        id=hal.self_id(element),
-        subject=element.get("subject"),
-        type=Ref.from_hal(element, "type"),
-        status=Ref.from_hal(element, "status"),
-        priority=Ref.from_hal(element, "priority"),
-        assignee=Ref.from_hal(element, "assignee"),
-        project=Ref.from_hal(element, "project"),
-        start_date=element.get("startDate"),
-        due_date=element.get("dueDate"),
-        percentage_done=element.get("percentageDone"),
-        updated_at=element.get("updatedAt"),
-    )
 
 
 def _query_row(element: Mapping[str, Any]) -> QueryRow:
@@ -184,8 +167,8 @@ def _filter_values(entry: Mapping[str, Any]) -> list[str]:
     ]
     if values:
         return values
-    raw = entry.get("values")
-    if isinstance(raw, Sequence) and not isinstance(raw, str | bytes):
+    raw = hal.as_array(entry.get("values"))
+    if raw is not None:
         return [str(item) if item is not None else "" for item in raw]
     return []
 
@@ -199,10 +182,7 @@ def _filter_summary(entry: Mapping[str, Any]) -> str:
 
 
 def _filter_summaries(payload: Mapping[str, Any]) -> list[str]:
-    raw = payload.get("filters")
-    if not isinstance(raw, Sequence) or isinstance(raw, str | bytes):
-        return []
-    return [_filter_summary(entry) for entry in raw if isinstance(entry, Mapping)]
+    return [_filter_summary(entry) for entry in hal.as_objects(payload.get("filters"))]
 
 
 def _query_info(payload: Mapping[str, Any]) -> QueryInfo:
@@ -365,13 +345,12 @@ def register(mcp: FastMCP) -> None:
             notes.append(OVERRIDE_NOTE)
 
         payload = await context.client.get_json(f"queries/{query_id}", params=params)
-        results = hal.embedded(payload, "results")
-        if not isinstance(results, Mapping):
+        results = hal.as_object(hal.embedded(payload, "results"))
+        if results is None:
             notes.append(NO_RESULTS_NOTE)
-            results = None
 
         collection = hal.collection(results)
-        rows = [_work_package_row(element) for element in collection]
+        rows = [WorkPackageRow.from_hal(element) for element in collection]
         envelope = _shared.envelope_from_collection(
             collection, rows, page=page, page_size=page_size, notes=notes
         )

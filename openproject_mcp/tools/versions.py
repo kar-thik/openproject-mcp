@@ -40,10 +40,10 @@ from openproject_mcp.client.errors import (
     NotFoundError,
     PermissionDeniedError,
     ValidationFailedError,
-    violations_from_form,
 )
 from openproject_mcp.client.payloads import build_write_payload, formattable_field, link
 from openproject_mcp.projections import ListEnvelope, Ref
+from openproject_mcp.tools import _forms
 from openproject_mcp.tools._shared import (
     DESTRUCTIVE,
     GROUP_VERSIONS,
@@ -178,18 +178,8 @@ def _version_detail(payload: Mapping[str, Any]) -> VersionDetail:
 # --- form flow (SPEC §4.5) ------------------------------------------------
 
 
-def _form_section(form: Mapping[str, Any], key: str) -> Any:
-    inner = form.get("_embedded")
-    return inner.get(key) if isinstance(inner, Mapping) else None
-
-
-def _raise_form_validation_errors(form: Mapping[str, Any]) -> None:
-    """Turn a version form's ``validationErrors`` into a typed error with a usable hint."""
-    errors = _form_section(form, "validationErrors")
-    if not isinstance(errors, Mapping) or not errors:
-        return
-
-    violations = violations_from_form(errors)
+def _version_form_hints(form: Mapping[str, Any], errors: Mapping[str, Any]) -> list[str]:
+    """The version-specific half of a form rejection: what a valid value looks like."""
     hints: list[str] = []
     if "name" in errors:
         hints.append(
@@ -202,43 +192,20 @@ def _raise_form_validation_errors(form: Mapping[str, Any]) -> None:
         hints.append(f"sharing must be one of: {', '.join(VERSION_SHARINGS)}.")
     if "status" in errors:
         hints.append(f"status must be one of: {', '.join(VERSION_STATUSES)}.")
-    if not hints:
-        hints.append(
+    return hints
+
+
+def _raise_form_validation_errors(form: Mapping[str, Any]) -> None:
+    """Turn a version form's ``validationErrors`` into a typed error with a usable hint."""
+    _forms.raise_validation_errors(
+        form,
+        subject="version",
+        hints=_version_form_hints,
+        fallback_hint=(
             "Fix the attributes listed in 'violations'; list_versions(project_id=...) shows "
             "what already exists in this project."
-        )
-
-    identifier: str | None = None
-    first = next((value for value in errors.values() if isinstance(value, Mapping)), None)
-    if first is not None and isinstance(first.get("errorIdentifier"), str):
-        identifier = first["errorIdentifier"]
-
-    raise ValidationFailedError(
-        violations[0]["message"] if violations else "OpenProject rejected the version.",
-        http_status=422,
-        error_identifier=identifier,
-        hint=" ".join(hints),
-        violations=violations,
+        ),
     )
-
-
-def _links_of(payload: Mapping[str, Any]) -> dict[str, Any]:
-    links = payload.get("_links")
-    return dict(links) if isinstance(links, Mapping) else {}
-
-
-def _merge_form_payload(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
-    """Merge the form's defaulted payload with ours; ours wins, ``_links`` merge."""
-    merged: dict[str, Any] = {
-        key: value for key, value in base.items() if key not in ("_links", "_type")
-    }
-    merged.update({key: value for key, value in override.items() if key != "_links"})
-    links = _links_of(base)
-    links.update(_links_of(override))
-    links.pop("self", None)
-    if links:
-        merged["_links"] = links
-    return merged
 
 
 # --- input helpers --------------------------------------------------------
@@ -516,8 +483,7 @@ def register(mcp: FastMCP) -> None:
         form = await ctx.client.post_json("versions/form", json=payload)
         _raise_form_validation_errors(form)
 
-        defaults = _form_section(form, "payload")
-        body = _merge_form_payload(defaults, payload) if isinstance(defaults, Mapping) else payload
+        body = _forms.merge_form_payload(_forms.form_payload(form) or {}, payload)
         created = await ctx.client.post_json("versions", json=body)
         return _version_detail(created)
 

@@ -21,7 +21,11 @@ from typing import Any, ClassVar
 
 import httpx
 
+from openproject_mcp.client.hal import as_array, as_object, as_objects
+
 __all__ = [
+    "AttachmentQuarantinedError",
+    "AttachmentTooLargeError",
     "AuthenticationError",
     "ConfirmationRequiredError",
     "ConflictError",
@@ -253,6 +257,26 @@ class ConfirmationRequiredError(InputValidationError):
     error_type: ClassVar[str] = "confirmation_required"
 
 
+class AttachmentQuarantinedError(OpenProjectError):
+    """The antivirus scanner quarantined the file; the bytes are unreachable.
+
+    Not an HTTP failure — the attachment metadata reads fine and says so — which
+    is why it is its own taxonomy member rather than a 403.
+    """
+
+    error_type: ClassVar[str] = "attachment_quarantined"
+
+
+class AttachmentTooLargeError(InputValidationError):
+    """A size cap refused the transfer before or during it.
+
+    Raised locally against the instance's ``maximumAttachmentFileSize`` (upload)
+    or ``OPENPROJECT_MCP_MAX_DOWNLOAD_MB`` (download), so no bytes are wasted.
+    """
+
+    error_type: ClassVar[str] = "attachment_too_large"
+
+
 def hint_for_status(status: int) -> str:
     """Return the English hint for an HTTP status."""
     if status in STATUS_HINTS:
@@ -262,7 +286,7 @@ def hint_for_status(status: int) -> str:
     return _UNEXPECTED_HINT
 
 
-def _json_body(response: httpx.Response) -> dict[str, Any] | None:
+def _json_body(response: httpx.Response) -> Mapping[str, Any] | None:
     """Parse a JSON error body, or ``None`` for HTML/empty/garbage bodies."""
     content_type = response.headers.get("content-type", "")
     if "json" not in content_type.lower():
@@ -271,7 +295,7 @@ def _json_body(response: httpx.Response) -> dict[str, Any] | None:
         payload = response.json()
     except (ValueError, UnicodeDecodeError):
         return None
-    return payload if isinstance(payload, dict) else None
+    return as_object(payload)
 
 
 def _message_from(body: Mapping[str, Any] | None, response: httpx.Response) -> str:
@@ -291,13 +315,13 @@ def _violations_from_body(body: Mapping[str, Any] | None) -> list[dict[str, str]
     """
     if not body:
         return []
-    embedded = body.get("_embedded")
-    if not isinstance(embedded, Mapping):
+    embedded = as_object(body.get("_embedded"))
+    if embedded is None:
         return []
 
-    errors = embedded.get("errors")
-    if isinstance(errors, Sequence) and not isinstance(errors, str | bytes):
-        collected = [_single_violation(item) for item in errors if isinstance(item, Mapping)]
+    raw_errors = as_array(embedded.get("errors"))
+    if raw_errors is not None:
+        collected = [_single_violation(item) for item in as_objects(raw_errors)]
         return [item for item in collected if item]
 
     single = _single_violation(body)
@@ -309,13 +333,12 @@ def _single_violation(body: Mapping[str, Any]) -> dict[str, str]:
     if not isinstance(message, str):
         return {}
     attribute: str | None = None
-    embedded = body.get("_embedded")
-    if isinstance(embedded, Mapping):
-        details = embedded.get("details")
-        if isinstance(details, Mapping):
-            candidate = details.get("attribute")
-            if isinstance(candidate, str):
-                attribute = candidate
+    embedded = as_object(body.get("_embedded"))
+    details = as_object(embedded.get("details")) if embedded is not None else None
+    if details is not None:
+        candidate = details.get("attribute")
+        if isinstance(candidate, str):
+            attribute = candidate
     return Violation(attribute, message)
 
 
@@ -327,12 +350,14 @@ def violations_from_form(validation_errors: Mapping[str, Any]) -> list[dict[str,
     produces so callers raise one consistent error.
     """
     violations: list[dict[str, str]] = []
-    for attribute, error in validation_errors.items():
-        if isinstance(error, Mapping):
-            message = error.get("message")
-            if isinstance(message, str):
-                nested = _single_violation(error)
-                violations.append(Violation(nested.get("attribute", attribute), message))
+    for attribute, raw in validation_errors.items():
+        error = as_object(raw)
+        if error is None:
+            continue
+        message = error.get("message")
+        if isinstance(message, str):
+            nested = _single_violation(error)
+            violations.append(Violation(nested.get("attribute", attribute), message))
     return violations
 
 
@@ -350,8 +375,6 @@ def parse_retry_after(value: str | None) -> float | None:
     try:
         target = parsedate_to_datetime(text)
     except (TypeError, ValueError):
-        return None
-    if target is None:
         return None
     now = datetime.datetime.now(tz=target.tzinfo or datetime.UTC)
     return max((target - now).total_seconds(), 0.0)

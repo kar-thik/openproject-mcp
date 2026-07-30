@@ -56,12 +56,13 @@ from openproject_mcp.client.filters import (
 )
 from openproject_mcp.client.payloads import build_write_payload, links_payload
 from openproject_mcp.config import PROBE_CACHE_TTL
-from openproject_mcp.projections import ListEnvelope, Ref
+from openproject_mcp.projections import ListEnvelope, Ref, custom_field_type_name
 from openproject_mcp.tools._shared import (
     GROUP_METADATA,
     READ,
     ToolContext,
     build_envelope,
+    get_configuration,
     get_tool_context,
     read_annotations,
     report_progress,
@@ -73,13 +74,13 @@ from openproject_mcp.version_probe import (
     CACHE_KEY_ROOT,
     CapabilitiesContextPrefix,
     InstanceProbe,
+    cached_capabilities_context,
 )
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 __all__ = [
-    "CACHE_KEY_CONFIGURATION",
     "CACHE_KEY_CURRENT_USER",
     "CapabilityGroup",
     "InstanceInfo",
@@ -89,7 +90,6 @@ __all__ = [
     "register",
 ]
 
-CACHE_KEY_CONFIGURATION = "metadata:configuration"
 CACHE_KEY_CURRENT_USER = "metadata:users:me"
 
 #: Allowed values longer than this are cut, with a note, to protect the context.
@@ -124,7 +124,7 @@ class InstanceInfo(BaseModel):
         description="Upload ceiling; upload_attachment pre-flights against it.",
     )
     per_page_options: list[int] = Field(
-        default_factory=list,
+        default_factory=list[int],
         description="Page sizes the instance offers; the largest is the effective page_size cap.",
     )
     current_user: CurrentUser = Field(description="Who this server is authenticated as.")
@@ -202,14 +202,16 @@ class ProjectMetadata(BaseModel):
         default=None, description="The project this was scoped to; null for the global sets."
     )
     types: list[TypeRow] = Field(
-        default_factory=list,
+        default_factory=list[TypeRow],
         description="Work-package types; scoped to the project when project_id was given.",
     )
     statuses: list[StatusRow] = Field(
-        default_factory=list, description="All statuses, each with is_closed."
+        default_factory=list[StatusRow], description="All statuses, each with is_closed."
     )
-    priorities: list[PriorityRow] = Field(default_factory=list, description="All priorities.")
-    roles: list[RoleRow] = Field(default_factory=list, description="All membership roles.")
+    priorities: list[PriorityRow] = Field(
+        default_factory=list[PriorityRow], description="All priorities."
+    )
+    roles: list[RoleRow] = Field(default_factory=list[RoleRow], description="All membership roles.")
     versions: list[VersionRow] | None = Field(
         default=None, description="Project versions/sprints; null unless project_id was given."
     )
@@ -251,7 +253,9 @@ class SchemaCustomField(BaseModel):
     key: str = Field(description="Wire key, e.g. 'customField12' — use it in raw_filters.")
     name: str | None = Field(default=None, description="Display name, e.g. 'Severity'.")
     type: str | None = Field(
-        default=None, description="Schema type; a leading '[]' means multi-value."
+        default=None,
+        description="Normalized custom-field type: 'list', 'string', 'text', 'user', 'date', … — "
+        "the same vocabulary get_work_package reports in custom_fields[].type.",
     )
     required: bool = Field(default=False, description="Creation fails without it.")
     writable: bool = Field(default=False, description="False means computed/read-only.")
@@ -268,13 +272,15 @@ class WorkPackageSchema(BaseModel):
     project_id: int | str = Field(description="Project the schema was requested for.")
     type_id: int | str = Field(description="Work-package type the schema was requested for.")
     required_fields: list[str] = Field(
-        default_factory=list, description="Writable keys that must be supplied on create."
+        default_factory=list[str], description="Writable keys that must be supplied on create."
     )
     fields: list[SchemaField] = Field(
-        default_factory=list, description="Core attributes with type/required/writable."
+        default_factory=list[SchemaField],
+        description="Core attributes with type/required/writable.",
     )
     custom_fields: list[SchemaCustomField] = Field(
-        default_factory=list, description="Always a list; empty when the type has none."
+        default_factory=list[SchemaCustomField],
+        description="Always a list; empty when the type has none.",
     )
     notes: list[str] | None = Field(
         default=None, description="Degradation markers (G5), e.g. capped allowed-value lists."
@@ -288,6 +294,10 @@ def _bool_or_none(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _text_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
 def _allowed_options(
     entry: Mapping[str, Any],
 ) -> list[tuple[int | str | None, str | None, bool | None]]:
@@ -297,31 +307,25 @@ def _allowed_options(
     objects) and ``_embedded.allowedValues`` (whole resources). A single link
     object means "fetch them from this URL" and yields nothing.
     """
-    links = entry.get("_links")
-    if isinstance(links, Mapping):
-        values = links.get("allowedValues")
-        if isinstance(values, Sequence) and not isinstance(values, str | bytes):
-            return [
-                (
-                    hal.id_from_href(
-                        item.get("href") if isinstance(item.get("href"), str) else None
-                    ),
-                    item.get("title") if isinstance(item.get("title"), str) else None,
-                    None,
-                )
-                for item in values
-                if isinstance(item, Mapping)
-            ]
+    links = hal.as_object(entry.get("_links"))
+    if links is not None and hal.as_array(links.get("allowedValues")) is not None:
+        return [
+            (
+                hal.id_from_href(item.get("href") if isinstance(item.get("href"), str) else None),
+                item.get("title") if isinstance(item.get("title"), str) else None,
+                None,
+            )
+            for item in hal.as_objects(links.get("allowedValues"))
+        ]
     inlined = hal.embedded(entry, "allowedValues")
-    if isinstance(inlined, Sequence) and not isinstance(inlined, str | bytes):
+    if hal.as_array(inlined) is not None:
         return [
             (
                 hal.self_id(item),
-                item.get("name") or item.get("title") or item.get("value"),
+                _text_or_none(item.get("name") or item.get("title") or item.get("value")),
                 _bool_or_none(item.get("default")),
             )
-            for item in inlined
-            if isinstance(item, Mapping)
+            for item in hal.as_objects(inlined)
         ]
     return []
 
@@ -416,9 +420,9 @@ async def _time_entry_activities(
     async def fetch() -> list[ActivityRow]:
         body = build_write_payload(links=links_payload(project=project_id))
         form = await ctx.client.post_json("time_entries/form", json=body)
-        schema = hal.embedded(form, "schema")
-        entry = schema.get("activity") if isinstance(schema, Mapping) else None
-        if not isinstance(entry, Mapping):
+        schema = hal.as_object(hal.embedded(form, "schema"))
+        entry = hal.as_object(schema.get("activity")) if schema is not None else None
+        if entry is None:
             return []
         return [
             ActivityRow(id=option_id, name=name, is_default=is_default)
@@ -447,8 +451,9 @@ def _schema_rows(
     custom_fields: list[SchemaCustomField] = []
     notes: list[str] = []
 
-    for key, entry in schema.items():
-        if key.startswith("_") or not isinstance(entry, Mapping) or "type" not in entry:
+    for key, raw_entry in schema.items():
+        entry = hal.as_object(raw_entry)
+        if key.startswith("_") or entry is None or "type" not in entry:
             continue
         options = _allowed_options(entry)
         if len(options) > MAX_ALLOWED_VALUES:
@@ -465,7 +470,9 @@ def _schema_rows(
                 SchemaCustomField(
                     key=key,
                     name=name if isinstance(name, str) else None,
-                    type=type_name if isinstance(type_name, str) else None,
+                    # One vocabulary for both tools: '[]User' reads back as 'user'
+                    # here exactly as get_work_package reports it.
+                    type=custom_field_type_name(type_name),
                     required=bool(entry.get("required")),
                     writable=bool(entry.get("writable")),
                     options=refs,
@@ -513,7 +520,7 @@ class CapabilityGroup(BaseModel):
         default=None, description="The project this row is about; null for the global context."
     )
     actions: list[str] = Field(
-        default_factory=list,
+        default_factory=list[str],
         description="Action names as OpenProject spells them, e.g. 'memberships/create', "
         "'work_packages/read'. Sorted; always a list.",
     )
@@ -528,7 +535,7 @@ class PermissionCheck(BaseModel):
         "'not listed' — see the tool's caveat, it is not proof of a denial."
     )
     granted_in: list[str] = Field(
-        default_factory=list,
+        default_factory=list[str],
         description="Ids of the CapabilityGroup rows that carry the action; empty when not found.",
     )
 
@@ -556,8 +563,8 @@ def _register_capability_filters() -> None:
 
 async def _current_user(ctx: ToolContext) -> dict[str, Any]:
     """The cached ``users/me`` document; fetched and cached on a miss."""
-    cached = ctx.cache.get(CACHE_KEY_CURRENT_USER, scope=ctx.scope)
-    if isinstance(cached, Mapping):
+    cached = hal.as_object(ctx.cache.get(CACHE_KEY_CURRENT_USER, scope=ctx.scope))
+    if cached is not None:
         return dict(cached)
     me = await ctx.client.get_json("users/me")
     ctx.cache.set(CACHE_KEY_CURRENT_USER, me, scope=ctx.scope, ttl=ctx.settings.cache_ttl)
@@ -656,24 +663,15 @@ def register(mcp: FastMCP) -> None:
         root = await ctx.client.get_json("")
         ctx.cache.set(CACHE_KEY_ROOT, root, scope=ctx.scope, ttl=PROBE_CACHE_TTL)
 
-        async def fetch_configuration() -> dict[str, Any]:
-            return await ctx.client.get_json("configuration")
-
-        configuration = await _cached_json(
-            ctx, CACHE_KEY_CONFIGURATION, fetch_configuration, refresh=False
-        )
+        configuration = await get_configuration(ctx)
 
         me = await ctx.client.get_json("users/me")
         ctx.cache.set(CACHE_KEY_CURRENT_USER, me, scope=ctx.scope, ttl=ctx.settings.cache_ttl)
 
         probe = await ctx.probe()
 
-        raw_options = configuration.get("perPageOptions")
-        per_page_options = (
-            [int(option) for option in raw_options if isinstance(option, int)]
-            if isinstance(raw_options, Sequence) and not isinstance(raw_options, str | bytes)
-            else []
-        )
+        raw_options = hal.as_array(configuration.get("perPageOptions")) or ()
+        per_page_options = [option for option in raw_options if isinstance(option, int)]
         max_size = configuration.get("maximumAttachmentFileSize")
 
         return InstanceInfo(
@@ -986,7 +984,7 @@ def register(mcp: FastMCP) -> None:
             if not str(project_id).isdigit():
                 project = await ctx.client.get_json(f"projects/{project_id}")
                 numeric = hal.self_id(project) or project_id
-            prefix = ctx.cache.get(CACHE_KEY_CAPABILITIES_CONTEXT, scope=ctx.scope) or "p"
+            prefix = cached_capabilities_context(ctx.cache, ctx.scope) or "p"
             context_value = f"{prefix}{numeric}"
 
         elements: list[Mapping[str, Any]] = []

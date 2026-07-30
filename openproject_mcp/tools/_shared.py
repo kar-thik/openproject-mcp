@@ -70,7 +70,7 @@ from openproject_mcp.client.errors import (
     UnexpectedResponseError,
 )
 from openproject_mcp.client.filters import DEFAULT_PAGE_SIZE, to_snake_name
-from openproject_mcp.client.hal import HalCollection, duration_hours
+from openproject_mcp.client.hal import HalCollection, as_object, duration_hours
 from openproject_mcp.client.http import OpenProjectClient
 from openproject_mcp.config import Settings
 from openproject_mcp.observability import correlation_scope, get_logger
@@ -79,6 +79,7 @@ from openproject_mcp.version_probe import InstanceProbe, get_probe
 
 __all__ = [
     "ADMIN",
+    "CACHE_KEY_CONFIGURATION",
     "DESTRUCTIVE",
     "GROUP_ATTACHMENTS",
     "GROUP_BUDGETS",
@@ -106,6 +107,7 @@ __all__ = [
     "envelope_from_collection",
     "envelope_json",
     "error_result",
+    "get_configuration",
     "get_tool_context",
     "normalize_groups",
     "normalize_sums",
@@ -121,6 +123,12 @@ logger = get_logger("tools")
 
 #: Key under which :class:`ToolContext` is stored in the FastMCP lifespan dict.
 LIFESPAN_KEY = "openproject"
+
+#: The one cache key for ``GET /configuration`` (SPEC §4.6). Several tools read
+#: that document — attachment size limits, page-size options — and they must
+#: share the entry rather than each paying for its own round trip. Use
+#: :func:`get_configuration`; the constant is exported for cache invalidation.
+CACHE_KEY_CONFIGURATION = "configuration"
 
 # --- tags (SPEC §3.2) ------------------------------------------------------
 
@@ -279,6 +287,22 @@ def get_tool_context() -> ToolContext:
             "HTTP client and cache."
         )
     return context
+
+
+async def get_configuration(ctx: ToolContext, *, refresh: bool = False) -> dict[str, Any]:
+    """The cached ``GET /configuration`` document (SPEC §4.6).
+
+    It carries ``maximumAttachmentFileSize`` and ``perPageOptions``: near-static
+    instance settings, so the whole document is cached once under
+    :data:`CACHE_KEY_CONFIGURATION` for every tool that needs a piece of it.
+    """
+
+    async def fetch() -> dict[str, Any]:
+        return await ctx.client.get_json("configuration")
+
+    return await ctx.cache.get_or_set(
+        CACHE_KEY_CONFIGURATION, fetch, scope=ctx.scope, refresh=refresh
+    )
 
 
 async def report_progress(
@@ -462,18 +486,18 @@ def _group_value(raw: Any) -> str | None:
         return None
     if isinstance(raw, str):
         return raw
-    if isinstance(raw, Mapping):
+    entry = as_object(raw)
+    if entry is not None:
         for key in ("name", "title", "subject", "value"):
-            candidate = raw.get(key)
+            candidate = entry.get(key)
             if isinstance(candidate, str):
                 return candidate
-        links = raw.get("_links")
-        if isinstance(links, Mapping):
-            self_link = links.get("self")
-            if isinstance(self_link, Mapping):
-                title = self_link.get("title")
-                if isinstance(title, str):
-                    return title
+        links = as_object(entry.get("_links"))
+        self_link = as_object(links.get("self")) if links is not None else None
+        if self_link is not None:
+            title = self_link.get("title")
+            if isinstance(title, str):
+                return title
         return None
     return str(raw)
 
@@ -490,12 +514,9 @@ def normalize_groups(raw: Sequence[Mapping[str, Any]] | None) -> list[Group] | N
         Group(
             value=_group_value(entry.get("value")),
             count=int(entry.get("count") or 0),
-            sums=normalize_sums(
-                entry.get("sums") if isinstance(entry.get("sums"), Mapping) else None
-            ),
+            sums=normalize_sums(as_object(entry.get("sums"))),
         )
         for entry in raw
-        if isinstance(entry, Mapping)
     ]
     return groups or None
 
@@ -530,11 +551,14 @@ def build_envelope(
     effective_size = max(int(page_size or DEFAULT_PAGE_SIZE), 1)
     effective_page = max(int(page or 1), 1)
     seen = (effective_page - 1) * effective_size + len(items)
-    normalized_groups = (
-        list(groups)
-        if groups and all(isinstance(item, Group) for item in groups)
-        else normalize_groups(groups)  # type: ignore[arg-type]
-    )
+    normalized_groups: list[Group] | None = None
+    if groups:
+        ready = [item for item in groups if isinstance(item, Group)]
+        normalized_groups = (
+            ready
+            if len(ready) == len(groups)
+            else normalize_groups([item for item in groups if not isinstance(item, Group)])
+        )
     note_list = [note for note in (notes or []) if note]
     return ListEnvelope[Any](
         items=list(items),

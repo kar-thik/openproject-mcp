@@ -182,24 +182,25 @@ class MarkResult(BaseModel):
 def _resource_of(element: Mapping[str, Any]) -> NotificationResource | None:
     """Project ``_links.resource`` (plus any inlined copy) into {id, type, title}."""
     resolved = hal.ref(element, "resource")
-    inlined = hal.embedded(element, "resource")
-    if resolved is None and not isinstance(inlined, Mapping):
+    inlined = hal.as_object(hal.embedded(element, "resource"))
+    if resolved is None and inlined is None:
         return None
 
     type_name: str | None = None
-    if isinstance(inlined, Mapping) and isinstance(inlined.get("_type"), str):
-        type_name = inlined["_type"]
+    if inlined is not None:
+        raw_type = inlined.get("_type")
+        type_name = raw_type if isinstance(raw_type, str) else None
     if type_name is None:
         segment = _collection_segment(resolved.href if resolved else None)
         type_name = RESOURCE_TYPES.get(segment, segment) if segment else None
 
     title = resolved.name if resolved else None
-    if title is None and isinstance(inlined, Mapping):
+    if title is None and inlined is not None:
         candidate = inlined.get("subject") or inlined.get("name") or inlined.get("title")
         title = candidate if isinstance(candidate, str) else None
 
     resource_id = resolved.id if resolved else None
-    if resource_id is None and isinstance(inlined, Mapping):
+    if resource_id is None and inlined is not None:
         resource_id = hal.self_id(inlined)
 
     return NotificationResource(id=resource_id, type=type_name, title=title)
@@ -270,7 +271,7 @@ def _clean_ids(ids: list[int]) -> list[int]:
         )
     cleaned: list[int] = []
     for value in ids:
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        if isinstance(value, bool) or value <= 0:
             raise InputValidationError(
                 f"ids contains {value!r}, which is not a positive notification id.",
                 hint="Every entry must be a numeric notification id from list_notifications.",
@@ -523,7 +524,7 @@ def register(mcp: FastMCP) -> None:
         except ValidationFailedError as exc:
             raise _with_date_alert_hint(exc, reason) from exc
 
-        scope = []
+        scope: list[str] = []
         if reason:
             scope.append(f"reason={reason}")
         if project_id is not None:

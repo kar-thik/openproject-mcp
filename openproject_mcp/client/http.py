@@ -24,7 +24,7 @@ import asyncio
 import logging
 import random
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -38,6 +38,7 @@ from openproject_mcp.client.errors import (
     error_from_transport,
     parse_retry_after,
 )
+from openproject_mcp.client.hal import as_array, as_object
 from openproject_mcp.config import Settings
 from openproject_mcp.observability import current_correlation_id, get_logger, redact_headers
 
@@ -90,7 +91,7 @@ class OpenProjectClient:
         self.scope = credential_scope(settings.credential_secret)
         self._owns_client = client is None
         self._sleep = sleep or self._default_sleep
-        self._jitter = jitter or (lambda upper: random.uniform(0, upper))
+        self._jitter: JitterFn = jitter or (lambda upper: random.uniform(0, upper))
         self._client = client or self._build_client(settings)
         self._base_origin = _origin(self._client.base_url)
 
@@ -310,7 +311,7 @@ class OpenProjectClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: httpx.Timeout | float | None = None,
-    ) -> AsyncIterator[httpx.Response]:
+    ) -> AsyncGenerator[httpx.Response]:
         """Stream a response body (attachment download).
 
         Streamed bodies get no read timeout — callers enforce a wall-clock and
@@ -443,10 +444,12 @@ def _decode_json(response: httpx.Response, *, allow_empty: bool = False) -> dict
             http_status=response.status_code,
             hint="Expected JSON. Check that OPENPROJECT_URL points at the API, not a login page.",
         ) from exc
-    if isinstance(payload, dict):
-        return payload
-    if isinstance(payload, list):
-        return {"_embedded": {"elements": payload}}
+    body = as_object(payload)
+    if body is not None:
+        return dict(body)
+    array = as_array(payload)
+    if array is not None:
+        return {"_embedded": {"elements": list(array)}}
     raise UnexpectedResponseError(
         f"OpenProject returned an unexpected JSON type for {response.request.url.path}.",
         http_status=response.status_code,

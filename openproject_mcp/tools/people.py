@@ -26,9 +26,8 @@ Non-negotiables for this module:
   payload sends ``_meta.sendNotifications = false`` unless the caller supplied a
   ``notify_message``.
 * ``/principals`` spells its search filter ``any_name_attribute`` — snake_case on
-  the wire, unlike almost every other filter — so it is built as a
-  :class:`~openproject_mcp.client.filters.Filter` directly instead of going
-  through ``make_filter``'s camelCasing.
+  the wire, unlike almost every other filter — which is why
+  ``client.filters.WIRE_NAME_OVERRIDES`` maps that name to itself.
 * Memberships carry no ``lockVersion``: their PATCH is a plain PATCH, not
   ``patch_with_lock``, and a 409 from this endpoint means the API refused the
   change, not a stale read.
@@ -43,12 +42,7 @@ from urllib.parse import quote, urlsplit
 from pydantic import BaseModel, Field
 
 from openproject_mcp.client import hal
-from openproject_mcp.client.errors import (
-    InputValidationError,
-    UnexpectedResponseError,
-    ValidationFailedError,
-    violations_from_form,
-)
+from openproject_mcp.client.errors import InputValidationError, UnexpectedResponseError
 from openproject_mcp.client.filters import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -58,10 +52,10 @@ from openproject_mcp.client.filters import (
     make_filter,
     query_params,
     register_filter_type,
-    validate_operator,
 )
 from openproject_mcp.client.payloads import link, links_payload
 from openproject_mcp.projections import ListEnvelope, Ref
+from openproject_mcp.tools import _forms
 from openproject_mcp.tools._shared import (
     ADMIN,
     DESTRUCTIVE,
@@ -97,16 +91,21 @@ __all__ = [
 PRINCIPALS_RESOURCE = "principals"
 MEMBERSHIPS_RESOURCE = "memberships"
 
+#: The three kinds of principal this server distinguishes.
+PrincipalKind = Literal["user", "group", "placeholder"]
+
 #: Tool-facing principal kind -> the API's ``type`` filter value.
-PRINCIPAL_TYPE_VALUES: dict[str, str] = {
+PRINCIPAL_TYPE_VALUES: dict[PrincipalKind, str] = {
     "user": "User",
     "group": "Group",
     "placeholder": "PlaceholderUser",
 }
 #: API ``_type`` -> tool-facing principal kind.
-PRINCIPAL_KINDS: dict[str, str] = {wire: kind for kind, wire in PRINCIPAL_TYPE_VALUES.items()}
+PRINCIPAL_KINDS: dict[str, PrincipalKind] = {
+    wire: kind for kind, wire in PRINCIPAL_TYPE_VALUES.items()
+}
 #: API collection segment -> tool-facing principal kind, for href-only payloads.
-PRINCIPAL_PATH_KINDS: dict[str, str] = {
+PRINCIPAL_PATH_KINDS: dict[str, PrincipalKind] = {
     "users": "user",
     "groups": "group",
     "placeholder_users": "placeholder",
@@ -144,7 +143,7 @@ class PrincipalRow(BaseModel):
         "assignee_id, watcher ids, time-entry user_id, create_membership.principal_id.",
     )
     name: str | None = Field(default=None, description="Display name as OpenProject renders it.")
-    type: Literal["user", "group", "placeholder"] | None = Field(
+    type: PrincipalKind | None = Field(
         default=None,
         description="'user' for a person, 'group' for a user group, 'placeholder' for a "
         "placeholder user (a licence-free stand-in that can be assigned work but cannot log in).",
@@ -168,7 +167,7 @@ class PrincipalRef(BaseModel):
 
     id: int | str | None = Field(default=None, description="Principal id.")
     name: str | None = Field(default=None, description="Display name.")
-    type: Literal["user", "group", "placeholder"] | None = Field(
+    type: PrincipalKind | None = Field(
         default=None,
         description="'user', 'group' or 'placeholder'; null when the instance did not say.",
     )
@@ -214,7 +213,7 @@ class MembershipRow(BaseModel):
         default=None, description="Who holds the membership: user, group or placeholder user."
     )
     roles: list[Ref] = Field(
-        default_factory=list,
+        default_factory=list[Ref],
         description="Roles held in this project; always a list. Role ids come from list_roles.",
     )
     created_at: str | None = Field(default=None, description="ISO 8601 UTC timestamp.")
@@ -251,11 +250,11 @@ class MembershipDeletion(BaseModel):
 # --- projection helpers ---------------------------------------------------
 
 
-def _kind_from_type(value: Any) -> str | None:
+def _kind_from_type(value: Any) -> PrincipalKind | None:
     return PRINCIPAL_KINDS.get(value) if isinstance(value, str) else None
 
 
-def _kind_from_href(href: str | None) -> str | None:
+def _kind_from_href(href: str | None) -> PrincipalKind | None:
     """Derive the principal kind from ``/api/v3/users/12`` and friends."""
     if not isinstance(href, str):
         return None
@@ -274,7 +273,7 @@ def _principal_row(element: Mapping[str, Any]) -> PrincipalRow:
     return PrincipalRow(
         id=hal.self_id(element),
         name=element.get("name"),
-        type=kind,  # type: ignore[arg-type]
+        type=kind,
         email=email if isinstance(email, str) else None,
         login=login if isinstance(login, str) else None,
         status=status if isinstance(status, str) else None,
@@ -284,19 +283,20 @@ def _principal_row(element: Mapping[str, Any]) -> PrincipalRow:
 def _principal_ref(element: Mapping[str, Any]) -> PrincipalRef | None:
     """Project ``_links.principal`` plus whatever the embedded copy reveals."""
     linked = hal.ref(element, "principal")
-    inlined = hal.embedded(element, "principal")
-    kind = _kind_from_type(inlined.get("_type")) if isinstance(inlined, Mapping) else None
+    inlined = hal.as_object(hal.embedded(element, "principal"))
+    kind = _kind_from_type(inlined.get("_type")) if inlined is not None else None
     if kind is None:
         kind = _kind_from_href(linked.href if linked is not None else None)
-    if linked is None and not isinstance(inlined, Mapping):
+    if linked is None and inlined is None:
         return None
     name = linked.name if linked is not None and linked.name else None
-    if name is None and isinstance(inlined, Mapping) and isinstance(inlined.get("name"), str):
-        name = inlined["name"]
+    if name is None and inlined is not None:
+        inlined_name = inlined.get("name")
+        name = inlined_name if isinstance(inlined_name, str) else None
     return PrincipalRef(
         id=linked.id if linked is not None else hal.self_id(inlined),
         name=name,
-        type=kind,  # type: ignore[arg-type]
+        type=kind,
     )
 
 
@@ -315,8 +315,8 @@ def _membership_row(element: Mapping[str, Any], *, notes: list[str] | None = Non
 def _role_row(element: Mapping[str, Any], *, include_permissions: bool) -> RoleRow:
     permissions: list[str] | None = None
     if include_permissions:
-        raw = element.get("permissions")
-        if isinstance(raw, Sequence) and not isinstance(raw, str | bytes):
+        raw = hal.as_array(element.get("permissions"))
+        if raw is not None:
             permissions = [item for item in raw if isinstance(item, str)]
     return RoleRow(
         id=hal.self_id(element),
@@ -357,7 +357,7 @@ def _role_ids(role_ids: Sequence[int]) -> list[int]:
         )
     resolved: list[int] = []
     for value in role_ids:
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        if isinstance(value, bool) or value <= 0:
             raise InputValidationError(
                 f"role_ids contains {value!r}, which is not a role id.",
                 hint="Pass positive integers only; list_roles returns the valid ids.",
@@ -406,66 +406,17 @@ async def _project_numeric_id(ctx: ToolContext, value: int | str) -> int:
 # --- form flow (SPEC §4.5) ------------------------------------------------
 
 
-def _form_section(form: Mapping[str, Any], key: str) -> Any:
-    embedded = form.get("_embedded")
-    return embedded.get(key) if isinstance(embedded, Mapping) else None
-
-
-def _allowed_titles(entry: Any) -> list[str]:
-    """Display names of a schema attribute's allowed values, if it lists them."""
-    if not isinstance(entry, Mapping):
-        return []
-    for container_key in ("_links", "_embedded"):
-        container = entry.get(container_key)
-        if not isinstance(container, Mapping):
-            continue
-        values = container.get("allowedValues")
-        if not isinstance(values, Sequence) or isinstance(values, str | bytes):
-            continue
-        titles = [
-            title
-            for item in values
-            if isinstance(item, Mapping)
-            and isinstance(title := (item.get("title") or item.get("name")), str)
-        ]
-        if titles:
-            return titles
-    return []
-
-
 def _raise_form_validation_errors(form: Mapping[str, Any], *, fallback_hint: str) -> None:
     """Turn a membership form's ``validationErrors`` into a typed 422.
 
     The form knows both what is wrong and which values would be accepted, so an
     unknown role comes back with the roles this instance actually defines.
     """
-    errors = _form_section(form, "validationErrors")
-    if not isinstance(errors, Mapping) or not errors:
-        return
-
-    violations = violations_from_form(errors)
-    schema = _form_section(form, "schema")
-    hints: list[str] = []
-    for attribute in errors:
-        titles = _allowed_titles(schema.get(attribute) if isinstance(schema, Mapping) else None)
-        if titles:
-            listed = ", ".join(titles[:25]) + ("…" if len(titles) > 25 else "")
-            hints.append(f"Allowed values for {attribute}: {listed}.")
-    if not hints:
-        hints.append(fallback_hint)
-
-    identifier: str | None = None
-    first = next((value for value in errors.values() if isinstance(value, Mapping)), None)
-    if first is not None and isinstance(first.get("errorIdentifier"), str):
-        identifier = first["errorIdentifier"]
-
-    message = violations[0]["message"] if violations else "OpenProject rejected the membership."
-    raise ValidationFailedError(
-        message,
-        http_status=422,
-        error_identifier=identifier,
-        hint=" ".join(hints),
-        violations=violations,
+    _forms.raise_validation_errors(
+        form,
+        subject="membership",
+        hints=_forms.allowed_value_hints,
+        fallback_hint=fallback_hint,
     )
 
 
@@ -490,11 +441,10 @@ def _register_filters() -> None:
 def _name_filter(query: str) -> Filter:
     """The ``/principals`` search filter.
 
-    Built directly rather than through ``make_filter`` because this filter's wire
-    name is snake_case: camelCasing it to ``anyNameAttribute`` would 400.
+    The wire name stays snake_case — camelCasing it to ``anyNameAttribute`` would
+    400 — which is why ``WIRE_NAME_OVERRIDES`` maps it to itself.
     """
-    validate_operator("any_name_attribute", Op.CONTAINS.value, PRINCIPALS_RESOURCE)
-    return Filter(name="any_name_attribute", operator=Op.CONTAINS.value, values=[query])
+    return make_filter("any_name_attribute", Op.CONTAINS, [query], resource=PRINCIPALS_RESOURCE)
 
 
 def register(mcp: FastMCP) -> None:
@@ -516,7 +466,7 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = None,
         type: Annotated[
-            Literal["user", "group", "placeholder"] | None,
+            PrincipalKind | None,
             Field(
                 description="Restrict to one kind of principal. 'user' = people who log in, "
                 "'group' = user groups (assignable and grantable as a unit), 'placeholder' = "

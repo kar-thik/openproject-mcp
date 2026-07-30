@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import html as html_text
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import httpx
@@ -55,7 +55,7 @@ from openproject_mcp.client.payloads import (
     link,
     links_payload,
 )
-from openproject_mcp.projections import ListEnvelope, Ref
+from openproject_mcp.projections import ListEnvelope, Ref, RelationRow
 from openproject_mcp.tools import _shared
 
 if TYPE_CHECKING:
@@ -65,7 +65,6 @@ __all__ = [
     "ActivityDetail",
     "ActivityEntry",
     "RelationDeletionResult",
-    "RelationResult",
     "WatcherResult",
     "register",
 ]
@@ -169,7 +168,7 @@ class ActivityEntry(BaseModel):
         default=None, description="Journal version number of this entry within the work package."
     )
     details: list[ActivityDetail] = Field(
-        default_factory=list,
+        default_factory=list[ActivityDetail],
         description="Field changes recorded with this entry; always a list, empty for a "
         "comment-only entry.",
     )
@@ -205,7 +204,8 @@ def _parse_detail(entry: Any) -> ActivityDetail:
     the markup OpenProject renders next to it whenever the shapes agree.
     """
     text = hal.formattable(entry)
-    markup = entry.get("html") if isinstance(entry, Mapping) else None
+    element = hal.as_object(entry)
+    markup = element.get("html") if element is not None else None
     field, from_value, to_value = _structure(text or "")
 
     if isinstance(markup, str):
@@ -221,19 +221,20 @@ def _parse_detail(entry: Any) -> ActivityDetail:
             elif to_value is None and from_value is not None:
                 from_value = values[0]
 
-    return ActivityDetail(
-        field=_clean(field),
-        from_=_clean(from_value),
-        to=_clean(to_value),
-        text=text,
+    # model_validate rather than the constructor: the field is named ``from_``
+    # but carries the ``from`` alias, and ``from`` cannot be a keyword argument.
+    return ActivityDetail.model_validate(
+        {
+            "field": _clean(field),
+            "from_": _clean(from_value),
+            "to": _clean(to_value),
+            "text": text,
+        }
     )
 
 
 def _details_of(element: Mapping[str, Any]) -> list[ActivityDetail]:
-    raw = element.get("details")
-    if not isinstance(raw, Sequence) or isinstance(raw, str | bytes):
-        return []
-    return [_parse_detail(item) for item in raw]
+    return [_parse_detail(item) for item in hal.as_array(element.get("details")) or ()]
 
 
 def _activity_entry(element: Mapping[str, Any], *, max_chars: int | None) -> ActivityEntry:
@@ -315,42 +316,6 @@ class WatcherResult(BaseModel):
     message: str = Field(description="Human-readable confirmation.")
 
 
-class RelationResult(BaseModel):
-    """One work-package relation (SPEC §6.3)."""
-
-    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
-
-    id: int | str | None = Field(
-        default=None,
-        description="Relation id. Pass it to update_work_package_relation or "
-        "delete_work_package_relation — it is not a work package id.",
-    )
-    type: str | None = Field(
-        default=None,
-        description="Relation type as OpenProject stored it, read from the 'from' work package "
-        "(e.g. 'follows' means 'from' is scheduled after 'to').",
-    )
-    reverse_type: str | None = Field(
-        default=None,
-        description="The same relation read from the 'to' work package: 'follows' <-> 'precedes', "
-        "'blocks' <-> 'blocked', 'relates' <-> 'relates'.",
-    )
-    from_: Ref | None = Field(
-        default=None,
-        alias="from",
-        description="Work package the relation starts at.",
-    )
-    to: Ref | None = Field(default=None, description="Work package the relation points to.")
-    lag: int | None = Field(
-        default=None,
-        description="Working days kept between the predecessor and the successor. Only "
-        "follows/precedes relations carry one; null everywhere else.",
-    )
-    description: str | None = Field(
-        default=None, description="Free-text note stored on the relation; null when unset."
-    )
-
-
 class RelationDeletionResult(BaseModel):
     """Outcome of ``delete_work_package_relation``."""
 
@@ -361,12 +326,6 @@ class RelationDeletionResult(BaseModel):
 
 def _text(value: Any) -> str | None:
     return value if isinstance(value, str) else None
-
-
-def _int_or_none(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
 
 
 def _json_object(response: httpx.Response) -> dict[str, Any]:
@@ -381,7 +340,8 @@ def _json_object(response: httpx.Response) -> dict[str, Any]:
         payload = response.json()
     except ValueError:
         return {}
-    return payload if isinstance(payload, dict) else {}
+    body = hal.as_object(payload)
+    return dict(body) if body is not None else {}
 
 
 def _is_comment_activity(payload: Mapping[str, Any]) -> bool:
@@ -389,18 +349,6 @@ def _is_comment_activity(payload: Mapping[str, Any]) -> bool:
     if hal.formattable(payload.get("comment")):
         return True
     return payload.get("_type") == "Activity::Comment"
-
-
-def _relation_result(payload: Mapping[str, Any]) -> RelationResult:
-    return RelationResult(
-        id=hal.self_id(payload),
-        type=_text(payload.get("type")),
-        reverse_type=_text(payload.get("reverseType")),
-        from_=Ref.from_hal(payload, "from"),
-        to=Ref.from_hal(payload, "to"),
-        lag=_int_or_none(payload.get("lag")),
-        description=hal.formattable(payload.get("description")),
-    )
 
 
 def _user_ref(payload: Mapping[str, Any], fallback_id: int) -> Ref:
@@ -893,7 +841,7 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(description="Optional note explaining why the two work packages are linked."),
         ] = None,
-    ) -> RelationResult:
+    ) -> RelationRow:
         """Link two work packages (blocks, follows, duplicates, relates, ...).
 
         Use this to record a dependency the schedule or the reader needs to
@@ -903,9 +851,10 @@ def register(mcp: FastMCP) -> None:
 
         Pitfalls. OpenProject stores one canonical direction per pair, so the
         passive spellings are rewritten on save: creating ``precedes`` from A to
-        B comes back as B ``follows`` A, with ``from``/``to`` swapped. That is
-        the same fact, not an error — read ``type`` and ``reverse_type`` from
-        the result rather than assuming what you sent. Only one relation may
+        B comes back as B ``follows`` A, with ``from_work_package`` and
+        ``to_work_package`` swapped. That is the same fact, not an error — read
+        ``type`` and ``reverse_type`` from the result rather than assuming what
+        you sent. Only one relation may
         exist between two work packages: a second one answers 409 conflict, and
         changing it means ``update_work_package_relation`` on the existing id. A
         relation that would close a scheduling cycle is rejected with a
@@ -937,7 +886,7 @@ def register(mcp: FastMCP) -> None:
             f"work_packages/{from_id}/relations",
             json=build_write_payload(attributes, {"to": link("work_packages", to_id)}),
         )
-        return _relation_result(payload)
+        return RelationRow.from_hal(payload)
 
     @mcp.tool(
         name="update_work_package_relation",
@@ -979,7 +928,7 @@ def register(mcp: FastMCP) -> None:
                 "empty string to clear it."
             ),
         ] = None,
-    ) -> RelationResult:
+    ) -> RelationRow:
         """Change an existing relation's type, lag or description.
 
         Use it to widen the gap between a predecessor and its successor, to
@@ -1024,7 +973,7 @@ def register(mcp: FastMCP) -> None:
         payload = await context.client.patch_json(
             f"relations/{relation_id}", json=build_write_payload(attributes)
         )
-        return _relation_result(payload)
+        return RelationRow.from_hal(payload)
 
     @mcp.tool(
         name="delete_work_package_relation",

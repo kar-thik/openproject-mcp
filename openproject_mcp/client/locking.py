@@ -22,7 +22,7 @@ from openproject_mcp.client.errors import (
     OpenProjectError,
     UnexpectedResponseError,
 )
-from openproject_mcp.client.hal import formattable
+from openproject_mcp.client.hal import as_object, formattable
 from openproject_mcp.client.http import OpenProjectClient
 
 __all__ = [
@@ -122,8 +122,9 @@ def conflicting_fields(
 
 def _comparable(value: Any) -> Any:
     """Normalize formattable fields so a diff compares text with text."""
-    if isinstance(value, Mapping) and "raw" in value:
-        return formattable(value)
+    mapping = as_object(value)
+    if mapping is not None and "raw" in mapping:
+        return formattable(mapping)
     return value
 
 

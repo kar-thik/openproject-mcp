@@ -42,11 +42,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from pydantic import BaseModel, Field
 
 from openproject_mcp.client import hal
-from openproject_mcp.client.errors import (
-    InputValidationError,
-    ValidationFailedError,
-    violations_from_form,
-)
+from openproject_mcp.client.errors import InputValidationError
 from openproject_mcp.client.filters import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -62,6 +58,7 @@ from openproject_mcp.client.filters import (
 from openproject_mcp.client.locking import extract_lock_version, patch_with_lock
 from openproject_mcp.client.payloads import link
 from openproject_mcp.projections import Group, ListEnvelope, Ref
+from openproject_mcp.tools import _forms
 from openproject_mcp.tools._shared import (
     DESTRUCTIVE,
     GROUP_TIME_ENTRIES,
@@ -249,32 +246,25 @@ def _activity_options(form: Mapping[str, Any]) -> list[tuple[int | str | None, s
     Both spellings OpenProject uses are handled: ``_links.allowedValues`` (link
     objects with a title) and ``_embedded.allowedValues`` (whole resources).
     """
-    schema = hal.embedded(form, "schema")
-    entry = schema.get("activity") if isinstance(schema, Mapping) else None
-    if not isinstance(entry, Mapping):
+    schema = hal.as_object(hal.embedded(form, "schema"))
+    entry = hal.as_object(schema.get("activity")) if schema is not None else None
+    if entry is None:
         return []
 
-    links = entry.get("_links")
-    if isinstance(links, Mapping):
-        values = links.get("allowedValues")
-        if isinstance(values, Sequence) and not isinstance(values, str | bytes):
-            return [
-                (
-                    hal.id_from_href(
-                        item.get("href") if isinstance(item.get("href"), str) else None
-                    ),
-                    item.get("title") if isinstance(item.get("title"), str) else None,
-                )
-                for item in values
-                if isinstance(item, Mapping)
-            ]
+    links = hal.as_object(entry.get("_links"))
+    if links is not None and hal.as_array(links.get("allowedValues")) is not None:
+        return [
+            (
+                hal.id_from_href(item.get("href") if isinstance(item.get("href"), str) else None),
+                item.get("title") if isinstance(item.get("title"), str) else None,
+            )
+            for item in hal.as_objects(links.get("allowedValues"))
+        ]
 
     inlined = hal.embedded(entry, "allowedValues")
-    if isinstance(inlined, Sequence) and not isinstance(inlined, str | bytes):
+    if hal.as_array(inlined) is not None:
         pairs: list[tuple[int | str | None, str | None]] = []
-        for item in inlined:
-            if not isinstance(item, Mapping):
-                continue
+        for item in hal.as_objects(inlined):
             name = item.get("name") or item.get("title")
             pairs.append((hal.self_id(item), name if isinstance(name, str) else None))
         return pairs
@@ -321,58 +311,30 @@ def _resolve_activity_name(name: str, form: Mapping[str, Any]) -> int | str:
     )
 
 
-def _raise_form_errors(form: Mapping[str, Any]) -> None:
-    """Turn a form's ``validationErrors`` into a typed 422 with allowed values.
+def _time_entry_form_hints(form: Mapping[str, Any], errors: Mapping[str, Any]) -> list[str]:
+    """The time-entry half of a form rejection: the activities this project allows.
 
-    The form endpoint knows both what is wrong and what would be accepted; that
-    second half is what makes an activity or date rejection actionable.
+    The activity list lives in the form's own schema, which is what makes an
+    activity rejection actionable instead of merely refused.
     """
-    errors = hal.embedded(form, "validationErrors")
-    if not isinstance(errors, Mapping) or not errors:
-        return
+    if "activity" not in errors:
+        return []
+    return [f"Allowed activities: {_list_activities(_activity_options(form))}."]
 
-    violations = violations_from_form(errors)
-    hints: list[str] = []
-    if "activity" in errors:
-        hints.append(f"Allowed activities: {_list_activities(_activity_options(form))}.")
-    if not hints:
-        hints.append(
+
+def _raise_form_errors(form: Mapping[str, Any]) -> None:
+    """Turn a form's ``validationErrors`` into a typed 422 with allowed values."""
+    _forms.raise_validation_errors(
+        form,
+        subject="time entry",
+        hints=_time_entry_form_hints,
+        fallback_hint=(
             "Fix the attributes listed in 'violations'. get_project_metadata(project_id=...) "
             "lists the activities this project accepts, and time can only be logged on "
             "projects where the time-tracking module is enabled and you hold the "
             "log-time permission."
-        )
-
-    identifier: str | None = None
-    first = next((value for value in errors.values() if isinstance(value, Mapping)), None)
-    if first is not None and isinstance(first.get("errorIdentifier"), str):
-        identifier = first["errorIdentifier"]
-
-    raise ValidationFailedError(
-        violations[0]["message"] if violations else "OpenProject rejected the time entry.",
-        http_status=422,
-        error_identifier=identifier,
-        hint=" ".join(hints),
-        violations=violations,
+        ),
     )
-
-
-def _links_of(payload: Mapping[str, Any]) -> dict[str, Any]:
-    links = payload.get("_links")
-    return dict(links) if isinstance(links, Mapping) else {}
-
-
-def _merge_payload(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
-    """Merge the form's defaulted payload with ours; ours wins, ``_links`` merges."""
-    merged: dict[str, Any] = {
-        key: value for key, value in base.items() if key not in ("_links", "_type")
-    }
-    merged.update({key: value for key, value in override.items() if key != "_links"})
-    links = {**_links_of(base), **_links_of(override)}
-    links.pop("self", None)
-    if links:
-        merged["_links"] = links
-    return merged
 
 
 def _entry_links(
@@ -769,8 +731,7 @@ def register(mcp: FastMCP) -> None:
 
         _raise_form_errors(form)
 
-        defaults = hal.embedded(form, "payload")
-        body = _merge_payload(defaults if isinstance(defaults, Mapping) else {}, payload)
+        body = _forms.merge_form_payload(_forms.form_payload(form) or {}, payload)
         created = await ctx.client.post_json("time_entries", json=body)
         return _entry_detail(created)
 

@@ -15,7 +15,7 @@ import json
 import logging
 import sys
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
@@ -45,7 +45,7 @@ def current_correlation_id() -> str | None:
 
 
 @contextmanager
-def correlation_scope(correlation_id: str | None = None) -> Iterator[str]:
+def correlation_scope(correlation_id: str | None = None) -> Generator[str]:
     """Bind a correlation id for the duration of a tool call."""
     value = correlation_id or uuid.uuid4().hex[:12]
     token = _correlation_id.set(value)

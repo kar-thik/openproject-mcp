@@ -26,7 +26,7 @@ import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
@@ -206,8 +206,11 @@ RESOURCE_FILTER_TYPES: dict[str, dict[str, FilterType]] = {
 }
 
 #: snake_case → wire name, for the cases mechanical camelCasing gets wrong.
+#: The identity entries are the ones OpenProject really does spell snake_case:
+#: ``anyNameAttribute`` or ``nameAndIdentifier`` would come back as a 400.
 WIRE_NAME_OVERRIDES: dict[str, str] = {
     "read_ian": "readIAN",
+    "any_name_attribute": "any_name_attribute",
     "name_and_identifier": "name_and_identifier",
     "parent_id": "parent_id",
     "subject_or_id": "subjectOrId",
@@ -247,7 +250,7 @@ class Filter(BaseModel):
 
     name: str = Field(description="Wire (camelCase) filter name, e.g. 'dueDate'.")
     operator: str = Field(description="Filter operator, e.g. '=', '!*', '<>d'.")
-    values: list[str] = Field(default_factory=list, description="Filter values as strings.")
+    values: list[str] = Field(default_factory=list[str], description="Filter values as strings.")
 
     def to_wire(self) -> dict[str, dict[str, Any]]:
         return {self.name: {"operator": self.operator, "values": list(self.values)}}
@@ -263,7 +266,8 @@ class RawFilter(BaseModel):
     name: str = Field(description="Filter name as OpenProject spells it, e.g. 'customField12'.")
     operator: str = Field(description="Filter operator, e.g. '=', '~', '<>d'.")
     values: list[str] = Field(
-        default_factory=list, description="Values for the operator; may be empty for '*' / '!*'."
+        default_factory=list[str],
+        description="Values for the operator; may be empty for '*' / '!*'.",
     )
 
 
@@ -343,6 +347,13 @@ def validate_operator(name: str, operator: str, resource: str | None = None) -> 
         )
 
 
+def _as_values(values: Sequence[Any] | Any) -> list[Any]:
+    """A filter's values as a list: a lone scalar (or string) becomes ``[value]``."""
+    if isinstance(values, str | bytes) or not isinstance(values, Sequence):
+        return [values]
+    return list(cast(Sequence[Any], values))
+
+
 def normalize_value(value: Any) -> str:
     """Coerce a Python value to its wire string.
 
@@ -377,12 +388,10 @@ def make_filter(
     wire_name = to_wire_name(name)
     op_value = operator.value if isinstance(operator, Op) else str(operator)
     validate_operator(wire_name, op_value, resource)
-    if isinstance(values, str | bytes) or not isinstance(values, Sequence):
-        values = [values]
     return Filter(
         name=wire_name,
         operator=op_value,
-        values=[normalize_value(item) for item in values],
+        values=[normalize_value(item) for item in _as_values(values)],
     )
 
 
@@ -396,10 +405,7 @@ def filter_from_raw(raw: RawFilter | Mapping[str, Any], *, resource: str | None 
             "Each raw filter needs a string 'name' and 'operator'.",
             hint='Example: {"name": "customField12", "operator": "=", "values": ["4"]}',
         )
-    values = data.get("values") or []
-    if isinstance(values, str) or not isinstance(values, Sequence):
-        values = [values]
-    return make_filter(name, operator, values, resource=resource)
+    return make_filter(name, operator, _as_values(data.get("values") or []), resource=resource)
 
 
 def serialize_filters(filters: Iterable[Filter | Mapping[str, Any]] | None) -> str | None:
@@ -408,10 +414,8 @@ def serialize_filters(filters: Iterable[Filter | Mapping[str, Any]] | None) -> s
         return None
     entries: list[dict[str, Any]] = []
     for item in filters:
-        if isinstance(item, Filter):
-            entries.append(item.to_wire())
-        elif isinstance(item, Mapping):
-            entries.append(filter_from_raw(item).to_wire())
+        resolved = item if isinstance(item, Filter) else filter_from_raw(item)
+        entries.append(resolved.to_wire())
     if not entries:
         return None
     return json.dumps(entries, separators=(",", ":"))
@@ -561,9 +565,7 @@ def principal_filter(name: str, values: Sequence[Any] | Any) -> Filter:
     for unassigned work packages. ``"me"`` is passed through: the WP and
     time-entry filters accept it (the capabilities API does not, SPEC §6.1).
     """
-    if isinstance(values, str) or not isinstance(values, Sequence):
-        values = [values]
-    normalized = [normalize_value(item) for item in values]
+    normalized = [normalize_value(item) for item in _as_values(values)]
     if len(normalized) == 1 and normalized[0].lower() == "none":
         return make_filter(name, Op.NONE)
     return make_filter(name, Op.EQ, normalized)

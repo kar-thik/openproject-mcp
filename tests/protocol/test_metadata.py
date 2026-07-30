@@ -324,15 +324,16 @@ async def test_work_package_schema_exposes_fields_and_custom_fields(
     ]
 
     custom_fields = {row["key"]: row for row in structured["custom_fields"]}
+    # Custom-field types speak the same vocabulary get_work_package reports.
     assert custom_fields["customField12"] == {
         "key": "customField12",
         "name": "Severity",
-        "type": "CustomOption",
+        "type": "list",
         "required": False,
         "writable": True,
         "options": [{"id": 4, "name": "High"}, {"id": 5, "name": "Low"}],
     }
-    assert custom_fields["customField9"]["type"] == "[]User"
+    assert custom_fields["customField9"]["type"] == "user"
     assert custom_fields["customField9"]["options"] == [
         {"id": 12, "name": "Grace Hopper"},
         {"id": 13, "name": "Alan Turing"},

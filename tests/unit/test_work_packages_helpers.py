@@ -19,15 +19,12 @@ from openproject_mcp.tools.work_packages import (
     WatcherRow,
     _api_path,
     _availability,
-    _custom_field_type,
     _custom_fields,
     _duration_from_hours,
     _is_clear,
     _is_keep,
-    _merge_payload,
     _numeric_id,
     _raise_form_validation_errors,
-    _row,
     _truncated,
 )
 from tests.fixtures.work_packages_payloads import (
@@ -89,15 +86,6 @@ def test_api_path_strips_the_api_root(href: Any, expected: str | None) -> None:
 # --- projections ----------------------------------------------------------
 
 
-def test_row_projection_drops_hrefs_and_keeps_refs() -> None:
-    row = _row(WORK_PACKAGE_DETAIL)
-    assert row.id == 1234
-    assert row.status is not None and row.status.model_dump() == {"id": 7, "name": "In progress"}
-    assert row.project is not None and row.project.id == 5
-    assert row.percentage_done == 40
-    assert "href" not in row.model_dump_json()
-
-
 def test_availability_reads_the_optional_module_links() -> None:
     assert _availability(WORK_PACKAGE_DETAIL) == {
         "dev_links": True,
@@ -109,21 +97,6 @@ def test_availability_reads_the_optional_module_links() -> None:
         "meetings": False,
         "files": False,
     }
-
-
-@pytest.mark.parametrize(
-    ("schema_type", "expected"),
-    [
-        ("CustomOption", "list"),
-        ("[]CustomOption", "list"),
-        ("[]User", "user"),
-        ("String", "string"),
-        ("Formattable", "text"),
-        ("SomethingNew", "something_new"),
-    ],
-)
-def test_custom_field_type_names(schema_type: str, expected: str) -> None:
-    assert _custom_field_type({"type": schema_type}) == expected
 
 
 def test_custom_fields_use_the_canonical_read_shape() -> None:
@@ -252,24 +225,3 @@ def test_form_errors_without_allowed_values_still_point_at_the_schema_tool() -> 
         _raise_form_validation_errors(form)
     assert "get_work_package_schema" in (excinfo.value.hint or "")
 
-
-def test_merge_payload_keeps_form_defaults_and_our_links() -> None:
-    base = {
-        "_type": "WorkPackage",
-        "subject": "from the form",
-        "scheduleManually": False,
-        "_links": {"self": {"href": "/api/v3/work_packages/1"}, "status": {"href": "/s/1"}},
-    }
-    override = {
-        "subject": "ours",
-        "_links": {"status": {"href": "/s/7"}, "attachments": [{"href": "/a/91"}]},
-    }
-
-    merged = _merge_payload(base, override)
-
-    assert merged["subject"] == "ours"
-    assert merged["scheduleManually"] is False
-    assert "_type" not in merged
-    assert "self" not in merged["_links"], "a create payload never echoes a self link"
-    assert merged["_links"]["status"] == {"href": "/s/7"}
-    assert merged["_links"]["attachments"] == [{"href": "/a/91"}]

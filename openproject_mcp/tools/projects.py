@@ -42,7 +42,6 @@ from openproject_mcp.client.errors import (
     InputValidationError,
     NotFoundError,
     ValidationFailedError,
-    violations_from_form,
 )
 from openproject_mcp.client.filters import (
     DEFAULT_PAGE_SIZE,
@@ -56,6 +55,7 @@ from openproject_mcp.client.filters import (
 )
 from openproject_mcp.client.payloads import build_write_payload, formattable_field, link
 from openproject_mcp.projections import ListEnvelope, Ref
+from openproject_mcp.tools import _forms
 from openproject_mcp.tools._shared import (
     DESTRUCTIVE,
     GROUP_PROJECTS,
@@ -154,8 +154,9 @@ def _status_code(payload: Mapping[str, Any]) -> str | None:
     if linked is not None and linked.id is not None:
         return str(linked.id)
     raw = payload.get("status")
-    if isinstance(raw, Mapping):
-        code = raw.get("code")
+    embedded_status = hal.as_object(raw)
+    if embedded_status is not None:
+        code = embedded_status.get("code")
         return code if isinstance(code, str) else None
     return raw if isinstance(raw, str) else None
 
@@ -238,23 +239,15 @@ class ProjectDeletionResult(BaseModel):
     message: str = Field(description="What was scheduled, in plain language.")
 
 
-def _form_section(form: Mapping[str, Any], key: str) -> Any:
-    inner = form.get("_embedded")
-    return inner.get(key) if isinstance(inner, Mapping) else None
-
-
-def _raise_form_validation_errors(form: Mapping[str, Any]) -> None:
-    """Turn a project form's ``validationErrors`` into a typed error (SPEC §4.5).
+def _project_form_hints(
+    form: Mapping[str, Any], errors: Mapping[str, Any]
+) -> list[str]:
+    """The project-specific half of a form rejection (SPEC §4.5).
 
     The form is asked first precisely so a taken identifier or an unknown parent
     comes back as an attribute-level violation instead of an opaque 422 on the
-    commit.
+    commit; these hints say what a valid value would look like.
     """
-    errors = _form_section(form, "validationErrors")
-    if not isinstance(errors, Mapping) or not errors:
-        return
-
-    violations = violations_from_form(errors)
     hints: list[str] = []
     if "identifier" in errors:
         hints.append(
@@ -269,47 +262,20 @@ def _raise_form_validation_errors(form: Mapping[str, Any]) -> None:
         )
     if "status" in errors:
         hints.append(_STATUS_CODE_HINT)
-    if not hints:
-        hints.append(
+    return hints
+
+
+def _raise_form_validation_errors(form: Mapping[str, Any]) -> None:
+    """Turn a project form's ``validationErrors`` into a typed error (SPEC §4.5)."""
+    _forms.raise_validation_errors(
+        form,
+        subject="project",
+        hints=_project_form_hints,
+        fallback_hint=(
             "Fix the attributes listed in 'violations'. list_projects shows the projects and "
             "identifiers that already exist."
-        )
-
-    identifier: str | None = None
-    first = next((value for value in errors.values() if isinstance(value, Mapping)), None)
-    if first is not None and isinstance(first.get("errorIdentifier"), str):
-        identifier = first["errorIdentifier"]
-
-    raise ValidationFailedError(
-        violations[0]["message"] if violations else "OpenProject rejected the project.",
-        http_status=422,
-        error_identifier=identifier,
-        hint=" ".join(hints),
-        violations=violations,
+        ),
     )
-
-
-def _links_of(payload: Mapping[str, Any]) -> dict[str, Any]:
-    links = payload.get("_links")
-    return dict(links) if isinstance(links, Mapping) else {}
-
-
-def _merge_form_payload(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
-    """Merge the form's defaulted payload with ours; ours wins, ``_links`` merge.
-
-    The form fills in what OpenProject derives (the identifier generated from the
-    name, the default status); our payload carries the caller's intent.
-    """
-    merged: dict[str, Any] = {
-        key: value for key, value in base.items() if key not in ("_links", "_type")
-    }
-    merged.update({key: value for key, value in override.items() if key != "_links"})
-    links = _links_of(base)
-    links.update(_links_of(override))
-    links.pop("self", None)
-    if links:
-        merged["_links"] = links
-    return merged
 
 
 def _validate_identifier(identifier: str) -> str:
@@ -668,8 +634,7 @@ def register(mcp: FastMCP) -> None:
         form = await ctx.client.post_json("projects/form", json=payload)
         _raise_form_validation_errors(form)
 
-        defaults = _form_section(form, "payload")
-        body = _merge_form_payload(defaults, payload) if isinstance(defaults, Mapping) else payload
+        body = _forms.merge_form_payload(_forms.form_payload(form) or {}, payload)
         created = await ctx.client.post_json("projects", json=body)
         return _project_detail(created)
 

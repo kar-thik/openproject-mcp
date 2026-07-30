@@ -402,8 +402,8 @@ async def test_relation_is_created_with_the_to_link_and_projected(
         "id": RELATION_ID,
         "type": "follows",
         "reverse_type": "precedes",
-        "from": {"id": WORK_PACKAGE_ID, "name": "Ship the client layer"},
-        "to": {"id": OTHER_WORK_PACKAGE_ID, "name": "Design the client layer"},
+        "from_work_package": {"id": WORK_PACKAGE_ID, "name": "Ship the client layer"},
+        "to_work_package": {"id": OTHER_WORK_PACKAGE_ID, "name": "Design the client layer"},
         "lag": 2,
         "description": "Start once the design is signed off.",
     }
