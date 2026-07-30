@@ -360,6 +360,14 @@ INVALID_SORT_ERROR: dict[str, Any] = {
     "message": "Sort criteria startTime is not supported.",
 }
 
+#: The 400 a pre-17.6 instance sends for the value-less ``upcoming`` operator
+#: (captured live from OpenProject 16.6.10).
+INVALID_TIME_FILTER_ERROR: dict[str, Any] = {
+    "_type": "Error",
+    "errorIdentifier": "urn:openproject-org:api:v3:errors:InvalidQuery",
+    "message": "Filters Start time is not set to one of the allowed values. and is invalid.",
+}
+
 #: The 422 a rejected agenda item comes back as.
 AGENDA_ITEM_REJECTED: dict[str, Any] = {
     "_type": "Error",

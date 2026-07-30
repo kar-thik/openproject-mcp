@@ -28,10 +28,13 @@ Non-negotiables for this module:
   the writes** have no ``notes`` field to carry it, so there the same 404/403
   become a *typed* error whose hint names both possibilities. Sub-resource
   failures (a meeting's agenda items) degrade to a ``notes`` marker too.
-* **The meetings ``time`` filter is not part of the shared operator grammar.**
-  Upstream it takes the value-less ``upcoming`` / ``past`` operators
-  (``Queries::Meetings::Filters::TimeFilter``), which are meetings-only, so the
-  wire filter is built directly rather than through ``make_filter``.
+* **The meetings ``time`` filter is not part of the shared operator grammar,
+  and it changed spelling in 17.6.** Current instances take the value-less
+  ``upcoming`` / ``past`` operators (``Queries::Meetings::Filters::TimeFilter``);
+  older ones (live-confirmed on 16.6) take ``=`` with a single ``past``/
+  ``future`` value. Both are meetings-only, so the wire filter is built directly
+  rather than through ``make_filter``, and ``list_meetings`` discovers the
+  instance's dialect on first use and caches it (SPEC §4.7).
 * **Meeting listings are explicitly sorted.** The meetings query drops its
   default order, so an unsorted page is an arbitrary slice; ``sortBy`` on
   ``startTime`` is always sent, and an instance that rejects it degrades to an
@@ -55,6 +58,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import BaseModel, Field
 
+from openproject_mcp import version_probe
 from openproject_mcp.client import hal
 from openproject_mcp.client.errors import (
     InputValidationError,
@@ -74,6 +78,7 @@ from openproject_mcp.client.filters import (
     serialize_sort_by,
 )
 from openproject_mcp.client.payloads import build_write_payload, formattable_field, link
+from openproject_mcp.config import PROBE_CACHE_TTL
 from openproject_mcp.projections import ListEnvelope, Ref
 from openproject_mcp.tools import _forms, _shared
 
@@ -101,6 +106,13 @@ MEETINGS_RESOURCE = "meetings"
 #: of the shared operator vocabulary; ``upcoming_only=False`` sends no time
 #: filter at all rather than ``past``, which would hide future meetings.
 TIME_UPCOMING = "upcoming"
+
+#: Pre-17.6 spelling of the same filter: a list filter taking ``=`` with a
+#: single ``past``/``future`` value (live-confirmed on 16.6, which answers the
+#: operator dialect with 400 "Start time is not set to one of the allowed
+#: values"). Both dialects select exactly the same rows; ``list_meetings``
+#: discovers which one the instance speaks and caches it (SPEC §4.7).
+TIME_LEGACY_FUTURE = "future"
 
 #: The one sort key both this module and the upstream meetings query agree on.
 MEETING_SORT_KEY = "start_time"
@@ -697,9 +709,9 @@ def register(mcp: FastMCP) -> None:
         Cross-references: `get_meeting(meeting_id=...)` for participants, agenda and outcomes;
         `create_meeting` to schedule one; `list_projects` for the project id.
         """
-        filters: list[Filter] = []
+        base_filters: list[Filter] = []
         if project_id is not None:
-            filters.append(
+            base_filters.append(
                 make_filter(
                     "project",
                     Op.EQ,
@@ -707,45 +719,92 @@ def register(mcp: FastMCP) -> None:
                     resource=MEETINGS_RESOURCE,
                 )
             )
-        if upcoming_only:
-            # Value-less, meetings-only operator; not part of the shared grammar.
-            filters.append(Filter(name="time", operator=TIME_UPCOMING, values=[]))
-
-        params: dict[str, Any] = dict(pagination_params(page, page_size))
-        serialized = serialize_filters(filters)
-        if serialized is not None:
-            params["filters"] = serialized
-        sorted_params = dict(params)
         direction = "asc" if upcoming_only else "desc"
-        sort = serialize_sort_by([[MEETING_SORT_KEY, direction]])
-        if sort is not None:
-            sorted_params["sortBy"] = sort
+
+        def build_params(
+            dialect: version_probe.MeetingsTimeDialect, with_sort: bool
+        ) -> dict[str, Any]:
+            active = list(base_filters)
+            if upcoming_only:
+                # Meetings-only filter, outside the shared grammar in either
+                # dialect: value-less operator (17.6+) or `=` + "future" (older).
+                active.append(
+                    Filter(name="time", operator="=", values=[TIME_LEGACY_FUTURE])
+                    if dialect == "values"
+                    else Filter(name="time", operator=TIME_UPCOMING, values=[])
+                )
+            params: dict[str, Any] = dict(pagination_params(page, page_size))
+            serialized = serialize_filters(active)
+            if serialized is not None:
+                params["filters"] = serialized
+            if with_sort:
+                sort = serialize_sort_by([[MEETING_SORT_KEY, direction]])
+                if sort is not None:
+                    params["sortBy"] = sort
+            return params
+
+        ctx = _shared.get_tool_context()
+        known = version_probe.cached_meetings_time_dialect(ctx.cache, ctx.scope)
 
         # A 404 here is about the collection endpoint, not about one meeting.
         subject = "the meetings collection"
         discovery = "Meeting ids come from list_meetings."
+
+        async def fetch(
+            dialect: version_probe.MeetingsTimeDialect, with_sort: bool
+        ) -> tuple[Mapping[str, Any] | None, list[str]]:
+            return await _module_list_get(
+                "meetings",
+                module=MEETINGS,
+                subject=subject,
+                discovery=discovery,
+                params=build_params(dialect, with_sort),
+            )
+
+        def remember(dialect: version_probe.MeetingsTimeDialect) -> None:
+            # A success only proves the dialect when the time filter was sent
+            # and really answered (a module-missing 404 says nothing about it).
+            if upcoming_only:
+                ctx.cache.set(
+                    version_probe.CACHE_KEY_MEETINGS_TIME_FILTER,
+                    dialect,
+                    scope=ctx.scope,
+                    ttl=PROBE_CACHE_TTL,
+                )
+
+        # Two independent things can be rejected here — the time-filter dialect
+        # (17.6 changed its spelling) and the startTime sort (the meetings query
+        # drops its default order, so unsorted is an arbitrary slice). Walk the
+        # ladder: preferred dialect sorted, other dialect sorted, then both
+        # unsorted with the G5 note — reading unsorted beats failing, but it is
+        # said out loud. The winning dialect is cached, so only the first call
+        # on an older instance pays the extra request.
+        first = known or "operator"
+        ladder: list[tuple[version_probe.MeetingsTimeDialect, bool, bool]] = (
+            [("values", True, False), ("operator", False, True), ("values", False, True)]
+            if upcoming_only and known is None and first == "operator"
+            else [(first, False, True)]
+        )
         notes: list[str] = []
+        payload: Mapping[str, Any] | None = None
+        degraded: list[str] = []
         try:
-            payload, degraded = await _module_list_get(
-                "meetings",
-                module=MEETINGS,
-                subject=subject,
-                discovery=discovery,
-                params=sorted_params,
-            )
+            payload, degraded = await fetch(first, True)
+            if payload is not None:
+                remember(first)
         except ValidationFailedError:
-            # The meetings query drops its default order, so an instance that does
-            # not know the startTime order would leave us with an arbitrary slice.
-            # Reading it unsorted is still worth more than failing — but it is said
-            # out loud (G5).
-            payload, degraded = await _module_list_get(
-                "meetings",
-                module=MEETINGS,
-                subject=subject,
-                discovery=discovery,
-                params=params,
-            )
-            notes.append(MEETING_SORT_NOTE)
+            for step, (dialect, with_sort, sort_note) in enumerate(ladder):
+                try:
+                    payload, degraded = await fetch(dialect, with_sort)
+                except ValidationFailedError:
+                    if step == len(ladder) - 1:
+                        raise
+                    continue
+                if payload is not None:
+                    remember(dialect)
+                if sort_note:
+                    notes.append(MEETING_SORT_NOTE)
+                break
         if payload is None:
             # Ⓜ module absent or unreadable — a note, never an empty schedule (G5).
             return _unavailable_envelope(notes + degraded)

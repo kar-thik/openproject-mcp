@@ -31,6 +31,7 @@ from tests.fixtures.modules_collab_payloads import (
     DOCUMENT_COLLECTION,
     DOCUMENT_ID,
     INVALID_SORT_ERROR,
+    INVALID_TIME_FILTER_ERROR,
     MEETING,
     MEETING_COLLECTION,
     MEETING_EMBEDDED_PARTICIPANTS_ONLY,
@@ -233,20 +234,74 @@ async def test_an_instance_that_refuses_the_sort_still_answers_and_says_so(
     mcp_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
     """G5: an unsorted page beats a failed call, but the model is told it is unsorted."""
-    responses = [
-        httpx.Response(400, json=INVALID_SORT_ERROR),
-        httpx.Response(200, json=MEETING_COLLECTION),
-    ]
-    route = mock_api.get("meetings").mock(side_effect=responses)
+
+    def refuse_sort(request: httpx.Request) -> httpx.Response:
+        if "sortBy" in request.url.params:
+            return httpx.Response(400, json=INVALID_SORT_ERROR)
+        return httpx.Response(200, json=MEETING_COLLECTION)
+
+    route = mock_api.get("meetings").mock(side_effect=refuse_sort)
+
+    result = await mcp_client.call_tool("list_meetings", {})
+
+    # Ladder: operator+sort (400) → values+sort (400) → operator, unsorted (200).
+    assert route.call_count == 3
+    assert "sortBy" in route.calls[0].request.url.params
+    assert "sortBy" in route.calls[1].request.url.params
+    assert "sortBy" not in route.calls[2].request.url.params
+    assert filters_of(route, 2) == [{"time": {"operator": "upcoming", "values": []}}]
+    assert result.structured_content is not None
+    assert len(result.structured_content["items"]) == 2
+    assert any("unsorted" in note for note in result.structured_content["notes"])
+
+
+async def test_a_pre_17_6_instance_gets_the_legacy_time_values_and_it_is_remembered(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    """SPEC §4.7: 16.6 rejects the value-less `upcoming` operator (live-confirmed);
+    the tool falls back to `=` + 'future', caches the dialect, and later calls
+    skip the failing attempt entirely."""
+
+    def refuse_operator_dialect(request: httpx.Request) -> httpx.Response:
+        if "upcoming" in request.url.params.get("filters", ""):
+            return httpx.Response(400, json=INVALID_TIME_FILTER_ERROR)
+        return httpx.Response(200, json=MEETING_COLLECTION)
+
+    route = mock_api.get("meetings").mock(side_effect=refuse_operator_dialect)
 
     result = await mcp_client.call_tool("list_meetings", {})
 
     assert route.call_count == 2
-    assert "sortBy" in route.calls[0].request.url.params
-    assert "sortBy" not in route.calls[1].request.url.params
+    assert filters_of(route, 1) == [{"time": {"operator": "=", "values": ["future"]}}]
+    # The sort survives the dialect fallback, and the result carries no
+    # degradation note — both dialects mean exactly the same thing.
+    assert route.calls[1].request.url.params["sortBy"] == '[["startTime","asc"]]'
     assert result.structured_content is not None
     assert len(result.structured_content["items"]) == 2
-    assert any("unsorted" in note for note in result.structured_content["notes"])
+    assert result.structured_content["notes"] is None
+
+    await mcp_client.call_tool("list_meetings", {})
+
+    # The dialect was cached: the second tool call goes straight to legacy.
+    assert route.call_count == 3
+    assert filters_of(route, 2) == [{"time": {"operator": "=", "values": ["future"]}}]
+
+
+async def test_a_genuinely_invalid_meetings_query_still_surfaces_the_error(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    """When every rung of the dialect/sort ladder is rejected, the last 400 is
+    the answer — the fallback never turns a real validation error into silence."""
+    route = mock_api.get("meetings").mock(
+        return_value=httpx.Response(400, json=INVALID_TIME_FILTER_ERROR)
+    )
+
+    result = await mcp_client.call_tool("list_meetings", {}, raise_on_error=False)
+
+    assert route.call_count == 4  # operator+sort, values+sort, operator, values
+    error = error_of(result)
+    assert error["type"] == "validation_failed"
+    assert error["http_status"] == 400
 
 
 async def test_a_missing_meetings_module_degrades_to_a_note_not_a_silent_empty_list(
@@ -291,14 +346,17 @@ async def test_an_unsorted_page_from_a_module_free_instance_carries_both_notes(
     mcp_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
     """The sort degradation and the module degradation compose rather than replace."""
-    responses = [
-        httpx.Response(400, json=INVALID_SORT_ERROR),
-        httpx.Response(404, json=MODULE_NOT_FOUND),
-    ]
-    mock_api.get("meetings").mock(side_effect=responses)
+
+    def refuse_sort_then_vanish(request: httpx.Request) -> httpx.Response:
+        if "sortBy" in request.url.params:
+            return httpx.Response(400, json=INVALID_SORT_ERROR)
+        return httpx.Response(404, json=MODULE_NOT_FOUND)
+
+    route = mock_api.get("meetings").mock(side_effect=refuse_sort_then_vanish)
 
     result = await mcp_client.call_tool("list_meetings", {})
 
+    assert route.call_count == 3  # operator+sort, values+sort, operator unsorted → 404
     assert result.is_error is False
     assert result.structured_content is not None
     notes = result.structured_content["notes"]
