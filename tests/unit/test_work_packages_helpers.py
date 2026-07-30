@@ -171,6 +171,22 @@ def test_custom_fields_skip_unset_values() -> None:
     assert [value.key for value in _custom_fields(payload, None)] == ["customField4"]
 
 
+def test_plural_custom_fields_settings_link_is_not_a_field() -> None:
+    # Live 16.6 payload shape: a ``customFields`` (plural) HTML settings link
+    # sits in _links next to real customField<N> keys and must be ignored.
+    payload = {
+        "customField1": "real value",
+        "_links": {
+            "customFields": {
+                "href": "/projects/demo/settings/custom_fields",
+                "type": "text/html",
+                "title": "Custom fields",
+            },
+        },
+    }
+    assert [value.key for value in _custom_fields(payload, None)] == ["customField1"]
+
+
 def test_formattable_custom_fields_surface_raw_text() -> None:
     payload = {"customField2": {"format": "markdown", "raw": "# Notes", "html": "<h1>Notes</h1>"}}
     values = _custom_fields(payload, {"customField2": {"type": "Formattable", "name": "Notes"}})

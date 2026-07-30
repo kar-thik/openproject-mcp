@@ -335,6 +335,13 @@ def _custom_field_type(entry: Mapping[str, Any] | None) -> str | None:
     return CUSTOM_FIELD_TYPE_NAMES.get(base, to_snake_name(base))
 
 
+def _is_custom_field_key(key: str) -> bool:
+    # Strictly customField<digits>: OpenProject also ships a plural
+    # ``_links.customFields`` settings link on work packages, which is not a field.
+    digits = key[len("customField") :]
+    return key.startswith("customField") and digits.isdigit()
+
+
 def _custom_field_order(key: str) -> tuple[int, str]:
     digits = key[len("customField") :]
     return (int(digits), key) if digits.isdigit() else (10**9, key)
@@ -350,8 +357,8 @@ def _custom_fields(
     the place to see the full field list.
     """
     links = _links_of(payload)
-    link_keys = {key for key in links if key.startswith("customField")}
-    attribute_keys = {key for key in payload if key.startswith("customField")}
+    link_keys = {key for key in links if _is_custom_field_key(key)}
+    attribute_keys = {key for key in payload if _is_custom_field_key(key)}
 
     values: list[CustomFieldValue] = []
     for key in sorted(attribute_keys | link_keys, key=_custom_field_order):
@@ -732,7 +739,7 @@ def register(mcp: FastMCP) -> None:
             ),
         ],
         project_id: Annotated[
-            str | None,
+            int | str | None,
             Field(
                 description=(
                     "Restrict the search to one project: numeric id or the project identifier "
@@ -814,7 +821,7 @@ def register(mcp: FastMCP) -> None:
     @_shared.tool_errors
     async def list_work_packages(
         project: Annotated[
-            str | None,
+            int | str | None,
             Field(
                 description=(
                     "Numeric project id or project identifier (URL slug) to scope the query. "
@@ -1179,7 +1186,7 @@ def register(mcp: FastMCP) -> None:
     @_shared.tool_errors
     async def create_work_package(
         project: Annotated[
-            str,
+            int | str,
             Field(
                 description=(
                     "Numeric project id or project identifier (URL slug). Both come from "
