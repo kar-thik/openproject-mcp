@@ -51,7 +51,8 @@ async def test_instructions_are_advertised(mcp_client: Client[Any]) -> None:
     assert "open items only" in instructions
 
 
-PHASE_1_READ_TOOLS = {
+READ_TOOLS = {
+    # Phase 1
     "search_work_packages",
     "list_work_packages",
     "get_work_package",
@@ -63,23 +64,72 @@ PHASE_1_READ_TOOLS = {
     "get_instance_info",
     "get_project_metadata",
     "get_work_package_schema",
+    # Phase 2
+    "get_work_package_git_activity",
+    "get_github_pull_request",
+    "list_queries",
+    "run_query",
+    "list_notifications",
+    "list_time_entries",
+    "list_versions",
+    "search_principals",
+    "get_user",
+    "list_memberships",
+    "list_roles",
+    "list_permissions",
 }
-PHASE_1_WRITE_TOOLS = {
+WRITE_TOOLS = {
+    # Phase 1
     "create_work_package",
     "update_work_package",
     "delete_work_package",
     "add_work_package_comment",
     "upload_attachment",
+    # Phase 2
+    "edit_work_package_comment",
+    "add_work_package_watcher",
+    "remove_work_package_watcher",
+    "create_work_package_relation",
+    "update_work_package_relation",
+    "delete_work_package_relation",
+    "delete_attachment",
+    "create_project",
+    "update_project",
+    "delete_project",
+    "mark_notifications",
+    "mark_all_notifications_read",
+    "log_time",
+    "update_time_entry",
+    "delete_time_entry",
+    "create_version",
+    "update_version",
+    "delete_version",
 }
-PHASE_1_TOOLS = PHASE_1_READ_TOOLS | PHASE_1_WRITE_TOOLS
-ATTACHMENT_GROUP_TOOLS = {"list_attachments", "download_attachment", "upload_attachment"}
+ADMIN_TOOLS_SET = {"create_membership", "update_membership", "delete_membership"}
+DEFAULT_TOOLS = READ_TOOLS | WRITE_TOOLS  # admin tools hidden unless ADMIN_TOOLS=1
+ALL_TOOLS = DEFAULT_TOOLS | ADMIN_TOOLS_SET
+ATTACHMENT_GROUP_TOOLS = {
+    "list_attachments",
+    "download_attachment",
+    "upload_attachment",
+    "delete_attachment",
+}
 
 
-async def test_phase_1_tool_set_is_registered(mcp_client: Client[Any]) -> None:
+async def test_phase_2_tool_set_is_registered(mcp_client: Client[Any]) -> None:
     listed = {tool.name for tool in await mcp_client.list_tools()}
-    assert listed == PHASE_1_TOOLS
+    assert listed == DEFAULT_TOOLS
     assert await mcp_client.list_resources() == []
     assert await mcp_client.list_prompts() == []
+
+
+async def test_admin_tools_flag_reveals_membership_writes() -> None:
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None, url=TEST_URL, api_key="test-token", admin_tools=True
+    )
+    async with Client(build_server(settings)) as client:
+        listed = {tool.name for tool in await client.list_tools()}
+    assert listed == ALL_TOOLS
 
 
 def test_server_builds_with_zero_environment() -> None:
@@ -254,8 +304,8 @@ async def test_read_only_server_hides_every_write_tool() -> None:
     )
     async with Client(build_server(settings)) as client:
         listed = {tool.name for tool in await client.list_tools()}
-    assert listed == PHASE_1_READ_TOOLS
-    assert not listed & PHASE_1_WRITE_TOOLS
+    assert listed == READ_TOOLS
+    assert not listed & (WRITE_TOOLS | ADMIN_TOOLS_SET)
 
 
 async def test_disable_prunes_exactly_the_named_groups() -> None:
@@ -267,4 +317,4 @@ async def test_disable_prunes_exactly_the_named_groups() -> None:
     )
     async with Client(build_server(settings)) as client:
         listed = {tool.name for tool in await client.list_tools()}
-    assert listed == PHASE_1_TOOLS - ATTACHMENT_GROUP_TOOLS
+    assert listed == DEFAULT_TOOLS - ATTACHMENT_GROUP_TOOLS
