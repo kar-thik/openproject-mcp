@@ -63,7 +63,7 @@ def _fail(message: str, problems: Sequence[str] = ()) -> int:
         print(f"  - {problem}", file=sys.stderr)
     print(
         "  See https://github.com/kar-thik/openproject-mcp#configuration "
-        "or .env.example for the full variable list.",
+        "for the full variable list.",
         file=sys.stderr,
     )
     return EXIT_CONFIG_ERROR

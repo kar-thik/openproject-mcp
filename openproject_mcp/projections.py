@@ -119,7 +119,7 @@ class Group(BaseModel):
 
 
 class ListEnvelope[ItemT](BaseModel):
-    """The one list shape every list tool returns (SPEC §9.3).
+    """The one list shape every list tool returns.
 
     Small fetched-in-full collections use the same envelope with
     ``has_more: false`` — one shape everywhere.
@@ -143,7 +143,7 @@ class ListEnvelope[ItemT](BaseModel):
 
 
 class TruncatedList[ItemT](BaseModel):
-    """A capped include (SPEC §6.2): the first N items plus an honest marker."""
+    """A capped include: the first N items plus an honest marker."""
 
     items: list[ItemT] = Field(
         default_factory=cast("Callable[[], list[ItemT]]", list),
@@ -155,7 +155,7 @@ class TruncatedList[ItemT](BaseModel):
 
 
 class CustomFieldValue(BaseModel):
-    """Canonical custom-field read shape (SPEC §6.2.1)."""
+    """Canonical custom-field read shape."""
 
     key: str = Field(description="Wire key, e.g. 'customField12'.")
     name: str | None = Field(default=None, description="Display name, e.g. 'Severity'.")
@@ -167,7 +167,7 @@ class CustomFieldValue(BaseModel):
 
 
 class WorkPackageRow(BaseModel):
-    """Compact work-package row for list results (SPEC §5.2)."""
+    """Compact work-package row for list results."""
 
     id: int | str | None = Field(default=None, description="Work package id.")
     subject: str | None = Field(default=None, description="Subject line.")
@@ -205,7 +205,7 @@ class WorkPackageRow(BaseModel):
 
 
 class RelationRow(BaseModel):
-    """One work-package relation (SPEC §6.3).
+    """One work-package relation.
 
     The two endpoints that produce relations — the ``relations`` include of
     ``get_work_package`` and the relation write tools — return this same shape.
@@ -261,7 +261,7 @@ class RelationRow(BaseModel):
 
 
 class WorkPackageDetail(WorkPackageRow):
-    """Full work-package detail (SPEC §6.2): the row plus text and relations."""
+    """Full work-package detail: the row plus text and relations."""
 
     description: str | None = Field(
         default=None, description="Description as markdown (raw); html is dropped."
@@ -286,12 +286,12 @@ class WorkPackageDetail(WorkPackageRow):
         description="Feature availability for this WP: dev links, meetings, files.",
     )
     notes: list[str] | None = Field(
-        default=None, description="Degradation markers (G5) for this result."
+        default=None, description="Degradation notes for this result."
     )
 
 
 class ErrorDetail(BaseModel):
-    """The body of the structured tool error (SPEC §4.2)."""
+    """The body of the structured tool error."""
 
     model_config = ConfigDict(extra="allow")
 

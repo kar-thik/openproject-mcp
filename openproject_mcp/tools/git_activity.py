@@ -305,7 +305,7 @@ class GitActivity(BaseModel):
     )
     notes: list[str] = Field(
         default_factory=list[str],
-        description="Degradation markers (G5): which sources were skipped and why. Read them "
+        description="Degradation notes: which sources were skipped and why. Read them "
         "before reporting 'there are no pull requests'.",
     )
 

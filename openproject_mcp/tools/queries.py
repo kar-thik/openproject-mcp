@@ -90,7 +90,7 @@ OPEN_BOUND = "(open)"
 
 
 class QueryRow(BaseModel):
-    """Compact saved-query row (SPEC §6.7)."""
+    """Compact saved-query row."""
 
     id: int | str | None = Field(
         default=None, description="Query id — pass it to run_query as query_id."
@@ -132,7 +132,7 @@ class QueryInfo(QueryRow):
 
 
 class QueryResults(ListEnvelope[WorkPackageRow]):
-    """A saved query's results: the §9.3 envelope plus what actually ran."""
+    """A saved query's results: the standard list envelope plus what actually ran."""
 
     query: QueryInfo = Field(
         description="The stored query definition, so the rows can be interpreted."

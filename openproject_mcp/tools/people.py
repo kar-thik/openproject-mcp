@@ -135,7 +135,7 @@ NO_NOTIFICATION_NOTE = (
 
 
 class PrincipalRow(BaseModel):
-    """One user, group or placeholder user (SPEC §6.11)."""
+    """One user, group or placeholder user."""
 
     id: int | str | None = Field(
         default=None,
@@ -174,7 +174,7 @@ class PrincipalRef(BaseModel):
 
 
 class UserDetail(BaseModel):
-    """Full user detail (SPEC §6.11). The avatar URL is deliberately dropped."""
+    """Full user detail. The avatar URL is deliberately dropped."""
 
     id: int | str | None = Field(default=None, description="Numeric user id.")
     name: str | None = Field(default=None, description="Display name, e.g. 'Grace Hopper'.")
@@ -224,7 +224,7 @@ class MembershipRow(BaseModel):
 
 
 class RoleRow(BaseModel):
-    """One role definition (SPEC §6.11)."""
+    """One role definition."""
 
     id: int | str | None = Field(
         default=None, description="Role id; this is what create_membership.role_ids wants."

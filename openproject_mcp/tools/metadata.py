@@ -112,7 +112,7 @@ class CurrentUser(BaseModel):
 
 
 class InstanceInfo(BaseModel):
-    """Connection test result plus what this instance supports (SPEC §6.1, §4.7)."""
+    """Connection test result plus what this instance supports."""
 
     core_version: str | None = Field(
         default=None, description="OpenProject core version, e.g. '17.7.1'."
@@ -129,7 +129,7 @@ class InstanceInfo(BaseModel):
     )
     current_user: CurrentUser = Field(description="Who this server is authenticated as.")
     features: InstanceProbe = Field(
-        description="Probed feature availability (SPEC §4.7); read it before using gated params."
+        description="Probed feature availability; read it before using gated params."
     )
 
 
@@ -196,7 +196,7 @@ class ActivityRow(NamedRow):
 
 
 class ProjectMetadata(BaseModel):
-    """The ids and names that are valid here (SPEC §6.12)."""
+    """The ids and names that are valid here."""
 
     project_id: int | str | None = Field(
         default=None, description="The project this was scoped to; null for the global sets."
@@ -223,7 +223,7 @@ class ProjectMetadata(BaseModel):
         description="Activities log_time accepts here; null unless project_id was given.",
     )
     notes: list[str] | None = Field(
-        default=None, description="Degradation markers (G5): modules off, permissions missing."
+        default=None, description="Degradation notes: modules off, permissions missing."
     )
 
 
@@ -248,7 +248,7 @@ class SchemaField(BaseModel):
 
 
 class SchemaCustomField(BaseModel):
-    """Custom-field definition, the read shape of SPEC §6.2.1 without a value."""
+    """Custom-field definition: the canonical custom-field read shape without a value."""
 
     key: str = Field(description="Wire key, e.g. 'customField12' — use it in raw_filters.")
     name: str | None = Field(default=None, description="Display name, e.g. 'Severity'.")
@@ -267,7 +267,7 @@ class SchemaCustomField(BaseModel):
 
 
 class WorkPackageSchema(BaseModel):
-    """Everything a create/update call needs to be valid (SPEC §6.12, §6.2.1)."""
+    """Everything a create/update call needs to be valid."""
 
     project_id: int | str = Field(description="Project the schema was requested for.")
     type_id: int | str = Field(description="Work-package type the schema was requested for.")
@@ -283,7 +283,7 @@ class WorkPackageSchema(BaseModel):
         description="Always a list; empty when the type has none.",
     )
     notes: list[str] | None = Field(
-        default=None, description="Degradation markers (G5), e.g. capped allowed-value lists."
+        default=None, description="Degradation notes, e.g. capped allowed-value lists."
     )
 
 
@@ -541,7 +541,7 @@ class PermissionCheck(BaseModel):
 
 
 class PermissionsResult(ListEnvelope[CapabilityGroup]):
-    """The §9.3 envelope of capability rows, plus who was asked about and the check."""
+    """The standard list envelope of capability rows, plus who was asked about and the check."""
 
     principal: Ref = Field(
         description="The user the capabilities were resolved for — always the authenticated "

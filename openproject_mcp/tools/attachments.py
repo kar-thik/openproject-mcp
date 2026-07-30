@@ -131,7 +131,7 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class AttachmentRow(BaseModel):
-    """One attached file (SPEC §6.4)."""
+    """One attached file."""
 
     id: int | str | None = Field(
         default=None, description="Attachment id; pass it to download_attachment."
@@ -154,7 +154,7 @@ class AttachmentRow(BaseModel):
 
 
 class AttachmentDeletionResult(BaseModel):
-    """Outcome of ``delete_attachment`` (SPEC §6.4)."""
+    """Outcome of ``delete_attachment``."""
 
     id: int = Field(description="Id of the attachment that was deleted.")
     deleted: bool = Field(description="True once OpenProject accepted the deletion.")
@@ -170,7 +170,7 @@ class AttachmentDeletionResult(BaseModel):
 
 
 class DownloadResult(BaseModel):
-    """Where the bytes landed and what they were (SPEC §7.1 step 4)."""
+    """Where the bytes landed and what they were."""
 
     path: str = Field(description="Absolute path of the saved file on the MCP server's machine.")
     file_name: str = Field(
@@ -477,7 +477,7 @@ FILE_LINKS_EMPTY_NOTE = (
 
 
 class FileLinkRow(BaseModel):
-    """One file on an external storage linked to a work package (SPEC §6.4)."""
+    """One file on an external storage linked to a work package."""
 
     id: int | str | None = Field(
         default=None, description="File-link id inside OpenProject; not the file's own id."

@@ -232,7 +232,7 @@ class RosterMember(BaseModel):
 
 
 class ProjectReportData(BaseModel):
-    """The whole report window as structured data (SPEC §6.14)."""
+    """The whole report window as structured data."""
 
     project: Ref | None = Field(default=None, description="The project the report covers.")
     from_date: str = Field(description="Window start, ISO YYYY-MM-DD, inclusive.")
@@ -263,7 +263,7 @@ class ProjectReportData(BaseModel):
     )
     notes: list[str] = Field(
         default_factory=list[str],
-        description="In-band markers (G1/G5): which lists were capped, which sources degraded. "
+        description="In-band markers: which lists were capped, which sources degraded. "
         "Read them before quoting a number as complete.",
     )
 

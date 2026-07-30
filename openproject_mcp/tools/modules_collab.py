@@ -187,7 +187,7 @@ class MeetingRow(BaseModel):
 
 
 class MeetingOutcome(BaseModel):
-    """One recorded outcome of an agenda item (read-only here, SPEC §18)."""
+    """One recorded outcome of an agenda item (read-only through this server)."""
 
     id: int | str | None = Field(default=None, description="Outcome id.")
     kind: str | None = Field(
@@ -262,7 +262,7 @@ class MeetingDetail(MeetingRow):
     updated_at: str | None = Field(default=None, description="ISO 8601 UTC timestamp.")
     notes: list[str] = Field(
         default_factory=list[str],
-        description="Degradation markers (G5): agenda items that could not be read, work "
+        description="Degradation notes: agenda items that could not be read, work "
         "packages this account may not see.",
     )
 
@@ -300,7 +300,7 @@ class DocumentDetail(DocumentRow):
 
 
 class BudgetRow(BaseModel):
-    """One budget. API v3 exposes the identity only — no amounts (SPEC §6.13)."""
+    """One budget. API v3 exposes the identity only — no amounts."""
 
     id: int | str | None = Field(
         default=None,
@@ -1049,7 +1049,7 @@ def register(mcp: FastMCP) -> None:
         Pitfalls. This needs the 'manage agendas' permission, so a 403 is about the account, not
         the payload. A 422 usually means the work package is not visible to this account or the
         meeting is already closed — `violations` names the attribute. Items cannot be updated,
-        reordered or deleted through this server (SPEC §18): a mistake has to be fixed in the UI.
+        reordered or deleted through this server — a mistake has to be fixed in the OpenProject UI.
         Outcomes are read-only here too, so this cannot record a decision.
 
         Cross-references: `get_meeting(meeting_id=...)` to see the agenda you are appending to;
@@ -1129,7 +1129,7 @@ def register(mcp: FastMCP) -> None:
         Pitfalls. A 404 means the id is wrong, the page was deleted, or the wiki is disabled in
         that project — it does not mean the wiki is empty. Sub-pages, revisions, page history and
         wiki-page↔work-package links are not exposed either. Creating or editing wiki pages is
-        out of scope (SPEC §18).
+        not supported by this server.
 
         Cross-references: `list_attachments(container_type='wiki_page', container_id=<id>)` lists
         the files on the page and `download_attachment` fetches one; `get_project_metadata` for
@@ -1224,8 +1224,8 @@ def register(mcp: FastMCP) -> None:
         `list_attachments(container_type='document', container_id=<this id>)`. A document created
         with OpenProject's block editor keeps its rich content in a field API v3 does not render,
         so `description` can be empty for a document that clearly has text in the UI; say so
-        rather than reporting the document as blank. Editing documents is out of scope
-        (SPEC §18).
+        rather than reporting the document as blank. Editing documents is not supported by
+        this server.
 
         Cross-references: `list_documents` for the id; `download_attachment` for the files.
         """
