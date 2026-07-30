@@ -236,6 +236,10 @@ async def test_marking_ids_is_one_bulk_request_with_an_id_filter(
     assert filters_of(route.calls[0].request) == [
         {"id": {"operator": "=", "values": ["4711", "4712"]}}
     ]
+    # The empty JSON body is what makes httpx send a Content-Type header;
+    # without one OpenProject answers 406 before marking anything.
+    assert route.calls[0].request.headers["content-type"] == "application/json"
+    assert route.calls[0].request.content == b"{}"
     assert result.structured_content is not None
     assert result.structured_content["marked"] == 2
     assert result.structured_content["read"] is True
@@ -331,6 +335,9 @@ async def test_marking_all_counts_first_then_clears_the_inbox(
     assert filters_of(count.calls[0].request) == [{"readIAN": {"operator": "=", "values": ["f"]}}]
     assert count.calls[0].request.url.params["pageSize"] == "1"
     assert filters_of(bulk.calls[0].request) == [{"readIAN": {"operator": "=", "values": ["f"]}}]
+    # json={} keeps the Content-Type header that OpenProject requires (406 otherwise).
+    assert bulk.calls[0].request.headers["content-type"] == "application/json"
+    assert bulk.calls[0].request.content == b"{}"
 
     assert result.structured_content is not None
     assert result.structured_content["marked"] == 12

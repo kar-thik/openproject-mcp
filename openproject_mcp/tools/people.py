@@ -42,7 +42,11 @@ from urllib.parse import quote, urlsplit
 from pydantic import BaseModel, Field
 
 from openproject_mcp.client import hal
-from openproject_mcp.client.errors import InputValidationError, UnexpectedResponseError
+from openproject_mcp.client.errors import (
+    InputValidationError,
+    NotFoundError,
+    UnexpectedResponseError,
+)
 from openproject_mcp.client.filters import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -109,6 +113,10 @@ PRINCIPAL_PATH_KINDS: dict[str, PrincipalKind] = {
     "users": "user",
     "groups": "group",
     "placeholder_users": "placeholder",
+}
+#: Tool-facing principal kind -> API collection segment, for building write hrefs.
+PRINCIPAL_KIND_PATHS: dict[PrincipalKind, str] = {
+    kind: segment for segment, kind in PRINCIPAL_PATH_KINDS.items()
 }
 
 #: Account statuses OpenProject exposes on the ``/principals`` status filter.
@@ -263,6 +271,43 @@ def _kind_from_href(href: str | None) -> PrincipalKind | None:
         if kind is not None:
             return kind
     return None
+
+
+async def _principal_link(ctx: ToolContext, principal_id: int) -> dict[str, str | None]:
+    """A membership principal href built against the principal's concrete kind.
+
+    The membership form rejects the generic ``/principals/{id}`` spelling with a
+    ResourceTypeMismatch — its ``user`` property accepts only ``/users/{id}``,
+    ``/groups/{id}`` or ``/placeholder_users/{id}`` — so the kind has to be read
+    from the principals collection first.
+    """
+    payload = await ctx.client.get_json(
+        "principals",
+        params=query_params(
+            filters=[make_filter("id", Op.EQ, [principal_id], resource=PRINCIPALS_RESOURCE)]
+        ),
+    )
+    principals = hal.collection(payload)
+    for element in principals.elements:
+        kind = _kind_from_type(element.get("_type")) or _kind_from_href(hal.self_href(element))
+        if kind is not None and hal.self_id(element) == principal_id:
+            return link(PRINCIPAL_KIND_PATHS[kind], principal_id)
+    if principals.total > len(principals.elements):
+        # An instance that ignored the id filter would page-1-truncate; saying
+        # "not found" on a truncated listing would be a lie.
+        raise UnexpectedResponseError(
+            f"The principal lookup for id {principal_id} came back truncated "
+            f"({len(principals.elements)} of {principals.total} rows), so the principal's "
+            "kind could not be determined.",
+            hint="Retry; if this persists, this instance ignores the id filter on /principals.",
+        )
+    raise NotFoundError(
+        f"Principal {principal_id} was not found.",
+        hint=(
+            "No user, group or placeholder user with this id is visible to this account. "
+            "Principal ids come from search_principals."
+        ),
+    )
 
 
 def _principal_row(element: Mapping[str, Any]) -> PrincipalRow:
@@ -779,7 +824,8 @@ def register(mcp: FastMCP) -> None:
         resolved_project = await _project_numeric_id(ctx, project_id)
         _positive_id("principal_id", principal_id)
 
-        links: dict[str, Any] = links_payload(project=resolved_project, principal=principal_id)
+        links: dict[str, Any] = links_payload(project=resolved_project)
+        links["principal"] = await _principal_link(ctx, principal_id)
         links["roles"] = [link("roles", role_id) for role_id in roles]
         body: dict[str, Any] = {"_links": links, "_meta": _membership_meta(notify_message)}
 

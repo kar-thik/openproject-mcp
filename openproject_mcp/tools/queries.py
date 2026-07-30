@@ -666,8 +666,10 @@ def register(mcp: FastMCP) -> None:
         if star and query_id is not None:
             try:
                 # Starring is a PATCH upstream: the star namespace mounts the
-                # generic Update endpoint, so POST is not routed at all.
-                starred = await context.client.patch_json(f"queries/{query_id}/star")
+                # generic Update endpoint, so POST is not routed at all. The
+                # empty JSON body is load-bearing — OpenProject answers any
+                # bodyless POST/PATCH with 406 "Missing content-type header".
+                starred = await context.client.patch_json(f"queries/{query_id}/star", json={})
             except OpenProjectError as exc:
                 # The query exists; failing the whole call would hide its id.
                 notes.append(STAR_FAILED_NOTE.format(message=exc.message))

@@ -963,7 +963,12 @@ def register(mcp: FastMCP) -> None:
 
         payload = build_write_payload(attributes, links)
         subject = f"project {project_id}"
-        discovery = "Project ids come from list_projects."
+        discovery = (
+            "Project ids come from list_projects. A third reading applies to writes: some "
+            "OpenProject versions (16.6 among them) do not route the meetings write API at "
+            "all, so creating 404s here even when the module is enabled and list_meetings "
+            "works."
+        )
         form = await _module_post(
             "meetings/form",
             json=payload,
@@ -1080,7 +1085,12 @@ def register(mcp: FastMCP) -> None:
                 json=payload,
                 module=MEETINGS,
                 subject=f"meeting {meeting_id}",
-                discovery="Meeting ids come from list_meetings.",
+                discovery=(
+                    "Meeting ids come from list_meetings. A third reading applies to writes: "
+                    "some OpenProject versions (16.6 among them) do not route the meetings "
+                    "write API at all, so this 404s regardless of the meeting id even when "
+                    "the module is enabled."
+                ),
             )
         except ValidationFailedError as exc:
             raise ValidationFailedError(

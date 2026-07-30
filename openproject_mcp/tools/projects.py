@@ -1334,7 +1334,13 @@ def register(mcp: FastMCP) -> None:
 
         path = f"projects/{quote(key, safe='')}/favorite"
         try:
-            await ctx.client.request("POST" if favorite else "DELETE", path)
+            if favorite:
+                # The empty JSON body is load-bearing — OpenProject answers any
+                # bodyless POST with 406 "Missing content-type header"; DELETE
+                # is accepted without one.
+                await ctx.client.request("POST", path, json={})
+            else:
+                await ctx.client.request("DELETE", path)
         except NotFoundError as exc:
             raise NotFoundError(
                 exc.message,

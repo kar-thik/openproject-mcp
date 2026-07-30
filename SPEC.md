@@ -354,7 +354,7 @@ Attachment ids are produced by `list_attachments` and `get_work_package(include=
 | Tool | Sig (abridged) | Endpoint(s) | Ph |
 |---|---|---|---|
 | 🔍 `list_notifications` | `unread_only=true, reason?, project_id?, page, page_size` | `GET /notifications` (`readIAN`/`reason`/`project` filters) | 2 |
-| ✏️ `mark_notifications` | `ids (required, non-empty), read=true` | `POST /notifications/{id}/read_ian\|unread_ian` | 2 |
+| ✏️ `mark_notifications` | `ids (required, non-empty), read=true` | bulk `POST /notifications/read_ian\|unread_ian?filters=[id]` | 2 |
 | ✏️ `mark_all_notifications_read` | `reason?, project_id?` | bulk `POST /notifications/read_ian?filters=…` | 2 |
 
 Two tools instead of one union-shaped footgun: `mark_notifications` requires explicit ids; the mass operation is a separately-named tool, marks **read only** (the safe direction), and its description says it affects everything matching the (optional) filters. Reason enum (verified wire values): `mentioned, assigned, responsible, watched, subscribed, commented, created, processed, prioritized, scheduled, shared, reminder, dateAlert` — `dateAlert` filtering is Enterprise-gated (`date_alerts` token); the API's rejection passes through with a hint (§4.7).
@@ -388,12 +388,12 @@ Two tools instead of one union-shaped footgun: `mark_notifications` requires exp
 | 🔍 `search_principals` | `query?, type? ('user'\|'group'\|'placeholder'), member_of_project?, status?, page, page_size` | `GET /principals` (typeahead/name filters) | 2 |
 | 🔍 `get_user` | `id \| 'me'` | `GET /users/{id}` | 2 |
 | 🔍 `list_memberships` | `project_id?, principal_id?, page, page_size` | `GET /memberships` | 2 |
-| ⚙️✏️ `create_membership` | `project_id, principal_id, role_ids, notify_message?` | form → `POST /memberships` | 2 |
+| ⚙️✏️ `create_membership` | `project_id, principal_id, role_ids, notify_message?` | principal-kind lookup → form → `POST /memberships` | 2 |
 | ⚙️✏️ `update_membership` | `membership_id, role_ids` | `PATCH /memberships/{id}` | 2 |
 | ⚙️🗑 `delete_membership` | `membership_id, confirm` | `DELETE /memberships/{id}` | 2 |
 | 🔍 `list_roles` | `include_permissions=false` | `GET /roles` | 2 |
 
-Users and groups are **read-only** (`search_principals` covers group-id discovery for memberships); user/group CRUD and locking are out of scope (§18). The `⚙️` gate (`OPENPROJECT_MCP_ADMIN_TOOLS=1`) covers exactly the three membership-write tools. `list_roles` returns `{id, name}` by default; `include_permissions=true` opts into the full permission arrays (token bomb otherwise).
+Users and groups are **read-only** (`search_principals` covers group-id discovery for memberships); user/group CRUD and locking are out of scope (§18). Membership writes must spell the principal as its concrete kind — the form rejects the generic `/principals/{id}` href with ResourceTypeMismatch (live-verified on 16.6) — so `create_membership` resolves the kind via an id-filtered `GET /principals` and sends `/users/{id}`, `/groups/{id}` or `/placeholder_users/{id}`. The `⚙️` gate (`OPENPROJECT_MCP_ADMIN_TOOLS=1`) covers exactly the three membership-write tools. `list_roles` returns `{id, name}` by default; `include_permissions=true` opts into the full permission arrays (token bomb otherwise).
 
 ### 6.12 Metadata & schemas (Ph1: 2)
 
@@ -421,7 +421,7 @@ Users and groups are **read-only** (`search_principals` covers group-id discover
 | 🔍 Ⓜ `list_documents` / `get_document` | `page…` / `id` | `GET /documents(…/{id})` | 3 |
 | 🔍 Ⓜ `list_budgets` | `project_id` | `GET /projects/{id}/budgets` | 3 |
 
-(`list_documents`/`get_document` count as two tools.) "Where was this WP discussed?" → `get_work_package(include=[meetings])` uses `GET /work_packages/{id}/meeting_agenda_items` Ⓜ. Meeting update/delete, outcomes/sections write, recurring meetings, and document update: excluded (§18).
+(`list_documents`/`get_document` count as two tools.) "Where was this WP discussed?" → `get_work_package(include=[meetings])` uses `GET /work_packages/{id}/meeting_agenda_items` Ⓜ. Meeting update/delete, outcomes/sections write, recurring meetings, and document update: excluded (§18). Availability caveat (live-verified 2026-07-30): the meetings **write** routes (`POST /meetings/form`, `/meetings`, `/meeting_agenda_items`) do not exist on OpenProject 16.6 — they 404 at route level even with the module enabled and `meetings/create` granted, while the read routes work; the write tools' 404 hint names this reading.
 
 ### 6.14 Reporting (Ph3: 1)
 

@@ -451,7 +451,10 @@ async def test_favoriting_posts_and_unfavoriting_deletes(
         "message": f"Project '{SOURCE_PROJECT_ID}' is now a favorite of the authenticated user.",
     }
     assert post.call_count == 1
-    assert post.calls[0].request.content == b"", "the favorite endpoint takes no body"
+    # json={} keeps the Content-Type header that OpenProject requires on POST
+    # (406 "Missing content-type header" otherwise); DELETE stays bodyless.
+    assert post.calls[0].request.headers["content-type"] == "application/json"
+    assert post.calls[0].request.content == b"{}"
 
     removed = await mcp_client.call_tool(
         "set_project_favorite", {"id_or_identifier": SOURCE_PROJECT_ID, "favorite": False}
@@ -460,6 +463,7 @@ async def test_favoriting_posts_and_unfavoriting_deletes(
     assert removed.structured_content["favorite"] is False
     assert "no longer a favorite" in removed.structured_content["message"]
     assert delete.call_count == 1
+    assert delete.calls[0].request.content == b"", "the unfavorite DELETE stays bodyless"
 
 
 async def test_a_missing_favorite_endpoint_is_reported_as_unavailable(
@@ -589,6 +593,11 @@ async def test_save_query_stars_the_view_in_a_second_call(
         "save_query", {"name": QUERY_NAME, "filters": SAVE_FILTERS, "star": True}
     )
     assert star.call_count == 1
+    # The empty JSON body is what makes httpx send a Content-Type header;
+    # without one OpenProject answers 406 before the star endpoint runs.
+    star_request = star.calls[0].request
+    assert star_request.headers["content-type"] == "application/json"
+    assert star_request.content == b"{}"
     assert result.structured_content is not None
     assert result.structured_content["starred"] is True
     assert result.structured_content["notes"] == []

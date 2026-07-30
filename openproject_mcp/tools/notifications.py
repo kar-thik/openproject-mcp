@@ -446,7 +446,11 @@ def register(mcp: FastMCP) -> None:
         serialized = serialize_filters(
             [make_filter("id", Op.EQ, cleaned, resource=NOTIFICATIONS_RESOURCE)]
         )
-        await ctx.client.post_json(f"notifications/{endpoint}", params={"filters": serialized})
+        # The empty JSON body is load-bearing — OpenProject answers any bodyless
+        # POST with 406 "Missing content-type header" before touching anything.
+        await ctx.client.post_json(
+            f"notifications/{endpoint}", json={}, params={"filters": serialized}
+        )
 
         state = "read" if read else "unread"
         return MarkResult(
@@ -520,7 +524,11 @@ def register(mcp: FastMCP) -> None:
         matched = hal.collection(preview).total
 
         try:
-            await ctx.client.post_json("notifications/read_ian", params={"filters": serialized})
+            # json={} for the same reason as mark_notifications: a bodyless POST
+            # is refused with 406 before any notification is marked.
+            await ctx.client.post_json(
+                "notifications/read_ian", json={}, params={"filters": serialized}
+            )
         except ValidationFailedError as exc:
             raise _with_date_alert_hint(exc, reason) from exc
 

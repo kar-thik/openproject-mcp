@@ -397,6 +397,9 @@ async def test_membership_filters_are_serialized_with_resolved_ids(
 async def test_grant_goes_through_the_form_and_sends_no_email_by_default(
     admin_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
+    lookup = mock_api.get("principals").mock(
+        return_value=httpx.Response(200, json=PRINCIPAL_COLLECTION)
+    )
     form = mock_api.post("memberships/form").mock(
         return_value=httpx.Response(200, json=MEMBERSHIP_FORM_OK)
     )
@@ -409,12 +412,17 @@ async def test_grant_goes_through_the_form_and_sends_no_email_by_default(
         {"project_id": PROJECT_ID, "principal_id": 12, "role_ids": [3]},
     )
 
+    # The principal kind is read first: the membership form rejects the generic
+    # /principals/{id} spelling (ResourceTypeMismatch on 16.6), so the payload
+    # must carry the concrete /users/{id} href.
+    assert lookup.call_count == 1
+    assert filters_of(lookup.calls[0].request) == [{"id": {"operator": "=", "values": ["12"]}}]
     assert form.call_count == 1
     assert create.call_count == 1
     body = json.loads(create.calls[0].request.content)
     assert body["_links"] == {
         "project": {"href": f"/api/v3/projects/{PROJECT_ID}"},
-        "principal": {"href": "/api/v3/principals/12"},
+        "principal": {"href": "/api/v3/users/12"},
         "roles": [{"href": "/api/v3/roles/3"}],
     }
     assert body["_meta"] == {"sendNotifications": False}
@@ -426,9 +434,50 @@ async def test_grant_goes_through_the_form_and_sends_no_email_by_default(
     assert any("No invitation email" in note for note in result.structured_content["notes"])
 
 
+async def test_group_principal_gets_a_groups_href(
+    admin_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.get("principals").mock(return_value=httpx.Response(200, json=PRINCIPAL_COLLECTION))
+    mock_api.post("memberships/form").mock(
+        return_value=httpx.Response(200, json=MEMBERSHIP_FORM_OK)
+    )
+    create = mock_api.post("memberships").mock(
+        return_value=httpx.Response(201, json=CREATED_MEMBERSHIP)
+    )
+
+    await admin_client.call_tool(
+        "create_membership",
+        {"project_id": PROJECT_ID, "principal_id": 5, "role_ids": [3]},
+    )
+    body = json.loads(create.calls[0].request.content)
+    assert body["_links"]["principal"] == {"href": "/api/v3/groups/5"}
+
+
+async def test_unknown_principal_fails_before_the_form(
+    admin_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.get("principals").mock(
+        return_value=httpx.Response(200, json=EMPTY_PRINCIPAL_COLLECTION)
+    )
+    form = mock_api.post("memberships/form").mock(
+        return_value=httpx.Response(200, json=MEMBERSHIP_FORM_OK)
+    )
+
+    result = await admin_client.call_tool(
+        "create_membership",
+        {"project_id": PROJECT_ID, "principal_id": 999, "role_ids": [3]},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "not_found"
+    assert "search_principals" in error["hint"]
+    assert form.call_count == 0
+
+
 async def test_notify_message_opts_into_the_invitation_email(
     admin_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
+    mock_api.get("principals").mock(return_value=httpx.Response(200, json=PRINCIPAL_COLLECTION))
     mock_api.post("memberships/form").mock(
         return_value=httpx.Response(200, json=MEMBERSHIP_FORM_OK)
     )
@@ -466,6 +515,7 @@ async def test_project_identifier_is_resolved_before_the_grant(
     lookup = mock_api.get(f"projects/{PROJECT_IDENTIFIER}").mock(
         return_value=httpx.Response(200, json=PROJECT_BY_IDENTIFIER)
     )
+    mock_api.get("principals").mock(return_value=httpx.Response(200, json=PRINCIPAL_COLLECTION))
     mock_api.post("memberships/form").mock(
         return_value=httpx.Response(200, json=MEMBERSHIP_FORM_OK)
     )
@@ -485,6 +535,7 @@ async def test_project_identifier_is_resolved_before_the_grant(
 async def test_form_validation_errors_block_the_write_and_list_allowed_roles(
     admin_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
+    mock_api.get("principals").mock(return_value=httpx.Response(200, json=PRINCIPAL_COLLECTION))
     mock_api.post("memberships/form").mock(
         return_value=httpx.Response(200, json=MEMBERSHIP_FORM_INVALID_ROLE)
     )
@@ -511,6 +562,7 @@ async def test_form_validation_errors_block_the_write_and_list_allowed_roles(
 async def test_duplicate_membership_is_reported_from_the_form(
     admin_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
+    mock_api.get("principals").mock(return_value=httpx.Response(200, json=PRINCIPAL_COLLECTION))
     mock_api.post("memberships/form").mock(
         return_value=httpx.Response(200, json=MEMBERSHIP_FORM_DUPLICATE)
     )
@@ -535,6 +587,7 @@ async def test_duplicate_membership_is_reported_from_the_form(
 async def test_upstream_422_carries_its_violations(
     admin_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
+    mock_api.get("principals").mock(return_value=httpx.Response(200, json=PRINCIPAL_COLLECTION))
     mock_api.post("memberships/form").mock(
         return_value=httpx.Response(200, json=MEMBERSHIP_FORM_OK)
     )
