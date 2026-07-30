@@ -257,7 +257,7 @@ class Filter(BaseModel):
 
 
 class RawFilter(BaseModel):
-    """The typed escape hatch exposed to tools (SPEC §9.2).
+    """One raw OpenProject filter, passed through to the API as written.
 
     Deliberately a typed array rather than a JSON-in-a-string parameter so the
     model cannot produce escaping failures.

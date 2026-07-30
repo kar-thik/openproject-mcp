@@ -243,9 +243,7 @@ def work_package_response(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=OPEN_GROUPED)
     entries = json.loads(params.get("filters", "[]"))
     names = {name for entry in entries for name in entry}
-    operators = {
-        entry[name]["operator"] for entry in entries for name in entry if name == "status"
-    }
+    operators = {entry[name]["operator"] for entry in entries for name in entry if name == "status"}
     if "dueDate" in names:
         return httpx.Response(200, json=DUE_TODAY_COLLECTION)
     if "createdAt" in names:

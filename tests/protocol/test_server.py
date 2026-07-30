@@ -358,4 +358,6 @@ async def test_disable_prunes_exactly_the_named_groups() -> None:
     )
     async with Client(build_server(settings)) as client:
         listed = {tool.name for tool in await client.list_tools()}
-    assert listed == DEFAULT_TOOLS - ATTACHMENT_GROUP_TOOLS - MEETINGS_GROUP_TOOLS - NEWS_GROUP_TOOLS
+    assert (
+        listed == DEFAULT_TOOLS - ATTACHMENT_GROUP_TOOLS - MEETINGS_GROUP_TOOLS - NEWS_GROUP_TOOLS
+    )

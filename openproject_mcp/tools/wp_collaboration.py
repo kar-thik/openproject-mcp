@@ -172,7 +172,7 @@ class ActivityEntry(BaseModel):
     )
     truncated: bool = Field(
         default=False,
-        description="True when the comment was cut to max_comment_chars (guarantee G1).",
+        description="True when the comment was cut to max_comment_chars.",
     )
     comment_length: int | None = Field(
         default=None,
@@ -489,7 +489,7 @@ class CommentReactionState(BaseModel):
     )
     notes: list[str] = Field(
         default_factory=list[str],
-        description="Degradation markers (G5); always a list, usually empty.",
+        description="Degradation notes; always a list, usually empty.",
     )
     message: str = Field(description="Human-readable confirmation.")
 

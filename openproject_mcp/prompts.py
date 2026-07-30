@@ -852,12 +852,11 @@ def render_inbox(inbox: InboxSummary) -> str:
     """Render the unread inbox grouped by reason, with a suggested action per group."""
     actions = {
         "mentioned": "Someone asked you something directly - read the comment and reply, or "
-                     "hand it over explicitly.",
-        "assigned": "You now own these - accept them, re-assign them, or say when they will "
-                    "move.",
+        "hand it over explicitly.",
+        "assigned": "You now own these - accept them, re-assign them, or say when they will move.",
         "responsible": "You are accountable for these - check they have an owner and a date.",
         "watched": "You are watching these - skim for changes that affect your work, then mark "
-                   "them read.",
+        "them read.",
         "subscribed": "Subscription noise - mark read unless something changed materially.",
         "commented": "New discussion - read the thread before it forks.",
         "created": "New work landed in your scope - triage type, priority and assignee.",
@@ -971,4 +970,3 @@ def render_backlog(sweep: BacklogSweep, project: str) -> str:
             "scanned; re-run after this batch._"
         )
     return "\n".join(lines)
-

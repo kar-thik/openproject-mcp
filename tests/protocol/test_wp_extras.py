@@ -409,9 +409,7 @@ async def test_reacting_to_a_field_change_entry_surfaces_the_api_rejection(
 async def test_reminder_is_created_when_the_work_package_has_none(
     mcp_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
-    read = mock_api.get(WP_REMINDERS_PATH).mock(
-        return_value=httpx.Response(200, json=NO_REMINDERS)
-    )
+    read = mock_api.get(WP_REMINDERS_PATH).mock(return_value=httpx.Response(200, json=NO_REMINDERS))
     route = mock_api.post(WP_REMINDERS_PATH).mock(
         return_value=httpx.Response(201, json=CREATED_REMINDER)
     )
@@ -562,9 +560,7 @@ async def test_clearing_a_reminder_that_is_not_there_reports_unchanged(
 async def test_a_note_with_an_explicit_null_time_is_refused_locally(
     mcp_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
-    read = mock_api.get(WP_REMINDERS_PATH).mock(
-        return_value=httpx.Response(200, json=ONE_REMINDER)
-    )
+    read = mock_api.get(WP_REMINDERS_PATH).mock(return_value=httpx.Response(200, json=ONE_REMINDER))
     route = mock_api.delete(REMINDER_PATH).mock(return_value=httpx.Response(204))
 
     result = await mcp_client.call_tool(
@@ -583,9 +579,7 @@ async def test_a_note_with_an_explicit_null_time_is_refused_locally(
 async def test_a_call_with_nothing_to_set_never_reaches_the_api(
     mcp_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
-    read = mock_api.get(WP_REMINDERS_PATH).mock(
-        return_value=httpx.Response(200, json=ONE_REMINDER)
-    )
+    read = mock_api.get(WP_REMINDERS_PATH).mock(return_value=httpx.Response(200, json=ONE_REMINDER))
 
     result = await mcp_client.call_tool(
         "set_work_package_reminder",
@@ -603,9 +597,7 @@ async def test_a_call_with_nothing_to_set_never_reaches_the_api(
 async def test_a_naive_datetime_is_refused_before_any_request(
     mcp_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
-    read = mock_api.get(WP_REMINDERS_PATH).mock(
-        return_value=httpx.Response(200, json=NO_REMINDERS)
-    )
+    read = mock_api.get(WP_REMINDERS_PATH).mock(return_value=httpx.Response(200, json=NO_REMINDERS))
     route = mock_api.post(WP_REMINDERS_PATH).mock(
         return_value=httpx.Response(201, json=CREATED_REMINDER)
     )
@@ -873,9 +865,7 @@ async def test_an_unknown_custom_action_points_at_the_include_that_lists_them(
     mock_api.get(WORK_PACKAGE_PATH).mock(
         return_value=httpx.Response(200, json=WORK_PACKAGE_BEFORE_ACTION)
     )
-    mock_api.post(EXECUTE_PATH).mock(
-        return_value=httpx.Response(404, json=CUSTOM_ACTION_NOT_FOUND)
-    )
+    mock_api.post(EXECUTE_PATH).mock(return_value=httpx.Response(404, json=CUSTOM_ACTION_NOT_FOUND))
 
     result = await mcp_client.call_tool(
         "execute_custom_action",
@@ -896,9 +886,7 @@ async def test_an_action_whose_conditions_no_longer_hold_is_permission_denied(
     mock_api.get(WORK_PACKAGE_PATH).mock(
         return_value=httpx.Response(200, json=WORK_PACKAGE_BEFORE_ACTION)
     )
-    mock_api.post(EXECUTE_PATH).mock(
-        return_value=httpx.Response(403, json=CUSTOM_ACTION_FORBIDDEN)
-    )
+    mock_api.post(EXECUTE_PATH).mock(return_value=httpx.Response(403, json=CUSTOM_ACTION_FORBIDDEN))
 
     result = await mcp_client.call_tool(
         "execute_custom_action",

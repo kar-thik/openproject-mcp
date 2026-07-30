@@ -63,9 +63,7 @@ def mock_report_api(mock_api: respx.MockRouter) -> dict[str, respx.Route]:
     """Every endpoint a rendered report reads, including the relation probes."""
     mock_api.get(f"projects/{PROJECT_ID}").mock(return_value=httpx.Response(200, json=PROJECT))
     mock_api.get("statuses").mock(return_value=httpx.Response(200, json=STATUS_COLLECTION))
-    mock_api.get("time_entries").mock(
-        return_value=httpx.Response(200, json=TIME_ENTRY_COLLECTION)
-    )
+    mock_api.get("time_entries").mock(return_value=httpx.Response(200, json=TIME_ENTRY_COLLECTION))
     mock_api.get("memberships").mock(return_value=httpx.Response(200, json=MEMBERSHIP_COLLECTION))
     for work_package_id in (1235, 1236, 1237, 1238):
         mock_api.get(f"work_packages/{work_package_id}/relations").mock(
@@ -549,9 +547,7 @@ async def test_a_quarantined_attachment_is_refused_before_the_bytes(
 async def test_an_unknown_resource_id_raises_the_structured_envelope(
     mcp_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
-    mock_api.get("work_packages/999").mock(
-        return_value=httpx.Response(404, json=NOT_FOUND_ERROR)
-    )
+    mock_api.get("work_packages/999").mock(return_value=httpx.Response(404, json=NOT_FOUND_ERROR))
 
     with pytest.raises(McpError) as raised:
         await mcp_client.read_resource("openproject://work_package/999")

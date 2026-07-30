@@ -111,7 +111,7 @@ _FAVORED_HINT = (
 
 
 class ProjectRow(BaseModel):
-    """Compact project row for list results (SPEC §5.2, §6.6)."""
+    """Compact project row for list results."""
 
     id: int | str | None = Field(
         default=None, description="Numeric project id; accepted by every project_id parameter."
@@ -140,7 +140,7 @@ class ProjectRow(BaseModel):
 
 
 class ProjectDetail(ProjectRow):
-    """Full project detail (SPEC §6.6): the row plus text fields and timestamps."""
+    """Full project detail: the row plus text fields and timestamps."""
 
     description: str | None = Field(
         default=None, description="Description as markdown (raw); html is dropped."
@@ -243,9 +243,7 @@ class ProjectDeletionResult(BaseModel):
     message: str = Field(description="What was scheduled, in plain language.")
 
 
-def _project_form_hints(
-    form: Mapping[str, Any], errors: Mapping[str, Any]
-) -> list[str]:
+def _project_form_hints(form: Mapping[str, Any], errors: Mapping[str, Any]) -> list[str]:
     """The project-specific half of a form rejection (SPEC §4.5).
 
     The form is asked first precisely so a taken identifier or an unknown parent
@@ -398,7 +396,7 @@ class ProjectCopyResult(BaseModel):
     )
     notes: list[str] = Field(
         default_factory=list[str],
-        description="What is still outstanding (G5). Always says the copy has to be polled.",
+        description="What is still outstanding. Always says the copy has to be polled.",
     )
 
 

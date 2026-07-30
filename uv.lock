@@ -750,8 +750,7 @@ wheels = [
 ]
 
 [[package]]
-name = "openproject-mcp"
-version = "0.1.0"
+name = "openproject-mcp-server"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
@@ -774,7 +773,7 @@ dev = [
 requires-dist = [
     { name = "fastmcp", specifier = ">=3.4,<4" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28" },
-    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pydantic", specifier = ">=2.12" },
     { name = "pydantic-settings", specifier = ">=2" },
 ]
 

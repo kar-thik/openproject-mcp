@@ -1,10 +1,46 @@
-"""Settings: zero-env construction, env mapping, normalization, runtime checks."""
+"""Settings: zero-env construction, env mapping, frozen env surface, runtime checks."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
 from openproject_mcp.config import Settings, check_runtime_config
+
+#: Every environment variable the server reads, frozen at the first release.
+#: Adding, renaming or removing a name is a compatibility decision — when you
+#: make one deliberately, update this set, ``.env.example`` and the docs
+#: together.
+ENV_SURFACE = frozenset(
+    {
+        "OPENPROJECT_URL",
+        "OPENPROJECT_API_KEY",
+        "OPENPROJECT_OAUTH_TOKEN",
+        "OPENPROJECT_MCP_ACCEPT_LANGUAGE",
+        "OPENPROJECT_MCP_CA_BUNDLE",
+        "OPENPROJECT_MCP_READ_ONLY",
+        "OPENPROJECT_MCP_ADMIN_TOOLS",
+        "OPENPROJECT_MCP_DISABLE",
+        "OPENPROJECT_MCP_INSECURE",
+        "OPENPROJECT_MCP_DOWNLOAD_DIR",
+        "OPENPROJECT_MCP_MAX_DOWNLOAD_MB",
+        "OPENPROJECT_MCP_CACHE_TTL",
+        "OPENPROJECT_MCP_LOG_LEVEL",
+        "OPENPROJECT_MCP_LOG_FORMAT",
+        "OPENPROJECT_MCP_LOG_BODIES",
+        "OPENPROJECT_MCP_OTEL",
+        "OPENPROJECT_MCP_HTTP_HOST",
+        "OPENPROJECT_MCP_HTTP_PORT",
+        "OPENPROJECT_MCP_AUTH_TOKENS",
+        "OPENPROJECT_MCP_CONNECT_TIMEOUT",
+        "OPENPROJECT_MCP_READ_TIMEOUT",
+        "OPENPROJECT_MCP_WRITE_TIMEOUT",
+        "OPENPROJECT_MCP_POOL_TIMEOUT",
+        "OPENPROJECT_MCP_MAX_CONNECTIONS",
+        "OPENPROJECT_MCP_MAX_RETRIES",
+    }
+)
 
 
 def test_settings_construct_with_zero_environment() -> None:
@@ -33,6 +69,12 @@ def test_every_documented_env_var_is_read(monkeypatch: pytest.MonkeyPatch) -> No
         "OPENPROJECT_MCP_LOG_BODIES": "1",
         "OPENPROJECT_MCP_OTEL": "1",
         "OPENPROJECT_MCP_ACCEPT_LANGUAGE": "vi",
+        "OPENPROJECT_MCP_CONNECT_TIMEOUT": "1.5",
+        "OPENPROJECT_MCP_READ_TIMEOUT": "2.5",
+        "OPENPROJECT_MCP_WRITE_TIMEOUT": "3.5",
+        "OPENPROJECT_MCP_POOL_TIMEOUT": "4.5",
+        "OPENPROJECT_MCP_MAX_CONNECTIONS": "7",
+        "OPENPROJECT_MCP_MAX_RETRIES": "5",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -51,6 +93,63 @@ def test_every_documented_env_var_is_read(monkeypatch: pytest.MonkeyPatch) -> No
     assert settings.log_format == "json"
     assert settings.log_bodies and settings.otel
     assert settings.accept_language == "vi"
+    assert settings.connect_timeout == 1.5
+    assert settings.read_timeout == 2.5
+    assert settings.write_timeout == 3.5
+    assert settings.pool_timeout == 4.5
+    assert settings.max_connections == 7
+    assert settings.max_retries == 5
+
+
+def test_env_surface_is_frozen() -> None:
+    """Every field maps to exactly one documented env var, and nothing else."""
+    surface: set[str] = set()
+    for name, field in Settings.model_fields.items():
+        alias = field.validation_alias
+        assert isinstance(alias, str), f"field {name!r} must declare a string validation alias"
+        surface.add(alias)
+    assert len(surface) == len(Settings.model_fields)
+    assert surface == ENV_SURFACE
+
+
+def test_unprefixed_env_names_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stray unprefixed name in the shell must never reach (or crash) a field."""
+    monkeypatch.delenv("OPENPROJECT_MCP_READ_TIMEOUT", raising=False)
+    monkeypatch.setenv("READ_TIMEOUT", "not-a-duration")
+    monkeypatch.setenv("MAX_RETRIES", "not-a-number")
+    monkeypatch.setenv("API_KEY", "not-mine")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.read_timeout == 30.0
+    assert settings.max_retries == 3
+    assert settings.api_key is None
+
+
+def test_prefixed_timeout_env_names_apply(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENPROJECT_MCP_READ_TIMEOUT", "12.5")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.read_timeout == 12.5
+
+
+def test_dotenv_file_also_ignores_unprefixed_names(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("READ_TIMEOUT=not-a-duration\nOPENPROJECT_MCP_READ_TIMEOUT=12.5\n")
+    settings = Settings(_env_file=env_file)  # type: ignore[call-arg]
+    assert settings.read_timeout == 12.5
+
+
+def test_dotenv_unprefixed_names_are_ignored_even_without_the_alias(tmp_path: Path) -> None:
+    """A bare field name alone in ``.env`` must not populate (or crash) a field.
+
+    Without the alias present, the dotenv source classifies these keys as
+    *extra* data, which would otherwise reach validation and be mapped onto
+    the fields by ``populate_by_name=True``.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("READ_TIMEOUT=not-a-duration\nREAD_ONLY=1\nAPI_KEY=stray\n")
+    settings = Settings(_env_file=env_file)  # type: ignore[call-arg]
+    assert settings.read_timeout == 30.0
+    assert settings.read_only is False
+    assert settings.api_key is None
 
 
 def test_secrets_do_not_leak_through_repr() -> None:

@@ -22,3 +22,6 @@ htmlcov/
 
 # default download target of download_attachment
 openproject-downloads/
+
+# Claude Code local settings
+.claude/

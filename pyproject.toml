@@ -1,28 +1,49 @@
 [project]
-name = "openproject-mcp"
-version = "0.1.0"
-description = "MCP server for the OpenProject API v3"
+name = "openproject-mcp-server"
+dynamic = ["version"]
+description = "MCP server for OpenProject: 72 tools for work packages, attachments, git activity, time tracking, meetings and reporting over the API v3"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "kar-thik", email = "mail@karthikv.dev" }]
 license = "MIT"
-keywords = ["mcp", "openproject", "fastmcp"]
+license-files = ["LICENSE"]
+keywords = [
+    "mcp",
+    "openproject",
+    "fastmcp",
+    "model-context-protocol",
+    "claude",
+    "ai",
+    "llm",
+    "project-management",
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Office/Business :: Groupware",
+    "Typing :: Typed",
 ]
 dependencies = [
     "fastmcp>=3.4,<4",
     "httpx[http2]>=0.28",
-    "pydantic>=2.7",
+    "pydantic>=2.12",
     "pydantic-settings>=2",
 ]
 
 [project.scripts]
+openproject-mcp-server = "openproject_mcp.__main__:main"
 openproject-mcp = "openproject_mcp.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/kar-thik/openproject-mcp"
+Repository = "https://github.com/kar-thik/openproject-mcp"
+Issues = "https://github.com/kar-thik/openproject-mcp/issues"
+Changelog = "https://github.com/kar-thik/openproject-mcp/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
@@ -38,8 +59,14 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "openproject_mcp/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["openproject_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["openproject_mcp", "README.md", "LICENSE", "CHANGELOG.md", "SECURITY.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -52,7 +79,7 @@ markers = [
 
 [tool.pyright]
 include = ["openproject_mcp"]
-pythonVersion = "3.13"
+pythonVersion = "3.12"
 # openproject_mcp/client and openproject_mcp/tools are the layers every tool and
 # every future module builds on, so they must be strict; the rest of the package
 # is small enough to hold to the same bar rather than carve out an exception.
