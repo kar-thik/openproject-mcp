@@ -1,4 +1,4 @@
-"""Console entry point: ``openproject-mcp`` (SPEC §3.3, §14).
+"""Console entry point: ``openproject-mcp-server`` / ``openproject-mcp`` (SPEC §3.3, §14).
 
 Selects the transport, checks configuration, and starts the server. A missing
 or broken configuration produces a short actionable message on stderr and a
@@ -8,6 +8,7 @@ non-zero exit code — never a traceback.
 from __future__ import annotations
 
 import argparse
+import os.path
 import sys
 from collections.abc import Sequence
 
@@ -23,9 +24,22 @@ EXIT_CONFIG_ERROR = 2
 EXIT_INTERRUPTED = 130
 
 
+def _prog() -> str:
+    """The name this process was invoked as, when it is one of our scripts.
+
+    Both console scripts run this ``main``; ``--version`` and usage text
+    should echo whichever the user typed. Anything else (``python -m ...``,
+    test harnesses) reports the canonical distribution name.
+    """
+    invoked = os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0] else ""
+    if invoked in ("openproject-mcp", "openproject-mcp-server"):
+        return invoked
+    return "openproject-mcp-server"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="openproject-mcp",
+        prog=_prog(),
         description=(
             "MCP server for OpenProject. Configuration comes from the environment: "
             "OPENPROJECT_URL and OPENPROJECT_API_KEY are required."
@@ -53,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Validate configuration and exit without starting the server.",
     )
-    parser.add_argument("--version", action="version", version=f"openproject-mcp {__version__}")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
 
