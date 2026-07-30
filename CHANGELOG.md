@@ -26,6 +26,13 @@ PATCH releases are fixes and strictly additive changes only.
   default and refuses to start unless `OPENPROJECT_MCP_AUTH_TOKENS` is set (or
   `OPENPROJECT_MCP_INSECURE=1` is passed explicitly, for local development
   only).
+- Per-request bearer-token verification on the HTTP transport: every request
+  must carry `Authorization: Bearer <token>` matching one of the configured
+  `OPENPROJECT_MCP_AUTH_TOKENS` values (comma-separated, e.g. one token per
+  client); missing or invalid tokens are rejected with a 401 and a
+  `WWW-Authenticate` header. Token comparison is constant-time. A set-but-empty
+  token list (for example `OPENPROJECT_MCP_AUTH_TOKENS=,`) refuses to start
+  rather than serving an open endpoint.
 - Deployment gating: `OPENPROJECT_MCP_READ_ONLY=1` serves read tools only,
   `OPENPROJECT_MCP_ADMIN_TOOLS=1` enables the three membership-write tools
   (hidden by default), and `OPENPROJECT_MCP_DISABLE` drops whole tool groups.

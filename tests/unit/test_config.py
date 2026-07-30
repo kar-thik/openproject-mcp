@@ -212,6 +212,49 @@ def test_http_transport_allows_explicit_insecure_mode() -> None:
     assert check_runtime_config(settings, "http") == []
 
 
+def test_http_transport_starts_with_auth_tokens() -> None:
+    settings = Settings(_env_file=None, url="https://op", api_key="k", auth_tokens="tok")  # type: ignore[call-arg]
+    assert check_runtime_config(settings, "http") == []
+
+
+@pytest.mark.parametrize("raw", [",", " , ", ",,", "  "])
+def test_http_transport_refuses_auth_tokens_that_parse_empty(raw: str) -> None:
+    """``AUTH_TOKENS=","`` is a configuration mistake, not an open endpoint."""
+    settings = Settings(_env_file=None, url="https://op", api_key="k", auth_tokens=raw)  # type: ignore[call-arg]
+    problems = check_runtime_config(settings, "http")
+    assert any("contains no tokens" in problem for problem in problems)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("alpha", ("alpha",)),
+        ("alpha,beta", ("alpha", "beta")),
+        ("alpha, beta", ("alpha", "beta")),
+        ("  alpha  ,  beta  ", ("alpha", "beta")),
+        ("alpha,beta,", ("alpha", "beta")),
+        (",alpha,,beta,", ("alpha", "beta")),
+        (",", ()),
+        ("", ()),
+        ("   ", ()),
+    ],
+)
+def test_bearer_token_parsing(raw: str, expected: tuple[str, ...]) -> None:
+    settings = Settings(_env_file=None, auth_tokens=raw)  # type: ignore[call-arg]
+    assert settings.bearer_tokens == expected
+
+
+def test_bearer_tokens_default_to_empty_when_unset() -> None:
+    assert Settings(_env_file=None).bearer_tokens == ()  # type: ignore[call-arg]
+
+
+def test_auth_tokens_do_not_leak_through_repr() -> None:
+    settings = Settings(_env_file=None, auth_tokens="hush-alpha,hush-beta")  # type: ignore[call-arg]
+    assert "hush-alpha" not in repr(settings)
+    assert "hush-alpha" not in str(settings.auth_tokens)
+    assert settings.bearer_tokens == ("hush-alpha", "hush-beta")
+
+
 def test_missing_ca_bundle_is_reported() -> None:
     settings = Settings(  # type: ignore[call-arg]
         _env_file=None, url="https://op", api_key="k", ca_bundle="/does/not/exist.pem"

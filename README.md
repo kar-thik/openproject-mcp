@@ -140,7 +140,7 @@ From-source users can start from
 | `OPENPROJECT_MCP_OTEL` | `false` | Reserved for OpenTelemetry tracing. Accepted but not yet wired to anything in this release; setting it produces no traces. |
 | `OPENPROJECT_MCP_HTTP_HOST` | `127.0.0.1` | Bind address for `--transport http`. |
 | `OPENPROJECT_MCP_HTTP_PORT` | `8000` | Port for `--transport http`. |
-| `OPENPROJECT_MCP_AUTH_TOKENS` | unset | Comma-separated bearer tokens; a startup gate for `--transport http`. Without it (and without `OPENPROJECT_MCP_INSECURE=1`), the HTTP transport refuses to start. **In this release the endpoint does not yet verify these tokens on incoming requests** — see [Transports](#transports). |
+| `OPENPROJECT_MCP_AUTH_TOKENS` | unset | Comma-separated bearer tokens accepted by `--transport http` (e.g. one per client). Every request must carry `Authorization: Bearer <token>` with one of them; anything else gets a 401. Without it (and without `OPENPROJECT_MCP_INSECURE=1`), the HTTP transport refuses to start. See [Transports](#transports). |
 | `OPENPROJECT_MCP_CONNECT_TIMEOUT` | `10` | Seconds to wait for a TCP/TLS connection to OpenProject. |
 | `OPENPROJECT_MCP_READ_TIMEOUT` | `30` | Seconds to wait for response data. |
 | `OPENPROJECT_MCP_WRITE_TIMEOUT` | `60` | Seconds to wait while sending request data (uploads). |
@@ -180,12 +180,20 @@ explicit `confirm=true` argument before it acts.
   configured: set `OPENPROJECT_MCP_AUTH_TOKENS` to a comma-separated list of bearer tokens,
   or — for local development only — set `OPENPROJECT_MCP_INSECURE=1`.
 
-  **Important:** in this release `OPENPROJECT_MCP_AUTH_TOKENS` is checked only at startup;
-  the endpoint itself does **not** verify a bearer token on incoming requests, so any
-  process that can reach the port can use the server. Keep the default `127.0.0.1` bind. If
-  you must expose the HTTP transport beyond localhost, put it behind a reverse proxy that
-  enforces authentication (for example nginx or Caddy validating the `Authorization`
-  header) — do not rely on `OPENPROJECT_MCP_AUTH_TOKENS` to gate access.
+  With tokens configured, every HTTP request to the MCP endpoint must carry an
+  `Authorization: Bearer <token>` header whose token matches one of the configured values
+  (compared in constant time); requests with a missing, malformed or unknown token are
+  rejected with a 401 and a `WWW-Authenticate` header. Multiple tokens are supported —
+  for example one per client, so each can be revoked independently. Tokens must be ASCII,
+  and the endpoint applies no rate limiting, so use long random values — for example
+  `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+  `OPENPROJECT_MCP_INSECURE=1` remains a development-only escape hatch that leaves the
+  endpoint open without authentication.
+
+  The server does not terminate TLS, so tokens would otherwise cross the network in
+  plaintext: keep the default `127.0.0.1` bind, and if you must expose the HTTP transport
+  beyond localhost, put it behind a TLS-terminating reverse proxy (for example nginx or
+  Caddy).
 
 ## Tools
 
@@ -412,10 +420,11 @@ detail tools return a structured error explaining both possible readings of the 
   and traversal sequences are neutralized), and reported with a SHA-256 of the bytes.
 - Destructive tools require `confirm=true` and are annotated so clients can ask the user
   first.
-- The HTTP transport refuses to start without `OPENPROJECT_MCP_AUTH_TOKENS` configured, but
-  in this release that is a startup gate only — the endpoint does not yet verify the tokens
-  on incoming requests. Keep the default `127.0.0.1` bind, and use an authenticating reverse
-  proxy if the port must be reachable from anywhere else (see [Transports](#transports)).
+- The HTTP transport refuses to start without `OPENPROJECT_MCP_AUTH_TOKENS` configured and
+  verifies the `Authorization: Bearer` header on every request — missing or invalid tokens
+  are rejected with a 401, and token comparison is constant-time. The server does not
+  terminate TLS: keep the default `127.0.0.1` bind, and put a TLS-terminating reverse proxy
+  in front if the port must be reachable from anywhere else (see [Transports](#transports)).
 
 ## Troubleshooting
 
@@ -426,7 +435,8 @@ detail tools return a structured error explaining both possible readings of the 
 | 403 permission_denied | The account is authenticated but lacks a role permission for that project, or the relevant module is disabled for it. |
 | Empty list plus a note about a missing module | That OpenProject module (meetings, news, documents, ...) is not installed or not enabled in the project — the empty result is the honest answer, not an error. |
 | TLS certificate errors | Your instance uses a private CA: point `OPENPROJECT_MCP_CA_BUNDLE` at its PEM bundle. There is no option to disable verification. |
-| `--transport http` refuses to start | Set `OPENPROJECT_MCP_AUTH_TOKENS` (comma-separated bearer tokens), or `OPENPROJECT_MCP_INSECURE=1` for local development only. Note this is a startup gate; the endpoint does not yet verify the tokens per request — see [Transports](#transports). |
+| `--transport http` refuses to start | Set `OPENPROJECT_MCP_AUTH_TOKENS` (comma-separated bearer tokens), or `OPENPROJECT_MCP_INSECURE=1` for local development only — see [Transports](#transports). |
+| 401 from the MCP HTTP endpoint itself | The request's `Authorization: Bearer <token>` header is missing or does not match any configured `OPENPROJECT_MCP_AUTH_TOKENS` entry. Check the client's token for typos; distinct from the upstream `401 authentication_failed` above, which is about the OpenProject API key. |
 | Proxies | Standard `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY` variables are honored by the underlying HTTP client. |
 
 When reporting an issue, please include your OpenProject version, the output of

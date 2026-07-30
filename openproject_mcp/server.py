@@ -9,7 +9,9 @@ lifespan or lazily on first use.
 Assembly order:
 
 1. logging configured from settings (stderr, JSON or text);
-2. ``FastMCP`` created with the server ``instructions`` (§10);
+2. ``FastMCP`` created with the server ``instructions`` (§10) and, when
+   ``OPENPROJECT_MCP_AUTH_TOKENS`` is set, the bearer-token verifier that the
+   HTTP transport enforces per request (§11);
 3. lifespan registered — it creates the pooled client, the metadata cache and
    the :class:`ToolContext` that tools reach via ``_shared.get_tool_context()``;
 4. every tool module's ``register(mcp)`` called;
@@ -29,6 +31,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from openproject_mcp import __version__, prompts, resources
+from openproject_mcp.auth import StaticBearerVerifier
 from openproject_mcp.client.cache import TTLCache
 from openproject_mcp.client.http import OpenProjectClient
 from openproject_mcp.config import Settings
@@ -117,11 +120,20 @@ def build_server(settings: Settings | None = None) -> FastMCP:
     resolved = settings or Settings()
     configure_logging(resolved)
 
+    # The auth provider only takes effect on the HTTP app (per-request bearer
+    # verification, SPEC §11); stdio and the in-memory client transport never
+    # consult it. AUTH_TOKENS set but parsing to zero tokens still attaches a
+    # verifier, which then rejects every request: never an open endpoint.
+    auth = (
+        StaticBearerVerifier(resolved.bearer_tokens) if resolved.auth_tokens is not None else None
+    )
+
     mcp: FastMCP = FastMCP(
         name=SERVER_NAME,
         instructions=SERVER_INSTRUCTIONS,
         version=__version__,
         lifespan=build_lifespan(resolved),
+        auth=auth,
     )
     register_all(mcp)
     prompts.register(mcp)
