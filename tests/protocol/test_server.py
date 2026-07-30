@@ -77,6 +77,19 @@ READ_TOOLS = {
     "list_memberships",
     "list_roles",
     "list_permissions",
+    # Phase 3
+    "list_meetings",
+    "get_meeting",
+    "get_wiki_page",
+    "list_documents",
+    "get_document",
+    "list_budgets",
+    "list_news",
+    "get_news",
+    "list_reminders",
+    "get_job_status",
+    "list_file_links",
+    "get_project_report_data",
 }
 WRITE_TOOLS = {
     # Phase 1
@@ -104,6 +117,18 @@ WRITE_TOOLS = {
     "create_version",
     "update_version",
     "delete_version",
+    # Phase 3
+    "create_meeting",
+    "add_meeting_agenda_item",
+    "create_news",
+    "update_news",
+    "delete_news",
+    "toggle_comment_reaction",
+    "set_work_package_reminder",
+    "execute_custom_action",
+    "copy_project",
+    "set_project_favorite",
+    "save_query",
 }
 ADMIN_TOOLS_SET = {"create_membership", "update_membership", "delete_membership"}
 DEFAULT_TOOLS = READ_TOOLS | WRITE_TOOLS  # admin tools hidden unless ADMIN_TOOLS=1
@@ -113,14 +138,30 @@ ATTACHMENT_GROUP_TOOLS = {
     "download_attachment",
     "upload_attachment",
     "delete_attachment",
+    "list_file_links",
+}
+MEETINGS_GROUP_TOOLS = {
+    "list_meetings",
+    "get_meeting",
+    "create_meeting",
+    "add_meeting_agenda_item",
+}
+NEWS_GROUP_TOOLS = {"list_news", "get_news", "create_news", "update_news", "delete_news"}
+PROMPT_NAMES = {"weekly_report", "daily_standup", "triage_inbox", "groom_backlog"}
+RESOURCE_TEMPLATES = {
+    "openproject://work_package/{id}",
+    "openproject://project/{identifier}",
+    "openproject://attachment/{id}",
 }
 
 
-async def test_phase_2_tool_set_is_registered(mcp_client: Client[Any]) -> None:
+async def test_phase_3_tool_set_is_registered(mcp_client: Client[Any]) -> None:
     listed = {tool.name for tool in await mcp_client.list_tools()}
     assert listed == DEFAULT_TOOLS
-    assert await mcp_client.list_resources() == []
-    assert await mcp_client.list_prompts() == []
+    assert {prompt.name for prompt in await mcp_client.list_prompts()} == PROMPT_NAMES
+    templates = await mcp_client.list_resource_templates()
+    assert {template.uriTemplate for template in templates} == RESOURCE_TEMPLATES
+    assert await mcp_client.list_resources() == []  # templates only, no static resources
 
 
 async def test_admin_tools_flag_reveals_membership_writes() -> None:
@@ -317,4 +358,4 @@ async def test_disable_prunes_exactly_the_named_groups() -> None:
     )
     async with Client(build_server(settings)) as client:
         listed = {tool.name for tool in await client.list_tools()}
-    assert listed == DEFAULT_TOOLS - ATTACHMENT_GROUP_TOOLS
+    assert listed == DEFAULT_TOOLS - ATTACHMENT_GROUP_TOOLS - MEETINGS_GROUP_TOOLS - NEWS_GROUP_TOOLS
