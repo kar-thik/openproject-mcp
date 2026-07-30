@@ -112,7 +112,8 @@ openproject_mcp/
   tools/
     work_packages.py   wp_collaboration.py   projects.py   attachments.py
     git_activity.py    queries.py   notifications.py   time_entries.py
-    versions.py        people.py    metadata.py   modules_collab.py   reporting.py
+    versions.py        people.py    metadata.py   modules_collab.py   news.py
+    reporting.py
   resources.py       # resource templates (openproject://…)
   prompts.py         # weekly_report, standup, triage… (EN default, locale param)
   projections.py     # compact output models (WorkPackageRow, WorkPackageDetail, Ref…)

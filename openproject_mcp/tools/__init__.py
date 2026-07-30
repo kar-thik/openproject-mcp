@@ -17,10 +17,13 @@ from openproject_mcp.tools import (
     attachments,
     git_activity,
     metadata,
+    modules_collab,
+    news,
     notifications,
     people,
     projects,
     queries,
+    reporting,
     time_entries,
     versions,
     work_packages,
@@ -46,6 +49,9 @@ TOOL_MODULES: tuple[ModuleType, ...] = (
     versions,
     people,
     metadata,
+    modules_collab,
+    news,
+    reporting,
 )
 
 

@@ -81,6 +81,7 @@ __all__ = [
     "ADMIN",
     "DESTRUCTIVE",
     "GROUP_ATTACHMENTS",
+    "GROUP_BUDGETS",
     "GROUP_DOCUMENTS",
     "GROUP_GIT",
     "GROUP_MEETINGS",
@@ -93,6 +94,7 @@ __all__ = [
     "GROUP_REPORTING",
     "GROUP_TIME_ENTRIES",
     "GROUP_VERSIONS",
+    "GROUP_WIKI",
     "GROUP_WORK_PACKAGES",
     "GROUP_WP_COLLABORATION",
     "LIFESPAN_KEY",
@@ -141,6 +143,8 @@ GROUP_PEOPLE = "people"
 GROUP_MEETINGS = "meetings"
 GROUP_NEWS = "news"
 GROUP_DOCUMENTS = "documents"
+GROUP_BUDGETS = "budgets"
+GROUP_WIKI = "wiki"
 GROUP_REPORTING = "reporting"
 
 

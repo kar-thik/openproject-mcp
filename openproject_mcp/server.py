@@ -28,7 +28,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from openproject_mcp import __version__
+from openproject_mcp import __version__, prompts, resources
 from openproject_mcp.client.cache import TTLCache
 from openproject_mcp.client.http import OpenProjectClient
 from openproject_mcp.config import Settings
@@ -124,5 +124,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         lifespan=build_lifespan(resolved),
     )
     register_all(mcp)
+    prompts.register(mcp)
+    resources.register(mcp)
     apply_tag_filters(mcp, resolved)
     return mcp
