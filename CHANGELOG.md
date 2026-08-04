@@ -10,6 +10,28 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-04
+
+### Added
+
+- Python 3.14 trove classifier: the full test suite has been green on CPython
+  3.14 in CI since before 0.1.0; the classifier now says so.
+- README: an "Updating or rotating your API token" section directly after the
+  install instructions — rotating via an OS-environment export (keeps the
+  secret out of client configs entirely), via `claude mcp remove`/`add`, via
+  JSON-configured clients, and via `.env`; includes the tell-tale symptom of a
+  server upgrade invalidating tokens (every call failing with
+  `authentication_failed` / HTTP 401) and zero-downtime rotation using
+  parallel tokens.
+
+### Changed
+
+- README: the project is now explicitly aimed at the OpenProject **Community
+  edition**. OpenProject's Enterprise edition ships its own built-in MCP
+  integration; this server brings the same capability to self-hosted Community
+  instances and continues to run against any edition, needing only the public
+  API v3.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

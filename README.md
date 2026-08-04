@@ -12,6 +12,11 @@ saved queries, notifications, time tracking, versions, people and memberships, m
 documents, budgets and reporting — plus 4 report/workflow prompts and 3 resource templates.
 Built on FastMCP 3.x and httpx (HTTP/2).
 
+This project is aimed at the OpenProject **Community edition**. OpenProject's Enterprise
+edition now ships with its own built-in MCP integration; this server brings the same
+capability to self-hosted Community instances. It runs fine against any edition — it only
+needs the public API v3.
+
 Design principles, all enforced in code:
 
 - **Structured everything.** Every tool returns a typed model, so clients get an
@@ -31,7 +36,8 @@ Design principles, all enforced in code:
 ## Requirements
 
 - Python >= 3.12
-- An OpenProject instance, version 14 LTS through 17.x
+- An OpenProject instance, version 14 LTS through 17.x (any edition; aimed at Community —
+  Enterprise ships its own MCP integration)
 - An OpenProject API key: in OpenProject, go to **My account → Access tokens** and generate an
   API token
 
@@ -109,6 +115,42 @@ cd openproject-mcp
 uv sync
 uv run openproject-mcp-server
 ```
+
+## Updating or rotating your API token
+
+When a token is regenerated, revoked or invalidated (OpenProject major upgrades can do this —
+the symptom is every tool suddenly failing with `authentication_failed` / HTTP 401), generate
+a fresh one in OpenProject under **My account → Access tokens** and update it wherever your
+key lives:
+
+- **Shell environment (easiest to rotate).** The server reads `OPENPROJECT_API_KEY` straight
+  from the OS environment, so you can export it globally — e.g. in `~/.zshenv` — and register
+  the server with no `--env` flags at all:
+
+  ```sh
+  claude mcp add openproject -- uvx openproject-mcp-server
+  ```
+
+  Rotation is then: edit the export, open a fresh terminal, reconnect. The client config
+  never contains a secret. (This does not work for GUI apps like Claude Desktop, which don't
+  read your shell profile.)
+- **Claude Code with `--env`.** The registration stores the key, so replace it:
+
+  ```sh
+  claude mcp remove openproject
+  claude mcp add openproject \
+    --env OPENPROJECT_URL=https://openproject.example.com \
+    --env OPENPROJECT_API_KEY=new-key \
+    -- uvx openproject-mcp-server
+  ```
+
+  Then reconnect via `/mcp` (a running session keeps the old environment until it does).
+- **Claude Desktop and other JSON-configured clients.** Edit the `OPENPROJECT_API_KEY` value
+  in the client config and restart the client.
+- **`.env` file.** Edit the file and restart the server.
+
+Recent OpenProject versions allow several API tokens in parallel, so you can rotate with zero
+downtime: create the new token, switch your clients over, then revoke the old one.
 
 ## Configuration
 
