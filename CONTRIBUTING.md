@@ -55,6 +55,12 @@ name is `openproject-mcp-server`.
 6. Approve the `pypi` environment gate when the Release workflow pauses, then
    verify with `uvx openproject-mcp-server --version`.
 
+After the PyPI publish, the workflow also republishes the MCP registry entry
+(`io.github.kar-thik/openproject-mcp-server`) via GitHub OIDC. The versions in
+`server.json` are stamped from the tag at publish time, so the checked-in file
+does not need a bump per release — keep it updated only when the metadata
+itself (description, environment variables, transports) changes.
+
 The release workflow refuses to publish when the tag does not match the package
 version. Versioning is SemVer with the 0.x semantics stated at the top of
 `CHANGELOG.md`: while 0.x, MINOR releases may change the MCP tool surface;

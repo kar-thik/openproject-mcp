@@ -10,6 +10,13 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+### Added
+
+- MCP registry listing: `server.json` manifest
+  (`io.github.kar-thik/openproject-mcp-server`) and a Release-workflow job that
+  republishes the registry entry on every tag via GitHub OIDC — no stored
+  secrets, mirroring the PyPI Trusted Publishing model.
+
 ## [0.1.1] - 2026-08-04
 
 ### Added

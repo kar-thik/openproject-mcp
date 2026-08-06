@@ -78,6 +78,31 @@ jobs:
       # PEP 740 attestations are generated + uploaded by default; no input needed
       - uses: pypa/gh-action-pypi-publish@release/v1
 
+  mcp-registry:
+    name: Publish to MCP Registry
+    # Runs after the PyPI publish because the registry verifies ownership by
+    # reading the mcp-name marker out of the version's README on pypi.org.
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # OIDC login to the MCP registry — no secrets
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Stamp server.json version from the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          jq --arg v "$version" '.version = $v | .packages[].version = $v' \
+            server.json > server.json.tmp
+          mv server.json.tmp server.json
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
+
   github-release:
     name: GitHub Release
     needs: publish-pypi
