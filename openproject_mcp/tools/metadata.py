@@ -141,11 +141,24 @@ class NamedRow(BaseModel):
 
 
 class TypeRow(NamedRow):
-    """A work-package type (Task, Bug, Milestone, …)."""
+    """A work-package type (Task, Bug, Milestone, …).
+
+    OpenProject 17.7+ collapses type *variants* into their root type: the global
+    listing returns fewer types than older versions showed, and variant-aware
+    instances fill ``own_name``/``parent`` on the variants that do appear.
+    """
 
     is_default: bool | None = Field(default=None, description="Pre-selected for new work packages.")
     is_milestone: bool | None = Field(
         default=None, description="Milestone types take a single 'date', not start/due."
+    )
+    own_name: str | None = Field(
+        default=None,
+        description="Variant's own name without the parent prefix (17.7+); null elsewhere.",
+    )
+    parent: Ref | None = Field(
+        default=None,
+        description="Parent type when this is a variant (17.7+); null elsewhere.",
     )
 
 
@@ -331,11 +344,14 @@ def _allowed_options(
 
 
 def _type_row(payload: Mapping[str, Any]) -> TypeRow:
+    own_name = payload.get("ownName")
     return TypeRow(
         id=hal.self_id(payload),
         name=payload.get("name"),
         is_default=_bool_or_none(payload.get("isDefault")),
         is_milestone=_bool_or_none(payload.get("isMilestone")),
+        own_name=own_name if isinstance(own_name, str) else None,
+        parent=Ref.from_hal(payload, "parent"),
     )
 
 

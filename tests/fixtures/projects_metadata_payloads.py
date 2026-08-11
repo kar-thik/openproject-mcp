@@ -98,7 +98,11 @@ TYPE_COLLECTION: dict[str, Any] = {
                 "name": "Bug",
                 "isDefault": False,
                 "isMilestone": False,
-                "_links": {"self": {"href": "/api/v3/types/2"}},
+                "ownName": "Bug",
+                "_links": {
+                    "self": {"href": "/api/v3/types/2"},
+                    "parent": {"href": "/api/v3/types/1", "title": "Task"},
+                },
             },
             {
                 "_type": "Type",

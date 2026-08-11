@@ -39,6 +39,17 @@ def test_work_package_row_survives_an_empty_payload() -> None:
     assert WorkPackageRow.from_hal({}).model_dump() == WorkPackageRow().model_dump()
 
 
+def test_work_package_row_surfaces_display_id_verbatim() -> None:
+    payload = dict(WORK_PACKAGE_DETAIL)
+    payload["displayId"] = "QMS-42"
+    assert WorkPackageRow.from_hal(payload).display_id == "QMS-42"
+
+
+def test_work_package_row_drops_a_non_string_display_id() -> None:
+    assert WorkPackageRow.from_hal({"displayId": 1234}).display_id is None
+    assert WorkPackageRow.from_hal(WORK_PACKAGE_DETAIL).display_id is None
+
+
 def test_relation_row_spells_out_both_ends() -> None:
     row = RelationRow.from_hal(RELATION)
     assert row.model_dump() == {

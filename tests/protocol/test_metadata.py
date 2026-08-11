@@ -175,6 +175,11 @@ async def test_global_metadata_never_touches_project_endpoints(
     assert structured["categories"] is None
     assert structured["time_entry_activities"] is None
     assert [row["name"] for row in structured["types"]] == ["Task", "Bug", "Milestone"]
+    # 17.7+ variant fields surface when the instance sends them, stay null elsewhere.
+    assert structured["types"][0]["own_name"] is None
+    assert structured["types"][0]["parent"] is None
+    assert structured["types"][1]["own_name"] == "Bug"
+    assert structured["types"][1]["parent"] == {"id": 1, "name": "Task"}
     assert [row["is_closed"] for row in structured["statuses"]] == [False, False, True]
     assert structured["statuses"][2] == {
         "id": 12,

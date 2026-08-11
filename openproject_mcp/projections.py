@@ -170,6 +170,12 @@ class WorkPackageRow(BaseModel):
     """Compact work-package row for list results."""
 
     id: int | str | None = Field(default=None, description="Work package id.")
+    display_id: str | None = Field(
+        default=None,
+        description="Human-facing id as the instance renders it. Matches the numeric id "
+        "unless the instance uses semantic identifiers (17.x, e.g. 'PROJ-42'); null when "
+        "the instance predates it.",
+    )
     subject: str | None = Field(default=None, description="Subject line.")
     type: Ref | None = Field(default=None, description="Work package type.")
     status: Ref | None = Field(default=None, description="Status.")
@@ -189,8 +195,10 @@ class WorkPackageRow(BaseModel):
         the detail projections all go through it, so a row means the same thing
         whichever tool produced it.
         """
+        display_id = element.get("displayId")
         return WorkPackageRow(
             id=hal.self_id(element),
+            display_id=display_id if isinstance(display_id, str) else None,
             subject=element.get("subject"),
             type=Ref.from_hal(element, "type"),
             status=Ref.from_hal(element, "status"),
