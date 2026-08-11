@@ -810,3 +810,50 @@ async def test_get_leaves_project_phase_null_when_the_instance_lacks_it(
     structured = _structured(await mcp_client.call_tool("get_work_package", {"id": 1234}))
 
     assert structured["project_phase"] is None
+
+
+def _wp_page(page: int, per_page: int, total: int) -> dict[str, Any]:
+    start = (page - 1) * per_page
+    remaining = max(0, min(per_page, total - start))
+    return {
+        "_type": "Collection",
+        "total": total,
+        "count": remaining,
+        "pageSize": per_page,
+        "offset": page,
+        "totalSums": {"estimatedTime": "PT100H"},
+        "_embedded": {
+            "elements": [
+                {
+                    "_type": "WorkPackage",
+                    "id": start + i + 1,
+                    "subject": f"WP {start + i + 1}",
+                    "_links": {"self": {"href": f"/api/v3/work_packages/{start + i + 1}"}},
+                }
+                for i in range(remaining)
+            ]
+        },
+    }
+
+
+async def test_fetch_all_caps_at_500_and_says_so(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    def responder(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["offset"])
+        assert request.url.params["pageSize"] == "100", "fetch_all must use max-size pages"
+        return httpx.Response(200, json=_wp_page(page, 100, 620))
+
+    route = mock_api.get("work_packages").mock(side_effect=responder)
+
+    result = await mcp_client.call_tool(
+        "list_work_packages", {"status_scope": "all", "show_sums": True, "fetch_all": True}
+    )
+
+    structured = _structured(result)
+    assert route.call_count == 5
+    assert len(structured["items"]) == 500
+    assert structured["pagination"]["total"] == 620
+    assert structured["pagination"]["has_more"] is True
+    assert structured["sums"] == {"estimated_hours": 100.0}
+    assert any("500 of 620" in note for note in structured["notes"])

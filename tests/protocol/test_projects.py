@@ -442,3 +442,66 @@ async def test_phase_on_date_without_in_phase_is_rejected_locally(
     error = error_envelope(result)
     assert error["type"] == "invalid_input"
     assert "in_phase" in error["hint"]
+
+
+# --- fetch_all (0.2.0) ----------------------------------------------------
+
+
+def _project_page(page: int, per_page: int, total: int) -> dict[str, Any]:
+    start = (page - 1) * per_page
+    remaining = max(0, min(per_page, total - start))
+    return {
+        "_type": "Collection",
+        "total": total,
+        "count": remaining,
+        "pageSize": per_page,
+        "offset": page,
+        "_embedded": {
+            "elements": [
+                {
+                    "_type": "Project",
+                    "id": start + i + 1,
+                    "identifier": f"p-{start + i + 1}",
+                    "name": f"Project {start + i + 1}",
+                    "active": True,
+                    "_links": {"self": {"href": f"/api/v3/projects/{start + i + 1}"}},
+                }
+                for i in range(remaining)
+            ]
+        },
+    }
+
+
+async def test_fetch_all_aggregates_every_page_into_one_envelope(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    def responder(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["offset"])
+        return httpx.Response(200, json=_project_page(page, 100, 130))
+
+    route = mock_api.get("projects").mock(side_effect=responder)
+
+    result = await mcp_client.call_tool("list_projects", {"fetch_all": True})
+
+    structured = result.structured_content
+    assert structured is not None
+    assert route.call_count == 2
+    assert len(structured["items"]) == 130
+    assert structured["items"][129]["id"] == 130
+    assert structured["pagination"] == {
+        "total": 130,
+        "page": 1,
+        "page_size": 130,
+        "has_more": False,
+    }
+    assert structured.get("notes") is None
+
+
+async def test_fetch_all_rejects_an_explicit_page(mcp_client: Client[Any]) -> None:
+    result = await mcp_client.call_tool(
+        "list_projects", {"fetch_all": True, "page": 2}, raise_on_error=False
+    )
+
+    error = error_envelope(result)
+    assert error["type"] == "invalid_input"
+    assert "mutually exclusive" in error["message"]

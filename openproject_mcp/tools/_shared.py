@@ -52,6 +52,7 @@ Rules that the helpers enforce for you:
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import json
@@ -66,11 +67,12 @@ from fastmcp.tools.base import ToolResult
 from openproject_mcp.client.cache import TTLCache
 from openproject_mcp.client.errors import (
     ConfirmationRequiredError,
+    InputValidationError,
     OpenProjectError,
     UnexpectedResponseError,
 )
-from openproject_mcp.client.filters import DEFAULT_PAGE_SIZE, to_snake_name
-from openproject_mcp.client.hal import HalCollection, as_object, duration_hours
+from openproject_mcp.client.filters import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, to_snake_name
+from openproject_mcp.client.hal import HalCollection, as_object, collection, duration_hours
 from openproject_mcp.client.http import OpenProjectClient
 from openproject_mcp.config import Settings
 from openproject_mcp.observability import correlation_scope, get_logger
@@ -81,6 +83,7 @@ __all__ = [
     "ADMIN",
     "CACHE_KEY_CONFIGURATION",
     "DESTRUCTIVE",
+    "FETCH_ALL_CAP",
     "GROUP_ATTACHMENTS",
     "GROUP_BUDGETS",
     "GROUP_DOCUMENTS",
@@ -103,10 +106,12 @@ __all__ = [
     "WRITE",
     "ToolContext",
     "build_envelope",
+    "collect_all",
     "destructive_annotations",
     "envelope_from_collection",
     "envelope_json",
     "error_result",
+    "fetch_all_envelope",
     "get_configuration",
     "get_tool_context",
     "normalize_groups",
@@ -114,6 +119,7 @@ __all__ = [
     "read_annotations",
     "report_progress",
     "require_confirmation",
+    "require_first_page_for_fetch_all",
     "tool_errors",
     "tool_tags",
     "write_annotations",
@@ -604,3 +610,79 @@ def envelope_from_collection(
 def envelope_json(envelope: ListEnvelope[Any]) -> str:
     """Serialize an envelope — handy in tests and for text fallbacks."""
     return json.dumps(envelope.model_dump(exclude_none=True), default=str)
+
+
+#: ``fetch_all`` stops after this many aggregated items (G1: caps are visible,
+#: never silent). Five max-size pages on a default instance.
+FETCH_ALL_CAP = 500
+
+
+async def collect_all(
+    get_page: Callable[[int, int], Awaitable[Mapping[str, Any]]],
+    *,
+    cap: int = FETCH_ALL_CAP,
+    label: str = "fetching all pages",
+) -> tuple[list[dict[str, Any]], HalCollection, list[str]]:
+    """Fetch page after page until the collection — or the cap — is exhausted.
+
+    ``get_page(page, page_size)`` performs one GET and returns the raw payload;
+    the loop asks for max-size pages and advances until the server total, an
+    empty page, or ``cap`` stops it. Returns ``(elements, last_chunk, notes)``:
+    the raw HAL elements across every fetched page (trimmed to ``cap``), the
+    last unwrapped chunk (its ``total``/``groups``/``total_sums`` speak for the
+    full filtered set), and the cap note when one applies.
+    """
+    elements: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        chunk = collection(await get_page(page, MAX_PAGE_SIZE))
+        elements.extend(chunk.elements)
+        if not chunk.elements or len(elements) >= chunk.total or len(elements) >= cap:
+            break
+        await report_progress(
+            len(elements),
+            float(min(chunk.total, cap)),
+            f"{label} ({len(elements)} of {chunk.total})",
+        )
+        # Yield to the event loop between pages so a cancelled tool call stops
+        # here instead of paging on to the cap.
+        await asyncio.sleep(0)
+        page += 1
+    notes: list[str] = []
+    if chunk.total > cap and len(elements) >= cap:
+        notes.append(
+            f"fetch_all stopped at {cap} of {chunk.total} matching items — "
+            "narrow the filters to see the rest."
+        )
+    return elements[:cap], chunk, notes
+
+
+def require_first_page_for_fetch_all(fetch_all: bool, page: int) -> None:
+    """``fetch_all`` reads every page itself — a page number contradicts it."""
+    if fetch_all and page != 1:
+        raise InputValidationError(
+            "fetch_all and page are mutually exclusive.",
+            hint="fetch_all aggregates every page itself; drop page or set fetch_all=false.",
+        )
+
+
+def fetch_all_envelope(
+    rows: Sequence[Any],
+    last_chunk: HalCollection,
+    *,
+    notes: Iterable[str] | None = None,
+) -> ListEnvelope[Any]:
+    """Envelope for a ``fetch_all`` result: one logical page holding everything.
+
+    ``has_more`` still tells the truth — it is true exactly when the cap left
+    part of the filtered set unfetched.
+    """
+    return build_envelope(
+        rows,
+        total=last_chunk.total,
+        page=1,
+        page_size=max(len(rows), 1),
+        groups=last_chunk.groups or None,
+        sums=last_chunk.total_sums or None,
+        notes=notes,
+    )

@@ -846,6 +846,16 @@ def register(mcp: FastMCP) -> None:
         page_size: Annotated[
             int, Field(ge=1, le=100, description="Results per page (max 100).")
         ] = 20,
+        fetch_all: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Aggregate every page into one result instead of returning page 1. "
+                    f"Capped at {_shared.FETCH_ALL_CAP} items with a note when the cap "
+                    "bites; mutually exclusive with page."
+                )
+            ),
+        ] = False,
     ) -> ListEnvelope[WorkPackageRow]:
         """List work packages with structured filters — the workhorse read tool.
 
@@ -937,19 +947,34 @@ def register(mcp: FastMCP) -> None:
                 hint=f"Allowed columns: {', '.join(sorted(WORK_PACKAGE_SORT_KEYS))}.",
             )
 
+        _shared.require_first_page_for_fetch_all(fetch_all, page)
         path = f"projects/{project}/work_packages" if project else "work_packages"
-        payload = await ctx.client.get_json(
-            path,
-            params=query_params(
-                filters=filters,
-                page=page,
-                page_size=page_size,
-                sort_by=sort_by,
-                sort_keys=WORK_PACKAGE_SORT_KEYS,
-                group_by=group_by,
-                show_sums=show_sums or None,
-            ),
-        )
+
+        async def get_page(fetch_page: int, fetch_size: int) -> Mapping[str, Any]:
+            return await ctx.client.get_json(
+                path,
+                params=query_params(
+                    filters=filters,
+                    page=fetch_page,
+                    page_size=fetch_size,
+                    sort_by=sort_by,
+                    sort_keys=WORK_PACKAGE_SORT_KEYS,
+                    group_by=group_by,
+                    show_sums=show_sums or None,
+                ),
+            )
+
+        if fetch_all:
+            elements, last_chunk, cap_notes = await _shared.collect_all(
+                get_page, label="fetching all work packages"
+            )
+            return _shared.fetch_all_envelope(
+                [WorkPackageRow.from_hal(element) for element in elements],
+                last_chunk,
+                notes=cap_notes,
+            )
+
+        payload = await get_page(page, page_size)
         unwrapped = hal.collection(payload)
         rows = [WorkPackageRow.from_hal(element) for element in unwrapped]
         return _shared.envelope_from_collection(unwrapped, rows, page=page, page_size=page_size)

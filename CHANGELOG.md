@@ -48,6 +48,11 @@ PATCH releases are fixes and strictly additive changes only.
   filter ("projects in Executing today") resolved against the definition
   catalog by id or name. Phase dates themselves are not exposed by the API and
   the tools say so. Tool count: 85 → 87.
+- `fetch_all` on `list_work_packages`, `list_projects` and
+  `list_time_entries`: aggregate every page into one result instead of paging
+  manually. Capped at 500 items — the cap is reported in `notes` and
+  `has_more` stays honest about anything left unfetched; server-side `groups`
+  and `sums` still describe the full filtered set.
 
 ## [0.1.2] - 2026-08-11
 
