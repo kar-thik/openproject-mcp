@@ -33,6 +33,71 @@ Design principles, all enforced in code:
   by a lazy, cached feature probe instead of assumptions (see
   [Supported OpenProject versions](#supported-openproject-versions)).
 
+## What it looks like
+
+Two exchanges against a fictional "Website Relaunch" project — every id, name and date below
+is invented. You describe the outcome; the model picks the tools, and what comes back to it
+is a typed object rather than prose to re-parse.
+
+```text
+You         What is still open in Website Relaunch and due by Friday? The checkout
+            bug is urgent — raise it and leave a note for whoever owns it.
+
+  →  list_work_packages(project="website-relaunch", status_scope="open",
+                        due_before="2026-03-13", sort_by=[["due_date", "asc"]])
+
+     { "items": [
+         { "id": 4821, "subject": "Checkout fails on expired coupon codes",
+           "type": {"id": 7, "name": "Bug"}, "status": {"id": 7, "name": "In progress"},
+           "assignee": {"id": 118, "name": "Dana Okafor"}, "due_date": "2026-03-11" },
+         { "id": 4830, "subject": "Move press-kit assets to the new CDN",
+           "type": {"id": 1, "name": "Task"}, "status": {"id": 1, "name": "New"},
+           "assignee": null, "due_date": "2026-03-13" }],
+       "pagination": {"total": 2, "page": 1, "page_size": 20, "has_more": false} }
+
+  →  update_work_package(id=4821, priority="High")
+  →  add_work_package_comment(id=4821, comment="Raised to High — it blocks the
+                              launch checklist. Dana, can you take a look today?")
+
+Assistant   Two open items are due by Friday. #4821 is High now and the note is on
+            its thread; #4830 is due Friday and still has nobody on it.
+```
+
+The rows above are abridged: each one also carries `priority`, `project`, `start_date`,
+`percentage_done` and `updated_at`, and the envelope keeps `groups`, `sums` and `notes` slots
+for the calls that fill them.
+
+The prompt templates cut out the tool round trips: the server reads OpenProject itself and
+hands back a finished document rather than instructions to go and fetch one. It arrives
+prefaced with a note that the numbers are already computed and must not be recomputed or
+embellished.
+
+```text
+You         /weekly_report project=website-relaunch
+
+            # WEEKLY REPORT - AGILE SCRUM
+
+            _Generated from live OpenProject data_
+            ...
+            ## B. EXECUTIVE SUMMARY
+
+            **Progress against the sprint goal:** At risk
+
+            **Highlighted deliverables (done):**
+            1. #4802 - Ship the new pricing page
+            2. #4795 - Halve the hero image payload
+            ...
+            ### Data notes
+
+            - open/closed bucketing uses each status's isClosed flag from
+              GET /statuses, not status names; a status this instance renamed
+              or translated is still bucketed correctly
+```
+
+That last block is the house style: a report says which of its numbers are partial, and a
+tool that could not read something returns the gap as a note instead of guessing. The whole
+surface is in [Tools](#tools) and [Prompts and resources](#prompts-and-resources).
+
 ## Requirements
 
 - Python >= 3.12
