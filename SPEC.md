@@ -240,7 +240,7 @@ The probe runs lazily on first need, is cached 1 h, and its result is included i
 
 Legend: 🔍 read · ✏️ write · 🗑 destructive (confirm + `requiresUserInteraction`) · ⚙️ admin-gated · Ⓜ module/version-dependent (probed, G5). Ph → §15.
 
-**Count: 72 tools — Ph1: 16 · Ph2: 33 · Ph3: 23.** (Vs the old server's 62: strictly more *capability*; the count is honest, not the sales pitch. Deployments trim via tag filters, §3.2.) A CI check asserts this table always equals the registered tool set (§13.5).
+**Count: 85 tools — Ph1: 16 · Ph2: 33 · Ph3: 36.** (Vs the old server's 62: strictly more *capability*; the count is honest, not the sales pitch. Deployments trim via tag filters, §3.2.) A CI check asserts this table always equals the registered tool set (§13.5).
 
 ### 6.1 Instance & identity (Ph1: 1 · Ph2: 1)
 
@@ -404,14 +404,27 @@ Users and groups are **read-only** (`search_principals` covers group-id discover
 
 `get_project_metadata` without `project_id` returns the instance-global sets (types, statuses, priorities, roles) — so cross-project filtering never requires picking an arbitrary project first. With `project_id` it adds project-scoped types, versions, categories, and time-entry activities. This is the one-call answer to "what ids/names do I use here". `get_work_package_schema` exposes writable fields, required flags, and allowed values (statuses, categories, versions, CF options as `{id, name}`).
 
-### 6.13 Collaboration modules Ⓜ (Ph3: 13)
+### 6.13 Collaboration modules Ⓜ (Ph3: 26)
 
 | Tool | Sig (abridged) | Endpoint(s) | Ph |
 |---|---|---|---|
 | 🔍 Ⓜ `list_meetings` | `project_id?, upcoming_only=true, page, page_size` | `GET /meetings` | 3 |
 | 🔍 Ⓜ `get_meeting` | `id` (incl. agenda items + outcomes + participants) | `GET /meetings/{id}` + `/agenda_items` | 3 |
 | ✏️ Ⓜ `create_meeting` | `project_id, title, start_time, duration, participants?` | form → `POST /meetings` | 3 |
+| ✏️ Ⓜ `update_meeting` | `meeting_id, title?, location?, start_time?, duration_minutes?, state?, participants?, lock_version?` | `PATCH /meetings/{id}` | 3 |
+| 🗑 Ⓜ `delete_meeting` | `meeting_id, confirm` | `DELETE /meetings/{id}` | 3 |
 | ✏️ Ⓜ `add_meeting_agenda_item` | `meeting_id, title, notes?, duration_minutes?, work_package_id?` | `POST /meeting_agenda_items` | 3 |
+| ✏️ Ⓜ `update_meeting_agenda_item` | `agenda_item_id, title?, notes?, duration_minutes?, position?, presenter_id?, work_package_id?, lock_version?` | `PATCH /meeting_agenda_items/{id}` | 3 |
+| 🗑 Ⓜ `delete_meeting_agenda_item` | `agenda_item_id, confirm` | `DELETE /meeting_agenda_items/{id}` | 3 |
+| ✏️ Ⓜ `add_meeting_outcome` | `agenda_item_id, kind='information', notes?, work_package_id?` | `POST /meeting_outcomes` | 3 |
+| ✏️ Ⓜ `update_meeting_outcome` | `outcome_id, kind?, notes?, work_package_id?` | `PATCH /meeting_outcomes/{id}` | 3 |
+| 🗑 Ⓜ `delete_meeting_outcome` | `outcome_id, confirm` | `DELETE /meeting_outcomes/{id}` | 3 |
+| 🔍 Ⓜ `list_recurring_meetings` | `page, page_size` (instance-wide; no upstream project filter) | `GET /recurring_meetings` | 3 |
+| 🔍 Ⓜ `get_recurring_meeting` | `recurring_meeting_id` (incl. capped upcoming occurrences: `start_time/state/meeting_id`, state `planned` and `meeting_id: null` until instantiated) | `GET /recurring_meetings/{id}` + `…/occurrences/upcoming?limit=N` | 3 |
+| ✏️ Ⓜ `create_recurring_meeting` | `project_id, title, start_time, duration_minutes, time_zone, frequency='weekly', interval=1, monthly_day?, monthly_ordinal?, monthly_weekday?, end_after='never', end_date?, iterations?, location?, notify=false` — the frequency/end_after matrix is validated locally | `POST /recurring_meetings` (+ corrective `PATCH` for `timeZone`) | 3 |
+| 🗑 Ⓜ `delete_recurring_meeting` | `recurring_meeting_id, confirm` — destroys the template and EVERY instantiated occurrence | `DELETE /recurring_meetings/{id}` | 3 |
+| ✏️ Ⓜ `init_recurring_meeting_occurrence` | `recurring_meeting_id, start_time` (the exact scheduled instant, normalized to UTC `Z` form) | `POST …/occurrences/{start_time}/init` | 3 |
+| 🗑 Ⓜ `cancel_recurring_meeting_occurrence` | `recurring_meeting_id, start_time, confirm` | `DELETE …/occurrences/{start_time}` | 3 |
 | 🔍 `get_wiki_page` | `id` — id comes from a UI URL the user supplies; APIv3 has **no wiki index/search**, and page *content* is not exposed (title + attachments only) — both stated in the description | `GET /wiki_pages/{id}` | 3 |
 | 🔍 `list_news` | `project_id?, page, page_size` | `GET /news` | 3 |
 | 🔍 `get_news` | `id` (full description) | `GET /news/{id}` | 3 |
@@ -421,7 +434,7 @@ Users and groups are **read-only** (`search_principals` covers group-id discover
 | 🔍 Ⓜ `list_documents` / `get_document` | `page…` / `id` | `GET /documents(…/{id})` | 3 |
 | 🔍 Ⓜ `list_budgets` | `project_id` | `GET /projects/{id}/budgets` | 3 |
 
-(`list_documents`/`get_document` count as two tools.) "Where was this WP discussed?" → `get_work_package(include=[meetings])` uses `GET /work_packages/{id}/meeting_agenda_items` Ⓜ. Meeting update/delete, outcomes/sections write, recurring meetings, and document update: excluded (§18). Availability caveat (live-verified 2026-07-30): the meetings **write** routes (`POST /meetings/form`, `/meetings`, `/meeting_agenda_items`) do not exist on OpenProject 16.6 — they 404 at route level even with the module enabled and `meetings/create` granted, while the read routes work; the write tools' 404 hint names this reading.
+(`list_documents`/`get_document` count as two tools.) "Where was this WP discussed?" → `get_work_package(include=[meetings])` uses `GET /work_packages/{id}/meeting_agenda_items` Ⓜ. Meeting sections' own CRUD and document update: excluded (§18). Availability caveat (live-verified 2026-07-30): the meetings **write** routes (`POST /meetings/form`, `/meetings`, `/meeting_agenda_items`) do not exist on OpenProject 16.6 — they 404 at route level even with the module enabled and `meetings/create` granted, while the read routes work; the write tools' 404 hint names this reading. The same fencing has three tiers: `PATCH`/`DELETE /meetings/{id}` shipped in 17.4 (on 16.x the read path exists, so the unrouted verb answers **405**, which the tools map onto the same version-aware hint), while the flat `/meeting_agenda_items/{id}` and `/meeting_outcomes` write routes only exist from 17.6 (outcomes have no API at all before that). Meeting/agenda-item updates echo `lockVersion` via `patch_with_lock` (§4.4); outcomes carry none, and every outcome write requires the meeting state to be exactly `in_progress`. The recurring-meeting family (every `/recurring_meetings` route, occurrences included) is 17.4+ in one piece — on anything older it all 404s at route level, which the tools' hints name — and has no `lockVersion` and no form/schema endpoints. Its wire quirks are absorbed by the tools: `duration` is a plain **number of hours** there (not the ISO duration `/meetings` takes), `timeZone` is silently overwritten on create with the account's zone (the create tool corrects it with a follow-up `PATCH` and degrades to a note when that is refused — an invalid zone string would be *stored* silently, so it is IANA-validated locally), a fresh series' template meeting is a **draft** (occurrence init fails with an unclean 500 until the template is patched to `state='open'`), and the occurrence `{start_time}` is matched by exact timestamp equality with **no schedule validation** — the tools normalize it to the UTC `Z` form and the docs demand it verbatim from the occurrence rows.
 
 ### 6.14 Reporting (Ph3: 1)
 
@@ -669,7 +682,7 @@ Each item is a deliberate exclusion, not an omission:
 - **User & group CRUD, user locking, placeholder-user CRUD** — admin-console territory; users/groups are read-only here.
 - **Query update/delete** — `save_query` covers the create case; editing saved views stays in the UI.
 - **Wiki page content & CRUD** — API v3 exposes only id/title/attachments; no index endpoint (the `get_wiki_page` description says where ids come from). Forum posts likewise (no discovery path) — `forum_post` attachment container excluded.
-- **Meetings**: update/delete, sections/outcomes write, recurring meetings. **Documents**: update (PATCH exists; low value). Both revisitable on demand.
+- **Meetings**: sections' own CRUD. **Documents**: update (PATCH exists; low value). Both revisitable on demand.
 - **Storages**: remote file browsing, remote upload, folder creation, and file-link create/delete — all require per-user storage OAuth grants (browser flow) or origin metadata the model can't obtain; `list_file_links` (with open/download URLs) is the useful readable slice.
 - **Workspaces / portfolios / programs / project phases** (17.x) — `list_projects` covers all workspace types transparently; dedicated tools deferred until 17.x is the deployed floor.
 - **Days/working-calendar, user working-hours records, help texts, `my_preferences`, shares list, cost entries (`summarized_costs_by_type`), wiki-page↔WP links, views (`POST /views/{type}`), grids/boards/my-page, render/markdown preview, notification detail sub-resources, custom-field hierarchy items, backups, OAuth app admin, string objects** — low agent value or admin-only; all reachable later via `raw_filters`/new tools if demand appears.

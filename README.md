@@ -7,7 +7,7 @@
 
 An MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) server for the
 [OpenProject](https://www.openproject.org/) API v3. It gives Claude and any other MCP client
-72 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
+85 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
 saved queries, notifications, time tracking, versions, people and memberships, meetings, news,
 documents, budgets and reporting — plus 4 report/workflow prompts and 3 resource templates.
 Built on FastMCP 3.x and httpx (HTTP/2).
@@ -264,7 +264,7 @@ held in memory as Pydantic `SecretStr` values and are never written to logs; the
 Three settings shrink the tool surface at startup (the tool list is fixed for the lifetime of
 the process):
 
-- `OPENPROJECT_MCP_READ_ONLY=1` serves only the 35 read tools.
+- `OPENPROJECT_MCP_READ_ONLY=1` serves only the 37 read tools.
 - `OPENPROJECT_MCP_ADMIN_TOOLS=1` reveals the three membership write tools
   (`create_membership`, `update_membership`, `delete_membership`); they are hidden by default.
 - `OPENPROJECT_MCP_DISABLE` drops whole groups to cut prompt cost, e.g.
@@ -304,8 +304,8 @@ explicit `confirm=true` argument before it acts.
 
 ## Tools
 
-72 tools: 35 read, 34 write and 3 admin-gated writes. The admin tools stay hidden unless
-`OPENPROJECT_MCP_ADMIN_TOOLS=1`; the 8 destructive tools additionally require `confirm=true`
+85 tools: 37 read, 45 write and 3 admin-gated writes. The admin tools stay hidden unless
+`OPENPROJECT_MCP_ADMIN_TOOLS=1`; the 13 destructive tools additionally require `confirm=true`
 on every call. Each section heading names the group tag accepted by
 `OPENPROJECT_MCP_DISABLE`.
 
@@ -432,7 +432,20 @@ account with the Manage members permission).
 | `list_meetings` | Read | List meetings: what is coming up, what already ran. |
 | `get_meeting` | Read | Read one meeting in full: participants, the agenda, and any recorded outcomes. |
 | `create_meeting` | Write | Schedule a meeting in a project and optionally invite participants. |
+| `update_meeting` | Write | Change a meeting's title, time, place or invite list — or move its lifecycle state. |
+| `delete_meeting` | Write (destructive) | Permanently delete a meeting, together with its agenda and recorded outcomes. |
 | `add_meeting_agenda_item` | Write | Add one item to a meeting's agenda, optionally pinned to a work package. |
+| `update_meeting_agenda_item` | Write | Edit one agenda item: retitle it, rewrite its notes, retime, reorder or re-link it. |
+| `delete_meeting_agenda_item` | Write (destructive) | Permanently delete one agenda item, with any outcomes recorded against it. |
+| `add_meeting_outcome` | Write | Record an outcome — a decision, a note, a follow-up ticket — against an agenda item. |
+| `update_meeting_outcome` | Write | Correct a recorded outcome's kind, text or linked work package. |
+| `delete_meeting_outcome` | Write (destructive) | Permanently delete a recorded outcome from a running meeting's minutes. |
+| `list_recurring_meetings` | Read | List recurring meeting series — the repetition rules, not the individual meetings. |
+| `get_recurring_meeting` | Read | Read one recurring series in full: the schedule plus its next occurrences. |
+| `create_recurring_meeting` | Write | Create a recurring meeting series: a schedule plus a template the occurrences copy. |
+| `delete_recurring_meeting` | Write (destructive) | Permanently delete a recurring series: template, schedule, and every occurrence. |
+| `init_recurring_meeting_occurrence` | Write | Materialize one occurrence of a series as a real meeting, copied from the template. |
+| `cancel_recurring_meeting_occurrence` | Write (destructive) | Cancel one occurrence of a series — skip a slot without touching the schedule. |
 
 ### Wiki (`wiki`)
 

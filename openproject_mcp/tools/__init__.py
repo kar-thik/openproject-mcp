@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from openproject_mcp.tools import (
     attachments,
     git_activity,
+    meetings_recurring,
     metadata,
     modules_collab,
     news,
@@ -50,6 +51,7 @@ TOOL_MODULES: tuple[ModuleType, ...] = (
     people,
     metadata,
     modules_collab,
+    meetings_recurring,
     news,
     reporting,
 )

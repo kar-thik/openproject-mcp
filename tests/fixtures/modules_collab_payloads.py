@@ -26,6 +26,8 @@ WIKI_PAGE_ID = 501
 DOCUMENT_ID = 8
 CREATED_MEETING_ID = 61
 CREATED_AGENDA_ITEM_ID = 94
+OUTCOME_ID = 12
+CREATED_OUTCOME_ID = 13
 
 
 def hal_collection(elements: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
@@ -100,6 +102,23 @@ MEETING_COLLECTION: dict[str, Any] = hal_collection(
 MEETING_EMBEDDED_PARTICIPANTS_ONLY: dict[str, Any] = {
     **MEETING,
     "_links": {key: value for key, value in MEETING["_links"].items() if key != "participants"},
+}
+
+#: What ``PATCH /meetings/{id}`` echoes back: the moved meeting, lockVersion bumped.
+UPDATED_MEETING: dict[str, Any] = {
+    **MEETING,
+    "title": "Sprint 12 planning (moved)",
+    "startTime": "2026-08-04T14:00:00Z",
+    "endTime": "2026-08-04T15:00:00Z",
+    "duration": "PT1H",
+    "lockVersion": 4,
+}
+
+#: The fresh state a 409 re-read returns: someone else renamed the meeting first.
+FRESH_MEETING_AFTER_CONFLICT: dict[str, Any] = {
+    **MEETING,
+    "title": "Sprint 12 planning (rescheduled)",
+    "lockVersion": 7,
 }
 
 OUTCOME: dict[str, Any] = {
@@ -240,6 +259,15 @@ CREATED_MEETING: dict[str, Any] = {
     },
 }
 
+#: What ``PATCH /meeting_agenda_items/{id}`` echoes back for the simple item.
+UPDATED_AGENDA_ITEM: dict[str, Any] = {
+    **AGENDA_ITEM_SIMPLE,
+    "title": "Capacity check (final)",
+    "durationInMinutes": 20,
+    "position": 2,
+    "lockVersion": 1,
+}
+
 CREATED_AGENDA_ITEM: dict[str, Any] = {
     "_type": "MeetingAgendaItem",
     "id": CREATED_AGENDA_ITEM_ID,
@@ -265,6 +293,35 @@ CREATED_AGENDA_ITEM: dict[str, Any] = {
             "title": "Ship the client layer",
         },
     },
+}
+
+#: What ``POST /meeting_outcomes`` answers: a decision with its follow-up ticket.
+CREATED_OUTCOME: dict[str, Any] = {
+    "_type": "MeetingOutcome",
+    "id": CREATED_OUTCOME_ID,
+    "kind": "decision",
+    "notes": {"format": "markdown", "raw": "Ship on Friday.", "html": "<p>Ship on Friday.</p>"},
+    "_links": {
+        "self": {"href": f"/api/v3/meeting_outcomes/{CREATED_OUTCOME_ID}"},
+        "author": dict(_GRACE),
+        "agendaItem": {"href": "/api/v3/meeting_agenda_items/92"},
+        "workPackage": {
+            "href": f"/api/v3/work_packages/{WORK_PACKAGE_ID}",
+            "title": "Ship the client layer",
+        },
+    },
+}
+
+#: What ``PATCH /meeting_outcomes/{id}`` echoes back after a correction.
+UPDATED_OUTCOME: dict[str, Any] = {
+    **OUTCOME,
+    "kind": "information",
+    "notes": {
+        "format": "markdown",
+        "raw": "Deferred to next sprint.",
+        "html": "<p>Deferred to next sprint.</p>",
+    },
+    "_links": {**OUTCOME["_links"], "agendaItem": {"href": "/api/v3/meeting_agenda_items/92"}},
 }
 
 
@@ -374,4 +431,26 @@ AGENDA_ITEM_REJECTED: dict[str, Any] = {
     "errorIdentifier": "urn:openproject-org:api:v3:errors:PropertyConstraintViolation",
     "message": "Work package is invalid.",
     "_embedded": {"details": {"attribute": "workPackage"}},
+}
+
+#: The 409 a stale lockVersion answers on meetings and agenda items.
+STALE_LOCK_CONFLICT: dict[str, Any] = {
+    "_type": "Error",
+    "errorIdentifier": "urn:openproject-org:api:v3:errors:UpdateConflict",
+    "message": "Your changes could not be saved, because the resource was changed since you"
+    " opened it.",
+}
+
+#: The 422 every write against a CLOSED meeting (or its agenda) answers.
+MEETING_NOT_EDITABLE: dict[str, Any] = {
+    "_type": "Error",
+    "errorIdentifier": "urn:openproject-org:api:v3:errors:PropertyConstraintViolation",
+    "message": "The meeting is not editable anymore.",
+}
+
+#: The 422 an outcome write answers whenever the meeting is not 'in_progress'.
+OUTCOME_NOT_EDITABLE: dict[str, Any] = {
+    "_type": "Error",
+    "errorIdentifier": "urn:openproject-org:api:v3:errors:PropertyConstraintViolation",
+    "message": "The outcome is not editable anymore.",
 }
