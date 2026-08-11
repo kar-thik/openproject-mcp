@@ -385,6 +385,40 @@ async def test_get_missing_work_package_returns_the_not_found_envelope(
     assert error["hint"]
 
 
+async def test_get_resolves_a_semantic_identifier_and_keeps_includes_numeric(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    """17.x semantic ids ('QMS-42') fetch by the given key; includes use the self id."""
+    mock_api.get("work_packages/QMS-42").mock(
+        return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL)
+    )
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1))
+    relations = mock_api.get(f"{WP_PATH}/relations").mock(
+        return_value=httpx.Response(200, json=RELATIONS_COLLECTION)
+    )
+
+    structured = _structured(
+        await mcp_client.call_tool("get_work_package", {"id": "QMS-42", "include": ["relations"]})
+    )
+
+    assert structured["id"] == 1234
+    assert relations.call_count == 1, "includes must address the numeric self id"
+
+
+async def test_get_semantic_identifier_miss_hints_at_the_numeric_id(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    mock_api.get("work_packages/NOPE-1").mock(return_value=httpx.Response(404, json=NOT_FOUND_BODY))
+
+    result = await mcp_client.call_tool("get_work_package", {"id": "NOPE-1"}, raise_on_error=False)
+
+    assert result.is_error
+    error = _envelope(result)
+    assert error["type"] == "not_found"
+    assert "Semantic identifiers" in error["hint"]
+    assert "numeric id" in error["hint"]
+
+
 # --- create ---------------------------------------------------------------
 
 

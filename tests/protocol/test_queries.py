@@ -132,6 +132,7 @@ async def test_running_a_query_returns_rows_groups_sums_and_the_definition(
 
     assert payload["items"][0] == {
         "id": 1234,
+        "display_id": None,
         "subject": "Ship the client layer",
         "type": {"id": 1, "name": "Task"},
         "status": {"id": 7, "name": "In progress"},

@@ -45,11 +45,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal
+from urllib.parse import quote
 
 from pydantic import BaseModel, Field
 
 from openproject_mcp.client import hal
-from openproject_mcp.client.errors import InputValidationError, OpenProjectError
+from openproject_mcp.client.errors import InputValidationError, NotFoundError, OpenProjectError
 from openproject_mcp.client.filters import (
     WORK_PACKAGE_SORT_KEYS,
     Filter,
@@ -960,11 +961,13 @@ def register(mcp: FastMCP) -> None:
     @_shared.tool_errors
     async def get_work_package(
         id: Annotated[
-            int,
+            int | str,
             Field(
                 description=(
                     "Work package id — the number shown as #1234 in OpenProject. Comes from "
-                    "search_work_packages or list_work_packages."
+                    "search_work_packages or list_work_packages. Instances on 17.x with "
+                    "semantic identifiers enabled also accept the semantic form ('PROJ-42', "
+                    "the row's display_id)."
                 )
             ),
         ],
@@ -1002,7 +1005,34 @@ def register(mcp: FastMCP) -> None:
         ctx = _shared.get_tool_context()
         requested = list(dict.fromkeys(include or []))
 
-        payload = await ctx.client.get_json(f"work_packages/{id}")
+        key = str(id).strip()
+        if not key:
+            raise InputValidationError(
+                "id must not be empty.",
+                hint=(
+                    "Pass the numeric work package id, or its display_id on instances with "
+                    "semantic identifiers."
+                ),
+            )
+        try:
+            payload = await ctx.client.get_json(f"work_packages/{quote(key, safe='')}")
+        except NotFoundError as exc:
+            if key.isdigit():
+                raise
+            raise NotFoundError(
+                exc.message,
+                http_status=exc.http_status,
+                error_identifier=exc.error_identifier,
+                hint=(
+                    f"{key!r} did not resolve. Semantic identifiers ('PROJ-42') only work on "
+                    "OpenProject 17+ with semantic work package identifiers enabled — pass "
+                    "the numeric id from search_work_packages or list_work_packages instead."
+                ),
+            ) from exc
+        # Includes always address the numeric id from the payload's self link, so a
+        # semantic lookup never leaks the semantic form onto nested routes.
+        self_id = hal.self_id(payload)
+        wp_id = self_id if isinstance(self_id, int) else (id if isinstance(id, int) else None)
         schema, schema_note = await _schema_for(ctx, payload)
         notes: list[str] = [schema_note] if schema_note else []
 
@@ -1012,10 +1042,17 @@ def register(mcp: FastMCP) -> None:
             "attachments": _fetch_attachments,
             "children": _fetch_children,
         }
-        remote = [name for name in requested if name in fetchers]
-        gathered = await asyncio.gather(
-            *(fetchers[name](ctx, id) for name in remote), return_exceptions=True
-        )
+        remote: list[str] = []
+        gathered: list[Any] = []
+        if wp_id is not None:
+            remote = [name for name in requested if name in fetchers]
+            gathered = list(
+                await asyncio.gather(
+                    *(fetchers[name](ctx, wp_id) for name in remote), return_exceptions=True
+                )
+            )
+        elif any(name in fetchers for name in requested):
+            notes.append("includes unavailable: the work package exposed no numeric id")
 
         detail = WorkPackageWithIncludes(**_detail_fields(payload, schema))
         for name, outcome in zip(remote, gathered, strict=True):

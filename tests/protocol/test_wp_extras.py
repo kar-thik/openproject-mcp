@@ -774,6 +774,7 @@ async def test_custom_action_reads_the_lock_version_then_executes(
     assert result.structured_content is not None
     assert result.structured_content == {
         "id": WORK_PACKAGE_ID,
+        "display_id": None,
         "subject": "Ship the client layer",
         "type": {"id": 1, "name": "Task"},
         "status": {"id": 12, "name": "Closed"},

@@ -61,6 +61,7 @@ async def test_list_projects_pages_and_sends_the_search_filter(
         "public": False,
         "parent": {"id": 3, "name": "Customer work"},
         "status_code": "at_risk",
+        "workspace_type": "project",
     }
     assert structured["items"][1]["parent"] is None
     assert structured["items"][1]["status_code"] is None
@@ -73,6 +74,37 @@ async def test_list_projects_pages_and_sends_the_search_filter(
     ]
     assert sent.params["offset"] == "2"
     assert sent.params["pageSize"] == "20"
+
+
+async def test_list_projects_surfaces_program_and_portfolio_workspace_types(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    """17.x mixes programs and portfolios into the projects index (deliberately)."""
+    portfolio = {
+        "_type": "Portfolio",
+        "id": 31,
+        "identifier": "fleet-programs",
+        "name": "Fleet programs",
+        "active": True,
+        "_links": {"self": {"href": "/api/v3/portfolios/31"}},
+    }
+    collection = {
+        "_type": "Collection",
+        "total": 2,
+        "count": 2,
+        "pageSize": 20,
+        "offset": 1,
+        "_embedded": {"elements": [PROJECT, portfolio]},
+    }
+    mock_api.get("projects").mock(return_value=httpx.Response(200, json=collection))
+
+    result = await mcp_client.call_tool("list_projects", {})
+
+    structured = result.structured_content
+    assert structured is not None
+    assert structured["items"][0]["workspace_type"] == "project"
+    assert structured["items"][1]["workspace_type"] == "portfolio"
+    assert structured["items"][1]["id"] == 31
 
 
 async def test_list_projects_scopes_to_direct_children_and_favorites(

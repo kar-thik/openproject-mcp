@@ -10,6 +10,18 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+### Added
+
+- OpenProject 17.x compatibility surfaced in existing tools:
+  - `list_projects`/`get_project` rows carry `workspace_type`
+    (`project` | `program` | `portfolio`) — on 17.x the projects index
+    deliberately mixes all three workspace kinds.
+  - Work-package rows and details carry `display_id`, and
+    `get_work_package` accepts the semantic identifier form (`PROJ-42`)
+    on instances that enable it; a semantic miss hints at the numeric id.
+  - `get_project_metadata` type rows carry `own_name` and `parent` for
+    the 17.7+ type-variant model (null on older instances).
+
 ## [0.1.2] - 2026-08-11
 
 ### Added

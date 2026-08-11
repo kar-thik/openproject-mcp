@@ -137,6 +137,14 @@ class ProjectRow(BaseModel):
             "translated label; null means no status has been set."
         ),
     )
+    workspace_type: str | None = Field(
+        default=None,
+        description=(
+            "Workspace kind: 'project', 'program' or 'portfolio'. Pre-17 instances only have "
+            "'project'; on 17.x project listings mix all three kinds, so check this before "
+            "treating a row as a plain project."
+        ),
+    )
 
 
 class ProjectDetail(ProjectRow):
@@ -165,6 +173,12 @@ def _status_code(payload: Mapping[str, Any]) -> str | None:
     return raw if isinstance(raw, str) else None
 
 
+def _workspace_type(payload: Mapping[str, Any]) -> str | None:
+    """Lowercase the HAL ``_type`` (Project | Program | Portfolio, 17.x)."""
+    raw = payload.get("_type")
+    return raw.lower() if isinstance(raw, str) and raw else None
+
+
 def _project_row(payload: Mapping[str, Any]) -> ProjectRow:
     identifier = payload.get("identifier")
     return ProjectRow(
@@ -175,6 +189,7 @@ def _project_row(payload: Mapping[str, Any]) -> ProjectRow:
         public=payload.get("public"),
         parent=Ref.from_hal(payload, "parent"),
         status_code=_status_code(payload),
+        workspace_type=_workspace_type(payload),
     )
 
 
@@ -629,13 +644,15 @@ def register(mcp: FastMCP) -> None:
         server.
 
         Returns the standard list envelope: ``items`` of
-        ``{id, identifier, name, active, public, parent, status_code}`` plus ``pagination``
-        with ``total``/``page``/``page_size``/``has_more``. Nothing is truncated silently —
-        page explicitly until ``has_more`` is false.
+        ``{id, identifier, name, active, public, parent, status_code, workspace_type}`` plus
+        ``pagination`` with ``total``/``page``/``page_size``/``has_more``. Nothing is
+        truncated silently — page explicitly until ``has_more`` is false.
 
         Pitfalls: ``search`` matches name and identifier only (not descriptions);
         ``parent_id`` returns direct children, so a deep hierarchy needs one call per level;
-        ``status_code`` is a code such as ``on_track``, never a translated label.
+        ``status_code`` is a code such as ``on_track``, never a translated label. On
+        OpenProject 17.x this listing deliberately mixes plain projects with programs and
+        portfolios — ``workspace_type`` says which each row is.
 
         For a single project's description and status explanation use ``get_project``. For
         the types, versions, categories and time-entry activities valid inside a project use
@@ -709,9 +726,9 @@ def register(mcp: FastMCP) -> None:
         or the parent of a specific project — or to verify that an id or identifier a user
         gave you actually resolves.
 
-        Returns ``{id, identifier, name, active, public, parent, status_code, description,
-        status_explanation, created_at, updated_at}``. Rich text comes back as markdown
-        ``raw``; html is dropped.
+        Returns ``{id, identifier, name, active, public, parent, status_code,
+        workspace_type, description, status_explanation, created_at, updated_at}``. Rich
+        text comes back as markdown ``raw``; html is dropped.
 
         Pitfalls: ``status_code`` is one of on_track, at_risk, off_track, not_started,
         finished, discontinued — an empty ``status_code`` means the project has no status
