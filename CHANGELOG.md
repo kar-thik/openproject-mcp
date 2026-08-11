@@ -21,6 +21,25 @@ PATCH releases are fixes and strictly additive changes only.
     on instances that enable it; a semantic miss hints at the numeric id.
   - `get_project_metadata` type rows carry `own_name` and `parent` for
     the 17.7+ type-variant model (null on older instances).
+- Meetings suite: 13 new tools completing the meetings write surface
+  (OpenProject 17.4+ routes; the flat agenda-item/outcome writes need 17.6+).
+  Meetings gain `update_meeting` — including the lifecycle `state`, where
+  publishing a draft is `state='open'` — and `delete_meeting`; agenda items
+  gain `update_meeting_agenda_item` and `delete_meeting_agenda_item`; outcomes
+  gain `add_meeting_outcome`, `update_meeting_outcome` and
+  `delete_meeting_outcome` (writable only while the meeting is
+  `in_progress`). A new recurring-meetings module adds
+  `list_recurring_meetings`, `get_recurring_meeting`,
+  `create_recurring_meeting`, `delete_recurring_meeting`,
+  `init_recurring_meeting_occurrence` and
+  `cancel_recurring_meeting_occurrence`. Meeting and agenda-item updates are
+  lock-safe (a concurrent edit answers 409 carrying the fresh `lockVersion`),
+  every delete is confirm-gated, and 404/405s on these routes explain the
+  version floor instead of reading as "does not exist". The recurring tools
+  absorb the upstream traps: `timeZone` being overwritten on create (corrected
+  with a follow-up PATCH), `duration` as a plain number of hours, the draft
+  template blocking occurrence init (500), and exact-instant occurrence
+  matching (normalized to UTC). Tool count: 72 → 85.
 
 ## [0.1.2] - 2026-08-11
 

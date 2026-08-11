@@ -2,19 +2,26 @@
 
 Lands here:
 
-===============================  ======  ==============================================
-Tool                             Phase   Endpoint(s)
-===============================  ======  ==============================================
-🔍Ⓜ ``list_meetings``            3       ``GET /meetings`` (project + time filters)
-🔍Ⓜ ``get_meeting``              3       ``GET /meetings/{id}``
-                                         + ``…/agenda_items``
-✏️Ⓜ ``create_meeting``           3       form → ``POST /meetings``
-✏️Ⓜ ``add_meeting_agenda_item``  3       ``POST /meeting_agenda_items``
-🔍Ⓜ ``get_wiki_page``            3       ``GET /wiki_pages/{id}``
-🔍Ⓜ ``list_documents``           3       ``GET /documents``
-🔍Ⓜ ``get_document``             3       ``GET /documents/{id}``
-🔍Ⓜ ``list_budgets``             3       ``GET /projects/{id}/budgets``
-===============================  ======  ==============================================
+===================================  ======  ==============================================
+Tool                                 Phase   Endpoint(s)
+===================================  ======  ==============================================
+🔍Ⓜ ``list_meetings``                3       ``GET /meetings`` (project + time filters)
+🔍Ⓜ ``get_meeting``                  3       ``GET /meetings/{id}``
+                                             + ``…/agenda_items``
+✏️Ⓜ ``create_meeting``               3       form → ``POST /meetings``
+✏️Ⓜ ``update_meeting``               3       ``PATCH /meetings/{id}``
+🗑Ⓜ ``delete_meeting``               3       ``DELETE /meetings/{id}``
+✏️Ⓜ ``add_meeting_agenda_item``      3       ``POST /meeting_agenda_items``
+✏️Ⓜ ``update_meeting_agenda_item``   3       ``PATCH /meeting_agenda_items/{id}``
+🗑Ⓜ ``delete_meeting_agenda_item``   3       ``DELETE /meeting_agenda_items/{id}``
+✏️Ⓜ ``add_meeting_outcome``          3       ``POST /meeting_outcomes``
+✏️Ⓜ ``update_meeting_outcome``       3       ``PATCH /meeting_outcomes/{id}``
+🗑Ⓜ ``delete_meeting_outcome``       3       ``DELETE /meeting_outcomes/{id}``
+🔍Ⓜ ``get_wiki_page``                3       ``GET /wiki_pages/{id}``
+🔍Ⓜ ``list_documents``               3       ``GET /documents``
+🔍Ⓜ ``get_document``                 3       ``GET /documents/{id}``
+🔍Ⓜ ``list_budgets``                 3       ``GET /projects/{id}/budgets``
+===================================  ======  ==============================================
 
 Non-negotiables for this module:
 
@@ -44,9 +51,23 @@ Non-negotiables for this module:
   and in-band in ``notes`` (SPEC §18).
 * **Budgets are id + subject only.** The v3 budget representer exposes nothing
   else: no planned or spent amounts. Saying so beats inventing them (G3).
+* **The meeting writes are version-fenced.** OpenProject grew this API in
+  steps: before 17.4 no meeting write route exists at all (404 at route level,
+  or 405 where the read path exists but the verb is not routed), and the flat
+  ``/meeting_agenda_items/{id}`` and ``/meeting_outcomes`` write routes only
+  ship with 17.6. Every write tool's 404 hint names this third reading, and a
+  405 is mapped onto the same explanation rather than the generic
+  unexpected-status hint.
+* **Writes are lock-safe where upstream versions them.** Meetings and agenda
+  items carry ``lockVersion``, so their update tools go through
+  ``patch_with_lock`` (SPEC §4.4): the caller's ``lock_version`` is echoed (or
+  the current one fetched first), and a stale write surfaces as a ``conflict``
+  carrying the fresh version. Outcomes carry no ``lockVersion``, so their PATCH
+  is plain — and every outcome write only works while the meeting state is
+  exactly ``in_progress``, which the 422 hint says out loud.
 
-Out of scope here (SPEC §18): meeting update/delete, meeting sections and
-outcome writes, recurring meetings, and document update.
+Out of scope here: meeting sections' own CRUD and document update (SPEC §18).
+Recurring meetings live in the sibling ``meetings_recurring`` module.
 """
 
 from __future__ import annotations
@@ -54,7 +75,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -64,6 +85,7 @@ from openproject_mcp.client.errors import (
     InputValidationError,
     NotFoundError,
     PermissionDeniedError,
+    UnexpectedResponseError,
     ValidationFailedError,
 )
 from openproject_mcp.client.filters import (
@@ -77,6 +99,7 @@ from openproject_mcp.client.filters import (
     serialize_filters,
     serialize_sort_by,
 )
+from openproject_mcp.client.locking import extract_lock_version, patch_with_lock
 from openproject_mcp.client.payloads import build_write_payload, formattable_field, link
 from openproject_mcp.config import PROBE_CACHE_TTL
 from openproject_mcp.projections import ListEnvelope, Ref
@@ -86,17 +109,24 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 __all__ = [
+    "KEEP",
     "AgendaItem",
     "AgendaItemDetail",
     "BudgetRow",
     "DocumentDetail",
     "DocumentRow",
+    "MeetingDeletionResult",
     "MeetingDetail",
     "MeetingOutcome",
+    "MeetingOutcomeDetail",
     "MeetingRow",
     "WikiPage",
     "register",
 ]
+
+#: Sentinel default for update parameters that can be *cleared*: omitting the
+#: parameter (this value) leaves the field untouched, ``None``/``""`` clears it.
+KEEP = "__unchanged__"
 
 #: Resource key for the meetings endpoint's own filter set (SPEC §9.1).
 MEETINGS_RESOURCE = "meetings"
@@ -139,6 +169,38 @@ AGENDA_MISSING_NOTE = (
     "/meetings/{id}/agenda_items, so the agenda could not be read"
 )
 
+#: Lifecycle states a meeting accepts on PATCH. ``state`` is a plain writable
+#: attribute upstream — open/close/cancel/publish are all the same PATCH — and
+#: there is no transition matrix, with one rule: a closed meeting accepts a
+#: state-only patch (reopening it) and nothing else.
+MeetingState = Literal["open", "draft", "in_progress", "cancelled", "closed"]
+
+#: Outcome kinds. 'decision' is real despite being absent from the upstream API
+#: docs; 'information' requires notes, 'work_package' requires a visible linked
+#: work package, 'decision' requires nothing extra.
+OutcomeKind = Literal["information", "decision", "work_package"]
+
+#: The third reading a 404/405 on each write family can have, appended to the
+#: module-absence hint: the whole meetings write API only exists from 17.4, and
+#: the flat agenda-item / outcome routes only from 17.6 (SPEC §6.13).
+MEETING_WRITE_DISCOVERY = (
+    "Meeting ids come from list_meetings. A third reading applies to writes: OpenProject "
+    "before 17.4 (16.6 among them) does not route the meetings write API at all, so this "
+    "fails regardless of the meeting id even when the module is enabled and list_meetings "
+    "works."
+)
+AGENDA_WRITE_DISCOVERY = (
+    "Agenda item ids come from get_meeting, not from list_meetings. A third reading applies "
+    "to writes: the flat /meeting_agenda_items/{id} write routes only exist from OpenProject "
+    "17.6 (and 16.x has no meetings write API at all), so this fails regardless of the item "
+    "id even when the module is enabled."
+)
+OUTCOME_WRITE_DISCOVERY = (
+    "Outcome ids come from get_meeting's agenda_items[].outcomes. A third reading applies "
+    "to writes: OpenProject before 17.6 has no outcomes API at all, so every "
+    "/meeting_outcomes route fails there even when outcomes are visible in the UI."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _Module:
@@ -152,6 +214,14 @@ MEETINGS = _Module("Meetings", "view meetings")
 WIKI = _Module("Wiki", "view wiki pages")
 DOCUMENTS = _Module("Documents", "view documents")
 BUDGETS = _Module("Budgets", "view budgets")
+
+#: The Meetings module seen through each write permission — a 403 hint must name
+#: the permission the write actually needs, not the read one (engine.rb §6.13:
+#: edit_meetings, delete_meetings, manage_agendas, manage_outcomes).
+MEETINGS_EDIT = _Module("Meetings", "edit meetings")
+MEETINGS_DELETE = _Module("Meetings", "delete meetings")
+AGENDAS = _Module("Meetings", "manage agendas")
+OUTCOMES = _Module("Meetings", "manage outcomes")
 
 
 # --- projections ----------------------------------------------------------
@@ -187,7 +257,7 @@ class MeetingRow(BaseModel):
 
 
 class MeetingOutcome(BaseModel):
-    """One recorded outcome of an agenda item (read-only through this server)."""
+    """One recorded outcome of an agenda item."""
 
     id: int | str | None = Field(default=None, description="Outcome id.")
     kind: str | None = Field(
@@ -199,6 +269,14 @@ class MeetingOutcome(BaseModel):
     author: Ref | None = Field(default=None, description="User who recorded the outcome.")
     work_package: Ref | None = Field(
         default=None, description="Work package the outcome points at, when one was linked."
+    )
+
+
+class MeetingOutcomeDetail(MeetingOutcome):
+    """An outcome as the outcome write tools return it."""
+
+    agenda_item: Ref | None = Field(
+        default=None, description="Agenda item the outcome is recorded against."
     )
 
 
@@ -236,6 +314,11 @@ class AgendaItem(BaseModel):
         default_factory=list[MeetingOutcome],
         description="Outcomes recorded against this item; always a list, empty when none.",
     )
+    lock_version: int | None = Field(
+        default=None,
+        description="Optimistic-lock version. Echo it as update_meeting_agenda_item's "
+        "lock_version so a concurrent edit fails loudly (409) instead of being overwritten.",
+    )
 
 
 class AgendaItemDetail(AgendaItem):
@@ -248,6 +331,11 @@ class AgendaItemDetail(AgendaItem):
 class MeetingDetail(MeetingRow):
     """One meeting in full: participants plus the agenda and its outcomes."""
 
+    lock_version: int | None = Field(
+        default=None,
+        description="Optimistic-lock version. Echo it as update_meeting's lock_version so a "
+        "concurrent edit fails loudly (409) instead of being overwritten.",
+    )
     author: Ref | None = Field(default=None, description="User who created the meeting.")
     participants: list[Ref] = Field(
         default_factory=list[Ref],
@@ -307,6 +395,16 @@ class BudgetRow(BaseModel):
         description="Budget id — the container_id for list_attachments(container_type='budget').",
     )
     subject: str | None = Field(default=None, description="Budget name as shown in the UI.")
+
+
+class MeetingDeletionResult(BaseModel):
+    """Outcome of the meetings-family delete tools."""
+
+    id: int = Field(
+        description="Id of the meeting, agenda item, outcome or recurring series that was deleted."
+    )
+    deleted: bool = Field(description="True once OpenProject accepted the deletion.")
+    message: str = Field(description="Human-readable confirmation naming what was removed.")
 
 
 # --- payload helpers ------------------------------------------------------
@@ -374,6 +472,13 @@ def _outcome(payload: Mapping[str, Any]) -> MeetingOutcome:
     )
 
 
+def _outcome_detail(payload: Mapping[str, Any]) -> MeetingOutcomeDetail:
+    return MeetingOutcomeDetail(
+        **_outcome(payload).model_dump(),
+        agenda_item=Ref.from_hal(payload, "agendaItem"),
+    )
+
+
 def _agenda_item(payload: Mapping[str, Any]) -> AgendaItem:
     item_type = payload.get("itemType")
     return AgendaItem(
@@ -387,6 +492,7 @@ def _agenda_item(payload: Mapping[str, Any]) -> AgendaItem:
         work_package=_visible_ref(payload, "workPackage"),
         section=Ref.from_hal(payload, "section"),
         outcomes=[_outcome(item) for item in _embedded_elements(payload, "outcomes")],
+        lock_version=extract_lock_version(payload),
     )
 
 
@@ -407,6 +513,35 @@ def _participants(payload: Mapping[str, Any]) -> list[Ref]:
         Ref(id=hal.self_id(item), name=item.get("name"))
         for item in _embedded_elements(payload, "participants")
     ]
+
+
+def _meeting_detail(
+    payload: Mapping[str, Any], *, agenda_items: list[AgendaItem], notes: list[str]
+) -> MeetingDetail:
+    """One meeting body plus its (separately fetched) agenda, as the full projection."""
+    return MeetingDetail(
+        **_meeting_row(payload).model_dump(),
+        lock_version=extract_lock_version(payload),
+        author=Ref.from_hal(payload, "author"),
+        participants=_participants(payload),
+        agenda_items=agenda_items,
+        created_at=payload.get("createdAt"),
+        updated_at=payload.get("updatedAt"),
+        notes=notes,
+    )
+
+
+def _undisclosed_note(elements: list[dict[str, Any]]) -> str | None:
+    """The note for agenda items whose linked work package is withheld, if any."""
+    undisclosed = [
+        str(hal.self_id(element)) for element in elements if _is_undisclosed(element, "workPackage")
+    ]
+    if not undisclosed:
+        return None
+    return (
+        f"agenda item(s) {', '.join(undisclosed)} link a work package this account may "
+        "not view; OpenProject withholds its id, so work_package is null there"
+    )
 
 
 def _document_row(payload: Mapping[str, Any]) -> DocumentRow:
@@ -556,6 +691,104 @@ async def _module_post(
         raise _module_not_found(exc, module=module, subject=subject, discovery=discovery) from exc
     except PermissionDeniedError as exc:
         raise _module_forbidden(exc, module=module) from exc
+
+
+def _module_unrouted(
+    exc: UnexpectedResponseError, *, module: _Module, discovery: str
+) -> UnexpectedResponseError:
+    """A 405 on a module write: the read path exists, the write verb is not routed.
+
+    Pre-17.4 OpenProject has the meetings *read* routes but none of the writes,
+    and Grape answers a known path with an unrouted verb with 405 rather than
+    404. Both spell "this instance predates the meetings write API", so the 405
+    carries the same version-aware reading instead of the generic
+    unexpected-status hint.
+    """
+    return UnexpectedResponseError(
+        exc.message,
+        http_status=exc.http_status,
+        error_identifier=exc.error_identifier,
+        hint=(
+            f"HTTP 405 here means the path exists for reads but this write verb is not routed "
+            f"— this OpenProject predates the {module.label} write API, the same reading as a "
+            f"404 on the sibling write routes, so retrying with another id will not help. "
+            f"{discovery}"
+        ),
+    )
+
+
+async def _module_patch_with_lock(
+    path: str,
+    payload: Mapping[str, Any],
+    *,
+    lock_version: int | None,
+    module: _Module,
+    subject: str,
+    discovery: str,
+) -> dict[str, Any]:
+    """PATCH a lock-versioned module resource, 404/403/405 mapped like :func:`_module_get`.
+
+    The lockVersion handling itself is :func:`patch_with_lock` (SPEC §4.4): the
+    caller's value is echoed, or the current one is fetched first, and a stale
+    write comes back as a ``conflict`` error carrying the fresh version — that
+    error passes through untouched, because a 409 says "re-read and retry", not
+    "module missing". A 404 from the pre-fetch means the same two-or-three
+    things a 404 on the PATCH itself would, so both get the same mapping.
+    """
+    ctx = _shared.get_tool_context()
+    try:
+        return await patch_with_lock(ctx.client, path, payload, lock_version=lock_version)
+    except NotFoundError as exc:
+        raise _module_not_found(exc, module=module, subject=subject, discovery=discovery) from exc
+    except PermissionDeniedError as exc:
+        raise _module_forbidden(exc, module=module) from exc
+    except UnexpectedResponseError as exc:
+        if exc.http_status == 405:
+            raise _module_unrouted(exc, module=module, discovery=discovery) from exc
+        raise
+
+
+async def _module_patch(
+    path: str,
+    *,
+    json: Any,
+    module: _Module,
+    subject: str,
+    discovery: str,
+) -> dict[str, Any]:
+    """Plain PATCH for module resources without a ``lockVersion`` (outcomes)."""
+    ctx = _shared.get_tool_context()
+    try:
+        return await ctx.client.patch_json(path, json=json)
+    except NotFoundError as exc:
+        raise _module_not_found(exc, module=module, subject=subject, discovery=discovery) from exc
+    except PermissionDeniedError as exc:
+        raise _module_forbidden(exc, module=module) from exc
+    except UnexpectedResponseError as exc:
+        if exc.http_status == 405:
+            raise _module_unrouted(exc, module=module, discovery=discovery) from exc
+        raise
+
+
+async def _module_delete(
+    path: str,
+    *,
+    module: _Module,
+    subject: str,
+    discovery: str,
+) -> dict[str, Any]:
+    """DELETE a module endpoint with the same 404/403/405 mapping as the writes."""
+    ctx = _shared.get_tool_context()
+    try:
+        return await ctx.client.delete(path)
+    except NotFoundError as exc:
+        raise _module_not_found(exc, module=module, subject=subject, discovery=discovery) from exc
+    except PermissionDeniedError as exc:
+        raise _module_forbidden(exc, module=module) from exc
+    except UnexpectedResponseError as exc:
+        if exc.http_status == 405:
+            raise _module_unrouted(exc, module=module, discovery=discovery) from exc
+        raise
 
 
 async def _agenda_items(meeting_id: int) -> tuple[list[dict[str, Any]], str | None]:
@@ -849,8 +1082,8 @@ def register(mcp: FastMCP) -> None:
 
         Cross-references: `add_meeting_agenda_item` to extend the agenda; `list_meetings` for the
         id; `list_attachments(container_type='meeting', container_id=<meeting id>)` for files;
-        `get_work_package` for a linked ticket. Updating or deleting a meeting is deliberately
-        not offered — do that in the UI.
+        `get_work_package` for a linked ticket. `update_meeting` / `delete_meeting` change or
+        remove the meeting itself — the result's `lock_version` is what `update_meeting` echoes.
         """
         payload = await _module_get(
             f"meetings/{meeting_id}",
@@ -859,27 +1092,9 @@ def register(mcp: FastMCP) -> None:
             discovery="Meeting ids come from list_meetings.",
         )
         elements, agenda_note = await _agenda_items(meeting_id)
-
-        notes: list[str] = [agenda_note] if agenda_note else []
-        undisclosed = [
-            str(hal.self_id(element))
-            for element in elements
-            if _is_undisclosed(element, "workPackage")
-        ]
-        if undisclosed:
-            notes.append(
-                f"agenda item(s) {', '.join(undisclosed)} link a work package this account may "
-                "not view; OpenProject withholds its id, so work_package is null there"
-            )
-
-        return MeetingDetail(
-            **_meeting_row(payload).model_dump(),
-            author=Ref.from_hal(payload, "author"),
-            participants=_participants(payload),
-            agenda_items=[_agenda_item(element) for element in elements],
-            created_at=payload.get("createdAt"),
-            updated_at=payload.get("updatedAt"),
-            notes=notes,
+        notes = [note for note in (agenda_note, _undisclosed_note(elements)) if note]
+        return _meeting_detail(
+            payload, agenda_items=[_agenda_item(element) for element in elements], notes=notes
         )
 
     @mcp.tool(
@@ -920,7 +1135,7 @@ def register(mcp: FastMCP) -> None:
         participants: Annotated[
             list[int] | None,
             Field(
-                description="User ids to invite, from list_users or a project's memberships. "
+                description="User ids to invite, from search_principals or a project's memberships. "
                 "Every one of them needs 'view meetings' in the project or the create is "
                 "rejected. Omit to let OpenProject invite only the author."
             ),
@@ -937,13 +1152,14 @@ def register(mcp: FastMCP) -> None:
         empty — add them with `add_meeting_agenda_item`).
 
         Pitfalls. Check `state` in the result: current OpenProject versions create meetings as
-        'draft', which means participants do not see it until it is opened in the UI, and the API
-        offers no way to open it (meeting update is out of scope). Invitation emails are not sent
-        by an API create. `start_time` needs a timezone — the server stores an instant, not a
-        wall-clock time. Recurring meetings cannot be created through this tool.
+        'draft', which means participants do not see it until it is opened —
+        `update_meeting(meeting_id=..., state='open')` publishes it, exactly as the UI does.
+        Invitation emails are not sent by an API create. `start_time` needs a timezone — the
+        server stores an instant, not a wall-clock time. Recurring meetings cannot be created
+        through this tool — use `create_recurring_meeting`.
 
         Cross-references: `add_meeting_agenda_item(meeting_id=...)` to build the agenda;
-        `get_meeting` to read it back; `list_projects` for the project id; `list_users` (or
+        `get_meeting` to read it back; `list_projects` for the project id; `search_principals` (or
         `list_project_memberships`) for participant ids.
         """
         if not title.strip():
@@ -986,14 +1202,224 @@ def register(mcp: FastMCP) -> None:
             subject=subject,
             discovery=discovery,
         )
-        return MeetingDetail(
-            **_meeting_row(created).model_dump(),
-            author=Ref.from_hal(created, "author"),
-            participants=_participants(created),
-            agenda_items=[],
-            created_at=created.get("createdAt"),
-            updated_at=created.get("updatedAt"),
-            notes=[],
+        return _meeting_detail(created, agenda_items=[], notes=[])
+
+    @mcp.tool(
+        name="update_meeting",
+        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.WRITE),
+        annotations=_shared.write_annotations(title="Update meeting"),
+    )
+    @_shared.tool_errors
+    async def update_meeting(
+        meeting_id: Annotated[
+            int,
+            Field(
+                description="Numeric meeting id from list_meetings or get_meeting. Never a "
+                "project id or an agenda item id."
+            ),
+        ],
+        title: Annotated[
+            str | None,
+            Field(description="New meeting title. Omit to leave it alone; it cannot be cleared."),
+        ] = None,
+        location: Annotated[
+            str | None,
+            Field(
+                description="New room name or meeting URL; REPLACES the stored one. Pass null "
+                "or an empty string to clear it. Omit the parameter entirely (the default) to "
+                "leave it untouched."
+            ),
+        ] = KEEP,
+        start_time: Annotated[
+            str | None,
+            Field(
+                description="New start as ISO 8601 WITH a timezone: '2026-08-03T14:00:00Z' or "
+                "'2026-08-03T16:00:00+02:00'. A time without an offset is rejected locally "
+                "rather than booked in the wrong hour. Omit to keep the current time."
+            ),
+        ] = None,
+        duration_minutes: Annotated[
+            int | None,
+            Field(
+                ge=1,
+                description="New length in minutes (90 = one and a half hours); the end time "
+                "is derived from it. Omit to keep the current duration.",
+            ),
+        ] = None,
+        state: Annotated[
+            MeetingState | None,
+            Field(
+                description="New lifecycle state: 'open' publishes a draft to its participants "
+                "(exactly what the UI's publish does), 'in_progress' starts it (required before "
+                "outcomes can be recorded), 'closed' freezes it, 'cancelled' calls it off. "
+                "There is no dedicated state endpoint upstream — this plain field is it."
+            ),
+        ] = None,
+        participants: Annotated[
+            list[int] | None,
+            Field(
+                description="User ids of the FULL new invite list, from search_principals or a "
+                "project's memberships. This REPLACES the whole set — anyone not listed is "
+                "uninvited — so read the current list with get_meeting first and send it "
+                "complete. Omit to leave the participants untouched."
+            ),
+        ] = None,
+        lock_version: Annotated[
+            int | None,
+            Field(
+                description="The lock_version you read from get_meeting. Pass it and the write "
+                "fails loudly (409) if somebody else edited the meeting in the meantime. Omit "
+                "it and the current version is fetched and echoed — still safe, just one more "
+                "round trip and a slightly wider conflict window."
+            ),
+        ] = None,
+    ) -> MeetingDetail:
+        """Change a meeting's title, time, place or invite list — or move its lifecycle state.
+
+        Use it to reschedule ("move Thursday's review to 15:00"), to publish a draft
+        (`state='open'`), to start or wrap up a running one (`state='in_progress'` /
+        `'closed'` — outcomes can only be recorded while it is in progress), or to fix the
+        participants. Only the parameters you pass are sent; omitted fields stay as they are.
+
+        Returns the updated meeting in the same shape as `get_meeting`, including the fresh
+        `lock_version` for a follow-up edit.
+
+        Pitfalls. `participants` replaces the entire set — a partial list silently uninvites
+        everyone else. A closed meeting accepts a state-only patch (reopening it) and nothing
+        else; any other change is rejected with a validation error until it is reopened. A
+        `conflict` error (409) means somebody edited the meeting since you read it — the error
+        carries the fresh `lock_version` and the differing fields, so re-read, decide, retry
+        deliberately. This needs the 'edit meetings' permission, and moving a meeting to
+        another project is deliberately not offered.
+
+        Cross-references: `get_meeting` for the current values and the `lock_version`;
+        `create_meeting` to schedule a new one; `delete_meeting` to remove one;
+        `add_meeting_outcome` for what an 'in_progress' state unlocks.
+        """
+        attributes: dict[str, Any] = {}
+        if title is not None:
+            if not title.strip():
+                raise InputValidationError(
+                    "title is empty.",
+                    hint="Omit title to leave it unchanged; a meeting cannot have a blank title.",
+                )
+            attributes["title"] = title.strip()
+        if location != KEEP:
+            attributes["location"] = location or ""
+        if start_time is not None:
+            attributes["startTime"] = _iso_datetime(start_time, "start_time")
+        if duration_minutes is not None:
+            attributes["duration"] = _iso_duration(duration_minutes)
+        if state is not None:
+            attributes["state"] = state
+
+        links: dict[str, Any] = {}
+        if participants is not None:
+            # A PATCH replaces the whole participant set upstream, so the list is
+            # sent verbatim — including an (explicitly requested) empty one.
+            links["participants"] = [link("users", user_id) for user_id in participants]
+
+        if not attributes and not links:
+            raise InputValidationError(
+                "update_meeting was called with nothing to change.",
+                hint=(
+                    "Pass at least one of title, location, start_time, duration_minutes, "
+                    "state or participants."
+                ),
+            )
+
+        try:
+            updated = await _module_patch_with_lock(
+                f"meetings/{meeting_id}",
+                build_write_payload(attributes, links),
+                lock_version=lock_version,
+                module=MEETINGS_EDIT,
+                subject=f"meeting {meeting_id}",
+                discovery=MEETING_WRITE_DISCOVERY,
+            )
+        except ValidationFailedError as exc:
+            raise ValidationFailedError(
+                exc.message,
+                http_status=exc.http_status,
+                error_identifier=exc.error_identifier,
+                violations=exc.violations,
+                hint=(
+                    "OpenProject rejected the change. The usual causes: the meeting is closed "
+                    "(a closed meeting accepts a state-only patch that reopens it, nothing "
+                    "else), start_time is invalid, or a participant cannot view meetings in "
+                    "the project. 'violations' names the attribute."
+                ),
+            ) from exc
+        elements, agenda_note = await _agenda_items(meeting_id)
+        notes = [note for note in (agenda_note, _undisclosed_note(elements)) if note]
+        return _meeting_detail(
+            updated, agenda_items=[_agenda_item(element) for element in elements], notes=notes
+        )
+
+    @mcp.tool(
+        name="delete_meeting",
+        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.WRITE, _shared.DESTRUCTIVE),
+        annotations=_shared.destructive_annotations(title="Delete meeting"),
+    )
+    @_shared.tool_errors
+    async def delete_meeting(
+        meeting_id: Annotated[
+            int,
+            Field(
+                description="Numeric meeting id to delete permanently. Read it back with "
+                "get_meeting first and show the user the title — meeting ids are not "
+                "human-readable."
+            ),
+        ],
+        confirm: Annotated[
+            bool,
+            Field(
+                description="Must be true. Ask the user to confirm first — the API offers no "
+                "undo. Calling with confirm=false returns a confirmation_required error rather "
+                "than deleting anything."
+            ),
+        ] = False,
+    ) -> MeetingDeletionResult:
+        """Permanently delete a meeting, together with its agenda and recorded outcomes.
+
+        Use only on explicit user instruction. The meeting, its agenda items, their outcomes
+        and its attachments all go with it, and OpenProject offers no API-side undo. If the
+        meeting merely did not happen, `update_meeting(meeting_id=..., state='cancelled')` is
+        the reversible alternative that keeps the record.
+
+        Returns a small confirmation object once OpenProject accepts the deletion.
+
+        Pitfalls. This needs the 'delete meetings' permission, so a 403 is about the account,
+        not the id. A 404 means the id is wrong, the meeting was already deleted, or — on
+        OpenProject before 17.4 — the meetings write API does not exist at all; the hint
+        names all readings.
+
+        Cross-references: `get_meeting` to check what you are about to destroy;
+        `update_meeting(state='cancelled')` for the reversible alternative; `list_meetings`
+        for the id.
+        """
+        _shared.require_confirmation(
+            confirm,
+            action="delete meeting",
+            target=f"#{meeting_id}",
+            consequence=(
+                "The meeting, its agenda items, their recorded outcomes and its attachments "
+                "are removed permanently, and the deletion cannot be undone through the API."
+            ),
+        )
+        await _module_delete(
+            f"meetings/{meeting_id}",
+            module=MEETINGS_DELETE,
+            subject=f"meeting {meeting_id}",
+            discovery=MEETING_WRITE_DISCOVERY,
+        )
+        return MeetingDeletionResult(
+            id=meeting_id,
+            deleted=True,
+            message=(
+                f"Meeting #{meeting_id} was deleted permanently, together with its agenda "
+                "and outcomes."
+            ),
         )
 
     @mcp.tool(
@@ -1053,12 +1479,15 @@ def register(mcp: FastMCP) -> None:
 
         Pitfalls. This needs the 'manage agendas' permission, so a 403 is about the account, not
         the payload. A 422 usually means the work package is not visible to this account or the
-        meeting is already closed — `violations` names the attribute. Items cannot be updated,
-        reordered or deleted through this server — a mistake has to be fixed in the OpenProject UI.
-        Outcomes are read-only here too, so this cannot record a decision.
+        meeting is already closed — `violations` names the attribute. The item's type is fixed
+        here: a simple item cannot become a work-package one later, because `itemType` is
+        create-only upstream.
 
         Cross-references: `get_meeting(meeting_id=...)` to see the agenda you are appending to;
-        `list_meetings` for the meeting id; `search_work_packages` for the work package id.
+        `update_meeting_agenda_item` to fix or reorder the item afterwards;
+        `delete_meeting_agenda_item` to remove it; `add_meeting_outcome` to record a decision
+        against it; `list_meetings` for the meeting id; `search_work_packages` for the work
+        package id.
         """
         if not title.strip():
             raise InputValidationError(
@@ -1083,7 +1512,7 @@ def register(mcp: FastMCP) -> None:
             created = await _module_post(
                 "meeting_agenda_items",
                 json=payload,
-                module=MEETINGS,
+                module=AGENDAS,
                 subject=f"meeting {meeting_id}",
                 discovery=(
                     "Meeting ids come from list_meetings. A third reading applies to writes: "
@@ -1106,6 +1535,509 @@ def register(mcp: FastMCP) -> None:
                 ),
             ) from exc
         return _agenda_item_detail(created)
+
+    @mcp.tool(
+        name="update_meeting_agenda_item",
+        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.WRITE),
+        annotations=_shared.write_annotations(title="Update meeting agenda item"),
+    )
+    @_shared.tool_errors
+    async def update_meeting_agenda_item(
+        agenda_item_id: Annotated[
+            int,
+            Field(
+                description="Numeric agenda item id from get_meeting's agenda_items (or from "
+                "add_meeting_agenda_item's result). Not the meeting id, not a work package id."
+            ),
+        ],
+        title: Annotated[
+            str | None,
+            Field(
+                description="New item title. Omit to leave it alone; it cannot be cleared, "
+                "because simple items require one."
+            ),
+        ] = None,
+        notes: Annotated[
+            str | None,
+            Field(
+                description="New markdown notes; they REPLACE the existing text, so read the "
+                "current one with get_meeting first if you mean to extend it. Pass null or an "
+                "empty string to clear. Omit the parameter entirely (the default) to leave it "
+                "untouched."
+            ),
+        ] = KEEP,
+        duration_minutes: Annotated[
+            int | None,
+            Field(
+                ge=0,
+                le=1440,
+                description="New planned length of this item in minutes (0-1440). Omit to "
+                "leave it as it is.",
+            ),
+        ] = None,
+        position: Annotated[
+            int | None,
+            Field(
+                ge=1,
+                description="New 1-based position within the item's section — this is how the "
+                "agenda is reordered; the other items shift around it. Omit to keep the order.",
+            ),
+        ] = None,
+        presenter_id: Annotated[
+            int | None,
+            Field(
+                description="User id of the new presenter, from search_principals or the meeting's "
+                "participants. They must be able to view meetings in the project. Omit to "
+                "leave the presenter alone."
+            ),
+        ] = None,
+        work_package_id: Annotated[
+            int | None,
+            Field(
+                description="Re-point a work-package item at another work package, which must "
+                "be visible to this account. Omit to leave the link alone; a simple item "
+                "cannot be turned into a work-package one (itemType is create-only)."
+            ),
+        ] = None,
+        lock_version: Annotated[
+            int | None,
+            Field(
+                description="The item's lock_version as read from get_meeting. Pass it and the "
+                "write fails loudly (409) on a concurrent edit; omit it and the current "
+                "version is fetched and echoed."
+            ),
+        ] = None,
+    ) -> AgendaItemDetail:
+        """Edit one agenda item: retitle it, rewrite its notes, retime, reorder or re-link it.
+
+        Use it for "give that item 20 minutes", "move it to the top" (`position=1`), "let
+        Grace present it", or to fix a wrong work-package link. Only the parameters you pass
+        are sent; everything else is left exactly as it is.
+
+        Returns the updated item in the same shape as `add_meeting_agenda_item`, including the
+        fresh `lock_version` for a follow-up edit.
+
+        Pitfalls. Once the meeting is CLOSED its agenda is frozen — every write answers a
+        validation error until the meeting is reopened with `update_meeting(state='open')`.
+        The item's type is fixed at creation: `itemType` is create-only upstream, so this tool
+        never sends it and a simple item stays a simple item. A 422 otherwise usually means
+        the presenter or work package is not visible in the project — `violations` names the
+        attribute. This needs the 'manage agendas' permission (403 otherwise), and a 409 means
+        a concurrent edit — the error carries the fresh `lock_version`.
+
+        Cross-references: `get_meeting` for the item ids, current values and lock versions;
+        `delete_meeting_agenda_item` to remove the item; `add_meeting_outcome` to record what
+        was decided under it.
+        """
+        attributes: dict[str, Any] = {}
+        if title is not None:
+            if not title.strip():
+                raise InputValidationError(
+                    "title is empty.",
+                    hint="Omit title to leave it unchanged; a simple item cannot lose its title.",
+                )
+            attributes["title"] = title.strip()
+        if notes != KEEP:
+            attributes["notes"] = formattable_field(notes or "")
+        if duration_minutes is not None:
+            attributes["durationInMinutes"] = duration_minutes
+        if position is not None:
+            attributes["position"] = position
+
+        links: dict[str, Any] = {}
+        if presenter_id is not None:
+            links["presenter"] = link("users", presenter_id)
+        if work_package_id is not None:
+            links["workPackage"] = link("work_packages", work_package_id)
+
+        if not attributes and not links:
+            raise InputValidationError(
+                "update_meeting_agenda_item was called with nothing to change.",
+                hint=(
+                    "Pass at least one of title, notes, duration_minutes, position, "
+                    "presenter_id or work_package_id."
+                ),
+            )
+
+        # itemType is deliberately never sent: it is create-only upstream and
+        # PATCHing it answers 422 PropertyIsReadOnly.
+        try:
+            updated = await _module_patch_with_lock(
+                f"meeting_agenda_items/{agenda_item_id}",
+                build_write_payload(attributes, links),
+                lock_version=lock_version,
+                module=AGENDAS,
+                subject=f"agenda item {agenda_item_id}",
+                discovery=AGENDA_WRITE_DISCOVERY,
+            )
+        except ValidationFailedError as exc:
+            raise ValidationFailedError(
+                exc.message,
+                http_status=exc.http_status,
+                error_identifier=exc.error_identifier,
+                violations=exc.violations,
+                hint=(
+                    "OpenProject rejected the change. The usual causes: the meeting is closed "
+                    "(its agenda is frozen until update_meeting reopens it), the presenter or "
+                    "work package is not visible in the project, or duration_minutes is "
+                    "outside 0-1440. 'violations' names the attribute."
+                ),
+            ) from exc
+        return _agenda_item_detail(updated)
+
+    @mcp.tool(
+        name="delete_meeting_agenda_item",
+        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.WRITE, _shared.DESTRUCTIVE),
+        annotations=_shared.destructive_annotations(title="Delete meeting agenda item"),
+    )
+    @_shared.tool_errors
+    async def delete_meeting_agenda_item(
+        agenda_item_id: Annotated[
+            int,
+            Field(
+                description="Numeric agenda item id to delete, from get_meeting's "
+                "agenda_items. Check the item's title there first — it is not the meeting id."
+            ),
+        ],
+        confirm: Annotated[
+            bool,
+            Field(
+                description="Must be true. Ask the user to confirm first — the API offers no "
+                "undo. Calling with confirm=false returns a confirmation_required error rather "
+                "than deleting anything."
+            ),
+        ] = False,
+    ) -> MeetingDeletionResult:
+        """Permanently delete one agenda item, with any outcomes recorded against it.
+
+        Use only on explicit user instruction. The item and its recorded outcomes disappear
+        from the agenda for good; the items after it move up. The meeting itself is untouched.
+
+        Returns a small confirmation object once OpenProject accepts the deletion.
+
+        Pitfalls. A CLOSED meeting's agenda is frozen: the delete answers a validation error,
+        not a 403, until the meeting is reopened with `update_meeting(state='open')`. This
+        needs the 'manage agendas' permission. A 404 means the id is wrong, the item is
+        already gone — or, on OpenProject before 17.6, that the flat agenda-item write routes
+        do not exist; the hint names all readings.
+
+        Cross-references: `get_meeting` to check which item the id points at;
+        `update_meeting_agenda_item` when the item only needs fixing, not removing.
+        """
+        _shared.require_confirmation(
+            confirm,
+            action="delete agenda item",
+            target=f"#{agenda_item_id}",
+            consequence=(
+                "The agenda item and any outcomes recorded against it are removed "
+                "permanently, and the deletion cannot be undone through the API."
+            ),
+        )
+        try:
+            await _module_delete(
+                f"meeting_agenda_items/{agenda_item_id}",
+                module=AGENDAS,
+                subject=f"agenda item {agenda_item_id}",
+                discovery=AGENDA_WRITE_DISCOVERY,
+            )
+        except ValidationFailedError as exc:
+            raise ValidationFailedError(
+                exc.message,
+                http_status=exc.http_status,
+                error_identifier=exc.error_identifier,
+                violations=exc.violations,
+                hint=(
+                    "OpenProject refused the deletion — usually because the meeting is closed "
+                    "and its agenda is frozen. Reopen it with update_meeting(state='open') "
+                    "first, or leave the record as it is."
+                ),
+            ) from exc
+        return MeetingDeletionResult(
+            id=agenda_item_id,
+            deleted=True,
+            message=(
+                f"Agenda item #{agenda_item_id} was deleted permanently, together with its "
+                "outcomes."
+            ),
+        )
+
+    @mcp.tool(
+        name="add_meeting_outcome",
+        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.WRITE),
+        annotations=_shared.write_annotations(title="Add meeting outcome"),
+    )
+    @_shared.tool_errors
+    async def add_meeting_outcome(
+        agenda_item_id: Annotated[
+            int,
+            Field(
+                description="Numeric agenda item id the outcome is recorded against, from "
+                "get_meeting's agenda_items. Not the meeting id."
+            ),
+        ],
+        kind: Annotated[
+            OutcomeKind,
+            Field(
+                description="'information' (a note for the minutes, requires notes), "
+                "'decision' (what was decided), or 'work_package' (the outcome IS a follow-up "
+                "ticket, requires work_package_id)."
+            ),
+        ] = "information",
+        notes: Annotated[
+            str | None,
+            Field(
+                description="The outcome text as markdown. Required for kind='information'; "
+                "optional but usually worth writing for the other kinds."
+            ),
+        ] = None,
+        work_package_id: Annotated[
+            int | None,
+            Field(
+                description="Work package the outcome points at, from search_work_packages. "
+                "Required for kind='work_package'; it must be visible to this account."
+            ),
+        ] = None,
+    ) -> MeetingOutcomeDetail:
+        """Record an outcome — a decision, a note, a follow-up ticket — against an agenda item.
+
+        This is how minutes are written through the API: "decision: ship on Friday" becomes
+        `kind='decision'` with the text in `notes`; linking the follow-up work package makes
+        it `kind='work_package'`. Outcomes appear under their agenda item in `get_meeting`.
+
+        Returns the created outcome: `{id, kind, notes, author, work_package, agenda_item}`.
+
+        Pitfalls — the timing rule matters most. Outcomes can only be written while the
+        meeting state is exactly 'in_progress': before that, and again once it is closed,
+        every outcome write answers a validation error. Start the meeting with
+        `update_meeting(meeting_id=..., state='in_progress')` first. Items in a backlog
+        section refuse outcomes the same way. This needs the 'manage outcomes' permission, so
+        a 403 is about the account, not the payload. On OpenProject before 17.6 there is no
+        outcomes API at all — the 404 hint says so.
+
+        Cross-references: `get_meeting` for the agenda item id and to read the outcome back;
+        `update_meeting` to put the meeting into 'in_progress'; `update_meeting_outcome` /
+        `delete_meeting_outcome` to correct or remove it while the meeting still runs.
+        """
+        if kind == "information" and not (notes and notes.strip()):
+            raise InputValidationError(
+                "notes is required for kind='information'.",
+                hint=(
+                    "An information outcome is its text — pass notes, or use kind='decision' "
+                    "for a bare decision marker."
+                ),
+            )
+        if kind == "work_package" and work_package_id is None:
+            raise InputValidationError(
+                "work_package_id is required for kind='work_package'.",
+                hint=(
+                    "A work_package outcome points at the follow-up ticket — pass "
+                    "work_package_id, or use kind='decision'/'information' for a text-only "
+                    "outcome."
+                ),
+            )
+
+        attributes: dict[str, Any] = {"kind": kind}
+        if notes is not None:
+            attributes["notes"] = formattable_field(notes)
+        links: dict[str, Any] = {"agendaItem": link("meeting_agenda_items", agenda_item_id)}
+        if work_package_id is not None:
+            links["workPackage"] = link("work_packages", work_package_id)
+
+        try:
+            created = await _module_post(
+                "meeting_outcomes",
+                json=build_write_payload(attributes, links),
+                module=OUTCOMES,
+                subject=f"agenda item {agenda_item_id}",
+                discovery=OUTCOME_WRITE_DISCOVERY,
+            )
+        except ValidationFailedError as exc:
+            raise ValidationFailedError(
+                exc.message,
+                http_status=exc.http_status,
+                error_identifier=exc.error_identifier,
+                violations=exc.violations,
+                hint=(
+                    "OpenProject rejected the outcome. Outcomes can only be written while the "
+                    "meeting state is exactly 'in_progress' — update_meeting(state="
+                    "'in_progress') starts it — the agenda item must not sit in a backlog "
+                    "section, and a linked work package must be visible to this account. "
+                    "'violations' names the attribute."
+                ),
+            ) from exc
+        return _outcome_detail(created)
+
+    @mcp.tool(
+        name="update_meeting_outcome",
+        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.WRITE),
+        annotations=_shared.write_annotations(title="Update meeting outcome"),
+    )
+    @_shared.tool_errors
+    async def update_meeting_outcome(
+        outcome_id: Annotated[
+            int,
+            Field(
+                description="Numeric outcome id from get_meeting's agenda_items[].outcomes or "
+                "from add_meeting_outcome's result. Not an agenda item id."
+            ),
+        ],
+        kind: Annotated[
+            OutcomeKind | None,
+            Field(
+                description="New kind: 'information', 'decision' or 'work_package'. Omit to "
+                "keep the current one. Switching to 'work_package' needs a linked work "
+                "package; switching to 'information' needs notes."
+            ),
+        ] = None,
+        notes: Annotated[
+            str | None,
+            Field(
+                description="New outcome text as markdown; it REPLACES the stored text. Omit "
+                "to leave it untouched."
+            ),
+        ] = None,
+        work_package_id: Annotated[
+            int | None,
+            Field(
+                description="Re-point the outcome at another work package, which must be "
+                "visible to this account. Omit to leave the link alone."
+            ),
+        ] = None,
+    ) -> MeetingOutcomeDetail:
+        """Correct a recorded outcome's kind, text or linked work package.
+
+        Use it while the meeting still runs: fix a typo in the minutes, upgrade an
+        information note to a decision, or attach the follow-up ticket that was created after
+        the fact. Only the parameters you pass are sent.
+
+        Returns the updated outcome in the same shape as `add_meeting_outcome`.
+
+        Pitfalls. The same timing rule as every outcome write: this only works while the
+        meeting state is exactly 'in_progress' — once it is closed, the minutes are what they
+        are, and the write answers a validation error. Outcomes carry no `lock_version`
+        upstream, so there is nothing to echo and a simultaneous edit by somebody else is
+        silently overwritten — read the outcome via `get_meeting` first. This needs the
+        'manage outcomes' permission (403 otherwise).
+
+        Cross-references: `get_meeting` for the outcome id and current text;
+        `add_meeting_outcome` for the kind rules; `delete_meeting_outcome` to remove it.
+        """
+        attributes: dict[str, Any] = {}
+        if kind is not None:
+            attributes["kind"] = kind
+        if notes is not None:
+            attributes["notes"] = formattable_field(notes)
+        links: dict[str, Any] = {}
+        if work_package_id is not None:
+            links["workPackage"] = link("work_packages", work_package_id)
+
+        if not attributes and not links:
+            raise InputValidationError(
+                "update_meeting_outcome was called with nothing to change.",
+                hint="Pass at least one of kind, notes or work_package_id.",
+            )
+
+        # Outcomes carry no lockVersion upstream, so a plain PATCH — not
+        # patch_with_lock; inventing a version would be rejected (SPEC §4.4).
+        try:
+            updated = await _module_patch(
+                f"meeting_outcomes/{outcome_id}",
+                json=build_write_payload(attributes, links),
+                module=OUTCOMES,
+                subject=f"outcome {outcome_id}",
+                discovery=OUTCOME_WRITE_DISCOVERY,
+            )
+        except ValidationFailedError as exc:
+            raise ValidationFailedError(
+                exc.message,
+                http_status=exc.http_status,
+                error_identifier=exc.error_identifier,
+                violations=exc.violations,
+                hint=(
+                    "OpenProject rejected the change. Outcomes can only be edited while the "
+                    "meeting state is exactly 'in_progress', kind='information' requires "
+                    "notes, kind='work_package' requires a visible linked work package, and "
+                    "the agenda item must not sit in a backlog section. 'violations' names "
+                    "the attribute."
+                ),
+            ) from exc
+        return _outcome_detail(updated)
+
+    @mcp.tool(
+        name="delete_meeting_outcome",
+        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.WRITE, _shared.DESTRUCTIVE),
+        annotations=_shared.destructive_annotations(title="Delete meeting outcome"),
+    )
+    @_shared.tool_errors
+    async def delete_meeting_outcome(
+        outcome_id: Annotated[
+            int,
+            Field(
+                description="Numeric outcome id to delete, from get_meeting's "
+                "agenda_items[].outcomes. Check its text there first — ids are not "
+                "human-readable."
+            ),
+        ],
+        confirm: Annotated[
+            bool,
+            Field(
+                description="Must be true. Ask the user to confirm first — the API offers no "
+                "undo. Calling with confirm=false returns a confirmation_required error rather "
+                "than deleting anything."
+            ),
+        ] = False,
+    ) -> MeetingDeletionResult:
+        """Permanently delete a recorded outcome from a running meeting's minutes.
+
+        Use only on explicit user instruction, for an outcome recorded by mistake or against
+        the wrong item. If the text is merely wrong, `update_meeting_outcome` corrects it and
+        keeps the record.
+
+        Returns a small confirmation object once OpenProject accepts the deletion.
+
+        Pitfalls. The outcome timing rule applies to deletion too: it only works while the
+        meeting state is exactly 'in_progress' — a closed meeting's minutes are frozen, and
+        the delete answers a validation error, not a 403. This needs the 'manage outcomes'
+        permission. A 404 means the id is wrong, the outcome is already gone — or, on
+        OpenProject before 17.6, that there is no outcomes API at all.
+
+        Cross-references: `get_meeting` to check which outcome the id points at;
+        `update_meeting_outcome` for the reversible fix.
+        """
+        _shared.require_confirmation(
+            confirm,
+            action="delete outcome",
+            target=f"#{outcome_id}",
+            consequence=(
+                "The recorded outcome disappears from the meeting's minutes permanently, and "
+                "the deletion cannot be undone through the API."
+            ),
+        )
+        try:
+            await _module_delete(
+                f"meeting_outcomes/{outcome_id}",
+                module=OUTCOMES,
+                subject=f"outcome {outcome_id}",
+                discovery=OUTCOME_WRITE_DISCOVERY,
+            )
+        except ValidationFailedError as exc:
+            raise ValidationFailedError(
+                exc.message,
+                http_status=exc.http_status,
+                error_identifier=exc.error_identifier,
+                violations=exc.violations,
+                hint=(
+                    "OpenProject refused the deletion — outcomes can only be removed while "
+                    "the meeting state is exactly 'in_progress'. A closed meeting's minutes "
+                    "are frozen; reopen deliberately with update_meeting if the record really "
+                    "must change."
+                ),
+            ) from exc
+        return MeetingDeletionResult(
+            id=outcome_id,
+            deleted=True,
+            message=f"Outcome #{outcome_id} was deleted permanently from the meeting's minutes.",
+        )
 
     @mcp.tool(
         name="get_wiki_page",

@@ -22,14 +22,18 @@ from fastmcp import Client
 from tests.fixtures.modules_collab_payloads import (
     AGENDA_ITEM_COLLECTION,
     AGENDA_ITEM_REJECTED,
+    AGENDA_ITEM_SIMPLE,
     BUDGET_COLLECTION,
     CREATED_AGENDA_ITEM,
     CREATED_AGENDA_ITEM_ID,
     CREATED_MEETING,
     CREATED_MEETING_ID,
+    CREATED_OUTCOME,
+    CREATED_OUTCOME_ID,
     DOCUMENT,
     DOCUMENT_COLLECTION,
     DOCUMENT_ID,
+    FRESH_MEETING_AFTER_CONFLICT,
     INVALID_SORT_ERROR,
     INVALID_TIME_FILTER_ERROR,
     MEETING,
@@ -38,11 +42,18 @@ from tests.fixtures.modules_collab_payloads import (
     MEETING_FORM,
     MEETING_FORM_BLANK_TITLE,
     MEETING_ID,
+    MEETING_NOT_EDITABLE,
     MODULE_FORBIDDEN,
     MODULE_NOT_FOUND,
+    OUTCOME_ID,
+    OUTCOME_NOT_EDITABLE,
     PAST_MEETING_ID,
     PROJECT_ID,
     PROJECT_IDENTIFIER,
+    STALE_LOCK_CONFLICT,
+    UPDATED_AGENDA_ITEM,
+    UPDATED_MEETING,
+    UPDATED_OUTCOME,
     WIKI_PAGE,
     WIKI_PAGE_ID,
     WORK_PACKAGE_ID,
@@ -52,12 +63,21 @@ from tests.fixtures.modules_collab_payloads import (
 MEETING_PATH = f"meetings/{MEETING_ID}"
 AGENDA_PATH = f"{MEETING_PATH}/agenda_items"
 BUDGETS_PATH = f"projects/{PROJECT_ID}/budgets"
+AGENDA_ITEM_PATH = "meeting_agenda_items/91"
+OUTCOME_PATH = f"meeting_outcomes/{OUTCOME_ID}"
 
 TOOL_NAMES = (
     "list_meetings",
     "get_meeting",
     "create_meeting",
+    "update_meeting",
+    "delete_meeting",
     "add_meeting_agenda_item",
+    "update_meeting_agenda_item",
+    "delete_meeting_agenda_item",
+    "add_meeting_outcome",
+    "update_meeting_outcome",
+    "delete_meeting_outcome",
     "get_wiki_page",
     "list_documents",
     "get_document",
@@ -83,7 +103,7 @@ def filters_of(route: respx.Route, index: int = 0) -> list[dict[str, Any]]:
 # --- registration ---------------------------------------------------------
 
 
-async def test_all_eight_tools_are_registered_with_honest_annotations(
+async def test_all_fifteen_tools_are_registered_with_honest_annotations(
     mcp_client: Client[Any],
 ) -> None:
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
@@ -125,6 +145,62 @@ async def test_all_eight_tools_are_registered_with_honest_annotations(
         "duration_minutes",
         "work_package_id",
     }
+
+    updating = tools["update_meeting"]
+    assert updating.annotations is not None
+    assert updating.annotations.readOnlyHint is False
+    assert updating.annotations.destructiveHint is False
+    assert set(updating.inputSchema["properties"]) == {
+        "meeting_id",
+        "title",
+        "location",
+        "start_time",
+        "duration_minutes",
+        "state",
+        "participants",
+        "lock_version",
+    }
+    assert set((updating.meta or {})["fastmcp"]["tags"]) == {"meetings", "write"}
+
+    assert set(tools["update_meeting_agenda_item"].inputSchema["properties"]) == {
+        "agenda_item_id",
+        "title",
+        "notes",
+        "duration_minutes",
+        "position",
+        "presenter_id",
+        "work_package_id",
+        "lock_version",
+    }
+    assert set(tools["add_meeting_outcome"].inputSchema["properties"]) == {
+        "agenda_item_id",
+        "kind",
+        "notes",
+        "work_package_id",
+    }
+    assert set(tools["update_meeting_outcome"].inputSchema["properties"]) == {
+        "outcome_id",
+        "kind",
+        "notes",
+        "work_package_id",
+    }
+
+    # The three deletes carry the destructive contract: annotations, tags,
+    # and (asserted separately below) the confirm=false refusal.
+    for name, id_field in (
+        ("delete_meeting", "meeting_id"),
+        ("delete_meeting_agenda_item", "agenda_item_id"),
+        ("delete_meeting_outcome", "outcome_id"),
+    ):
+        deleting = tools[name]
+        assert deleting.annotations is not None, name
+        assert deleting.annotations.destructiveHint is True, name
+        assert set(deleting.inputSchema["properties"]) == {id_field, "confirm"}, name
+        assert set((deleting.meta or {})["fastmcp"]["tags"]) == {
+            "meetings",
+            "write",
+            "destructive",
+        }, name
 
     assert set(tools["get_wiki_page"].inputSchema["properties"]) == {"wiki_page_id"}
     assert set(tools["list_documents"].inputSchema["properties"]) == {"page", "page_size"}
@@ -385,6 +461,8 @@ async def test_get_meeting_returns_participants_agenda_and_outcomes(
     assert detail["id"] == MEETING_ID
     assert detail["title"] == "Sprint 12 planning"
     assert detail["duration_hours"] == 1.5
+    # The lock version is surfaced so update_meeting can echo it (SPEC §4.4).
+    assert detail["lock_version"] == 3
     assert detail["author"] == {"id": 3, "name": "Grace Hopper"}
     assert detail["participants"] == [
         {"id": 3, "name": "Grace Hopper"},
@@ -404,6 +482,7 @@ async def test_get_meeting_returns_participants_agenda_and_outcomes(
         "work_package": None,
         "section": {"id": 6, "name": "Agenda"},
         "outcomes": [],
+        "lock_version": 0,
     }
     assert linked["item_type"] == "work_package"
     assert linked["work_package"] == {"id": WORK_PACKAGE_ID, "name": "Ship the client layer"}
@@ -751,6 +830,602 @@ async def test_add_agenda_item_rejects_an_empty_title_locally(
     error = error_of(result)
     assert error["type"] == "invalid_input"
     assert route.call_count == 0
+
+
+# --- update_meeting -------------------------------------------------------
+
+
+async def test_update_meeting_patches_with_the_supplied_lock_version(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    """The caller's lock_version is echoed as-is: no pre-read, one PATCH."""
+    patch = mock_api.patch(MEETING_PATH).mock(
+        return_value=httpx.Response(200, json=UPDATED_MEETING)
+    )
+    mock_api.get(AGENDA_PATH).mock(return_value=httpx.Response(200, json=hal_collection([])))
+
+    result = await mcp_client.call_tool(
+        "update_meeting",
+        {
+            "meeting_id": MEETING_ID,
+            "title": "Sprint 12 planning (moved)",
+            "start_time": "2026-08-04T14:00:00Z",
+            "duration_minutes": 60,
+            "state": "open",
+            "participants": [3, 5],
+            "lock_version": 3,
+        },
+    )
+
+    assert patch.call_count == 1
+    sent = body_of(patch)
+    assert sent == {
+        "title": "Sprint 12 planning (moved)",
+        "startTime": "2026-08-04T14:00:00Z",
+        "duration": "PT1H",
+        "state": "open",
+        "lockVersion": 3,
+        "_links": {"participants": [{"href": "/api/v3/users/3"}, {"href": "/api/v3/users/5"}]},
+    }
+
+    assert result.structured_content is not None
+    detail = result.structured_content
+    assert detail["id"] == MEETING_ID
+    assert detail["title"] == "Sprint 12 planning (moved)"
+    assert detail["duration_hours"] == 1.0
+    assert detail["lock_version"] == 4
+    assert detail["agenda_items"] == []
+    assert detail["notes"] == []
+
+
+async def test_update_meeting_fetches_the_lock_version_when_none_is_supplied(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    """SPEC §4.4: never PATCH blind — the current version is read and echoed."""
+    read = mock_api.get(MEETING_PATH).mock(return_value=httpx.Response(200, json=MEETING))
+    patch = mock_api.patch(MEETING_PATH).mock(
+        return_value=httpx.Response(200, json=UPDATED_MEETING)
+    )
+    mock_api.get(AGENDA_PATH).mock(return_value=httpx.Response(200, json=hal_collection([])))
+
+    await mcp_client.call_tool("update_meeting", {"meeting_id": MEETING_ID, "location": None})
+
+    assert read.call_count == 1
+    sent = body_of(patch)
+    # MEETING reports lockVersion 3; passing null clears the location.
+    assert sent == {"location": "", "lockVersion": 3}
+
+
+async def test_update_meeting_with_a_stale_lock_version_returns_the_fresh_state(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.patch(MEETING_PATH).mock(return_value=httpx.Response(409, json=STALE_LOCK_CONFLICT))
+    mock_api.get(MEETING_PATH).mock(
+        return_value=httpx.Response(200, json=FRESH_MEETING_AFTER_CONFLICT)
+    )
+
+    result = await mcp_client.call_tool(
+        "update_meeting",
+        {"meeting_id": MEETING_ID, "title": "Sprint 12 planning (moved)", "lock_version": 2},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "conflict"
+    assert error["http_status"] == 409
+    # The fresh lockVersion and the differing field travel in the error, so the
+    # model can re-read, decide and retry deliberately (SPEC §4.4).
+    assert error["lock_version"] == 7
+    assert error["conflicting_fields"]["title"]["current"] == "Sprint 12 planning (rescheduled)"
+
+
+async def test_update_meeting_requires_something_to_change(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    result = await mcp_client.call_tool(
+        "update_meeting", {"meeting_id": MEETING_ID}, raise_on_error=False
+    )
+    error = error_of(result)
+    assert error["type"] == "invalid_input"
+    assert "nothing to change" in error["message"]
+
+
+async def test_update_meeting_on_a_closed_meeting_names_the_state_only_rule(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.patch(MEETING_PATH).mock(return_value=httpx.Response(422, json=MEETING_NOT_EDITABLE))
+
+    result = await mcp_client.call_tool(
+        "update_meeting",
+        {"meeting_id": MEETING_ID, "title": "Too late", "lock_version": 3},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "validation_failed"
+    assert error["http_status"] == 422
+    assert "state-only patch" in error["hint"]
+
+
+async def test_update_meeting_maps_a_pre_17_4_404_onto_the_version_hint(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.patch(MEETING_PATH).mock(return_value=httpx.Response(404, json=MODULE_NOT_FOUND))
+
+    result = await mcp_client.call_tool(
+        "update_meeting",
+        {"meeting_id": MEETING_ID, "title": "Sprint 12 planning (moved)", "lock_version": 3},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "not_found"
+    assert "Meetings module is not installed" in error["hint"]
+    assert "before 17.4" in error["hint"]
+    assert "meetings write API" in error["hint"]
+
+
+async def test_update_meeting_maps_a_405_onto_the_same_version_reading(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    """16.x routes GET /meetings/{id} but not PATCH: Grape answers 405, not 404."""
+    mock_api.patch(MEETING_PATH).mock(return_value=httpx.Response(405, text="405 Not Allowed"))
+
+    result = await mcp_client.call_tool(
+        "update_meeting",
+        {"meeting_id": MEETING_ID, "title": "Sprint 12 planning (moved)", "lock_version": 3},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "unexpected_response"
+    assert error["http_status"] == 405
+    assert "predates the Meetings write API" in error["hint"]
+    assert "before 17.4" in error["hint"]
+
+
+# --- delete_meeting -------------------------------------------------------
+
+
+async def test_delete_meeting_refuses_without_confirmation(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    route = mock_api.delete(MEETING_PATH).mock(return_value=httpx.Response(204))
+
+    result = await mcp_client.call_tool(
+        "delete_meeting", {"meeting_id": MEETING_ID}, raise_on_error=False
+    )
+    error = error_of(result)
+    assert error["type"] == "confirmation_required"
+    assert "confirm=true" in error["hint"]
+    assert route.call_count == 0
+
+
+async def test_delete_meeting_deletes_and_confirms(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    route = mock_api.delete(MEETING_PATH).mock(return_value=httpx.Response(204))
+
+    result = await mcp_client.call_tool(
+        "delete_meeting", {"meeting_id": MEETING_ID, "confirm": True}
+    )
+
+    assert route.call_count == 1
+    assert result.structured_content is not None
+    outcome = result.structured_content
+    assert outcome["id"] == MEETING_ID
+    assert outcome["deleted"] is True
+    assert "permanently" in outcome["message"]
+
+
+async def test_delete_meeting_maps_a_pre_17_4_404_onto_the_version_hint(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.delete(MEETING_PATH).mock(return_value=httpx.Response(404, json=MODULE_NOT_FOUND))
+
+    result = await mcp_client.call_tool(
+        "delete_meeting", {"meeting_id": MEETING_ID, "confirm": True}, raise_on_error=False
+    )
+    error = error_of(result)
+    assert error["type"] == "not_found"
+    assert "meetings write API" in error["hint"]
+
+
+# --- update_meeting_agenda_item -------------------------------------------
+
+
+async def test_update_agenda_item_patches_the_wire_keys_but_never_item_type(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    patch = mock_api.patch(AGENDA_ITEM_PATH).mock(
+        return_value=httpx.Response(200, json=UPDATED_AGENDA_ITEM)
+    )
+
+    result = await mcp_client.call_tool(
+        "update_meeting_agenda_item",
+        {
+            "agenda_item_id": 91,
+            "title": "Capacity check (final)",
+            "notes": "Final numbers.",
+            "duration_minutes": 20,
+            "position": 2,
+            "presenter_id": 3,
+            "work_package_id": WORK_PACKAGE_ID,
+            "lock_version": 0,
+        },
+    )
+
+    sent = body_of(patch)
+    # itemType is create-only upstream (422 PropertyIsReadOnly), so the full
+    # body equality doubles as the "never forwarded" assertion.
+    assert sent == {
+        "title": "Capacity check (final)",
+        "notes": {"format": "markdown", "raw": "Final numbers."},
+        "durationInMinutes": 20,
+        "position": 2,
+        "lockVersion": 0,
+        "_links": {
+            "presenter": {"href": "/api/v3/users/3"},
+            "workPackage": {"href": f"/api/v3/work_packages/{WORK_PACKAGE_ID}"},
+        },
+    }
+
+    assert result.structured_content is not None
+    item = result.structured_content
+    assert item["id"] == 91
+    assert item["title"] == "Capacity check (final)"
+    assert item["duration_minutes"] == 20
+    assert item["position"] == 2
+    assert item["lock_version"] == 1
+    assert item["meeting"] == {"id": MEETING_ID, "name": "Sprint 12 planning"}
+
+
+async def test_update_agenda_item_with_a_stale_lock_version_conflicts(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.patch(AGENDA_ITEM_PATH).mock(
+        return_value=httpx.Response(409, json=STALE_LOCK_CONFLICT)
+    )
+    mock_api.get(AGENDA_ITEM_PATH).mock(
+        return_value=httpx.Response(200, json={**AGENDA_ITEM_SIMPLE, "lockVersion": 5})
+    )
+
+    result = await mcp_client.call_tool(
+        "update_meeting_agenda_item",
+        {"agenda_item_id": 91, "duration_minutes": 20, "lock_version": 0},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "conflict"
+    assert error["lock_version"] == 5
+
+
+async def test_update_agenda_item_requires_something_to_change(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    result = await mcp_client.call_tool(
+        "update_meeting_agenda_item", {"agenda_item_id": 91}, raise_on_error=False
+    )
+    error = error_of(result)
+    assert error["type"] == "invalid_input"
+    assert "nothing to change" in error["message"]
+
+
+async def test_update_agenda_item_on_a_closed_meeting_explains_the_freeze(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.patch(AGENDA_ITEM_PATH).mock(
+        return_value=httpx.Response(422, json=MEETING_NOT_EDITABLE)
+    )
+
+    result = await mcp_client.call_tool(
+        "update_meeting_agenda_item",
+        {"agenda_item_id": 91, "duration_minutes": 20, "lock_version": 0},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "validation_failed"
+    assert "closed" in error["hint"]
+
+
+async def test_update_agenda_item_maps_a_pre_17_6_404_onto_the_version_hint(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.patch(AGENDA_ITEM_PATH).mock(return_value=httpx.Response(404, json=MODULE_NOT_FOUND))
+
+    result = await mcp_client.call_tool(
+        "update_meeting_agenda_item",
+        {"agenda_item_id": 91, "duration_minutes": 20, "lock_version": 0},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "not_found"
+    assert "Meetings module is not installed" in error["hint"]
+    assert "17.6" in error["hint"]
+
+
+# --- delete_meeting_agenda_item -------------------------------------------
+
+
+async def test_delete_agenda_item_refuses_without_confirmation(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    route = mock_api.delete(AGENDA_ITEM_PATH).mock(return_value=httpx.Response(204))
+
+    result = await mcp_client.call_tool(
+        "delete_meeting_agenda_item", {"agenda_item_id": 91}, raise_on_error=False
+    )
+    error = error_of(result)
+    assert error["type"] == "confirmation_required"
+    assert route.call_count == 0
+
+
+async def test_delete_agenda_item_deletes_and_confirms(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    route = mock_api.delete(AGENDA_ITEM_PATH).mock(return_value=httpx.Response(204))
+
+    result = await mcp_client.call_tool(
+        "delete_meeting_agenda_item", {"agenda_item_id": 91, "confirm": True}
+    )
+
+    assert route.call_count == 1
+    assert result.structured_content is not None
+    assert result.structured_content["id"] == 91
+    assert result.structured_content["deleted"] is True
+
+
+async def test_delete_agenda_item_maps_a_pre_17_6_404_onto_the_version_hint(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.delete(AGENDA_ITEM_PATH).mock(return_value=httpx.Response(404, json=MODULE_NOT_FOUND))
+
+    result = await mcp_client.call_tool(
+        "delete_meeting_agenda_item",
+        {"agenda_item_id": 91, "confirm": True},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "not_found"
+    assert "17.6" in error["hint"]
+
+
+# --- add_meeting_outcome --------------------------------------------------
+
+
+async def test_add_outcome_posts_the_wire_keys_including_the_agenda_item_link(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    route = mock_api.post("meeting_outcomes").mock(
+        return_value=httpx.Response(201, json=CREATED_OUTCOME)
+    )
+
+    result = await mcp_client.call_tool(
+        "add_meeting_outcome",
+        {
+            "agenda_item_id": 92,
+            "kind": "decision",
+            "notes": "Ship on Friday.",
+            "work_package_id": WORK_PACKAGE_ID,
+        },
+    )
+
+    sent = body_of(route)
+    # The association is spelled "agendaItem" on the wire, and the write route
+    # is top-level — not nested under the meeting (SPEC §6.13).
+    assert sent == {
+        "kind": "decision",
+        "notes": {"format": "markdown", "raw": "Ship on Friday."},
+        "_links": {
+            "agendaItem": {"href": "/api/v3/meeting_agenda_items/92"},
+            "workPackage": {"href": f"/api/v3/work_packages/{WORK_PACKAGE_ID}"},
+        },
+    }
+
+    assert result.structured_content is not None
+    outcome = result.structured_content
+    assert outcome["id"] == CREATED_OUTCOME_ID
+    assert outcome["kind"] == "decision"
+    assert outcome["notes"] == "Ship on Friday."
+    assert outcome["author"] == {"id": 3, "name": "Grace Hopper"}
+    assert outcome["work_package"] == {"id": WORK_PACKAGE_ID, "name": "Ship the client layer"}
+    assert outcome["agenda_item"] == {"id": 92, "name": None}
+
+
+async def test_an_information_outcome_requires_notes_locally(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    route = mock_api.post("meeting_outcomes").mock(
+        return_value=httpx.Response(201, json=CREATED_OUTCOME)
+    )
+
+    result = await mcp_client.call_tool(
+        "add_meeting_outcome", {"agenda_item_id": 92}, raise_on_error=False
+    )
+    error = error_of(result)
+    assert error["type"] == "invalid_input"
+    assert "notes is required" in error["message"]
+    assert route.call_count == 0
+
+
+async def test_a_work_package_outcome_requires_the_work_package_locally(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    route = mock_api.post("meeting_outcomes").mock(
+        return_value=httpx.Response(201, json=CREATED_OUTCOME)
+    )
+
+    result = await mcp_client.call_tool(
+        "add_meeting_outcome",
+        {"agenda_item_id": 92, "kind": "work_package"},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "invalid_input"
+    assert "work_package_id is required" in error["message"]
+    assert route.call_count == 0
+
+
+async def test_an_outcome_against_a_meeting_not_in_progress_explains_the_timing_rule(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.post("meeting_outcomes").mock(
+        return_value=httpx.Response(422, json=OUTCOME_NOT_EDITABLE)
+    )
+
+    result = await mcp_client.call_tool(
+        "add_meeting_outcome",
+        {"agenda_item_id": 92, "kind": "decision", "notes": "Ship on Friday."},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "validation_failed"
+    assert "'in_progress'" in error["hint"]
+    assert "update_meeting" in error["hint"]
+
+
+async def test_a_forbidden_outcome_write_names_the_manage_outcomes_permission(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.post("meeting_outcomes").mock(return_value=httpx.Response(403, json=MODULE_FORBIDDEN))
+
+    result = await mcp_client.call_tool(
+        "add_meeting_outcome",
+        {"agenda_item_id": 92, "kind": "decision", "notes": "Ship on Friday."},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "permission_denied"
+    assert "'manage outcomes'" in error["hint"]
+    assert "list_permissions" in error["hint"]
+
+
+async def test_add_outcome_maps_a_pre_17_6_404_onto_the_version_hint(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.post("meeting_outcomes").mock(return_value=httpx.Response(404, json=MODULE_NOT_FOUND))
+
+    result = await mcp_client.call_tool(
+        "add_meeting_outcome",
+        {"agenda_item_id": 92, "kind": "decision", "notes": "Ship on Friday."},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "not_found"
+    assert "before 17.6 has no outcomes API" in error["hint"]
+
+
+# --- update_meeting_outcome -----------------------------------------------
+
+
+async def test_update_outcome_patches_plainly_because_outcomes_have_no_lock_version(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    patch = mock_api.patch(OUTCOME_PATH).mock(
+        return_value=httpx.Response(200, json=UPDATED_OUTCOME)
+    )
+
+    result = await mcp_client.call_tool(
+        "update_meeting_outcome",
+        {"outcome_id": OUTCOME_ID, "kind": "information", "notes": "Deferred to next sprint."},
+    )
+
+    sent = body_of(patch)
+    assert sent == {
+        "kind": "information",
+        "notes": {"format": "markdown", "raw": "Deferred to next sprint."},
+    }
+    assert "lockVersion" not in sent
+
+    assert result.structured_content is not None
+    outcome = result.structured_content
+    assert outcome["id"] == OUTCOME_ID
+    assert outcome["kind"] == "information"
+    assert outcome["notes"] == "Deferred to next sprint."
+    assert outcome["agenda_item"] == {"id": 92, "name": None}
+
+
+async def test_update_outcome_requires_something_to_change(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    result = await mcp_client.call_tool(
+        "update_meeting_outcome", {"outcome_id": OUTCOME_ID}, raise_on_error=False
+    )
+    error = error_of(result)
+    assert error["type"] == "invalid_input"
+    assert "nothing to change" in error["message"]
+
+
+async def test_update_outcome_after_the_meeting_closed_explains_the_timing_rule(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.patch(OUTCOME_PATH).mock(return_value=httpx.Response(422, json=OUTCOME_NOT_EDITABLE))
+
+    result = await mcp_client.call_tool(
+        "update_meeting_outcome",
+        {"outcome_id": OUTCOME_ID, "notes": "Too late."},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "validation_failed"
+    assert "'in_progress'" in error["hint"]
+
+
+# --- delete_meeting_outcome -----------------------------------------------
+
+
+async def test_delete_outcome_refuses_without_confirmation(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    route = mock_api.delete(OUTCOME_PATH).mock(return_value=httpx.Response(204))
+
+    result = await mcp_client.call_tool(
+        "delete_meeting_outcome", {"outcome_id": OUTCOME_ID}, raise_on_error=False
+    )
+    error = error_of(result)
+    assert error["type"] == "confirmation_required"
+    assert route.call_count == 0
+
+
+async def test_delete_outcome_deletes_and_confirms(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    route = mock_api.delete(OUTCOME_PATH).mock(return_value=httpx.Response(204))
+
+    result = await mcp_client.call_tool(
+        "delete_meeting_outcome", {"outcome_id": OUTCOME_ID, "confirm": True}
+    )
+
+    assert route.call_count == 1
+    assert result.structured_content is not None
+    assert result.structured_content["id"] == OUTCOME_ID
+    assert result.structured_content["deleted"] is True
+
+
+async def test_delete_outcome_after_the_meeting_closed_explains_the_timing_rule(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.delete(OUTCOME_PATH).mock(return_value=httpx.Response(422, json=OUTCOME_NOT_EDITABLE))
+
+    result = await mcp_client.call_tool(
+        "delete_meeting_outcome",
+        {"outcome_id": OUTCOME_ID, "confirm": True},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "validation_failed"
+    assert "'in_progress'" in error["hint"]
+
+
+async def test_delete_outcome_maps_a_pre_17_6_404_onto_the_version_hint(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.delete(OUTCOME_PATH).mock(return_value=httpx.Response(404, json=MODULE_NOT_FOUND))
+
+    result = await mcp_client.call_tool(
+        "delete_meeting_outcome",
+        {"outcome_id": OUTCOME_ID, "confirm": True},
+        raise_on_error=False,
+    )
+    error = error_of(result)
+    assert error["type"] == "not_found"
+    assert "before 17.6 has no outcomes API" in error["hint"]
 
 
 # --- get_wiki_page --------------------------------------------------------
