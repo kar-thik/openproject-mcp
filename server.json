@@ -7,6 +7,19 @@
     "url": "https://github.com/kar-thik/openproject-mcp",
     "source": "github"
   },
+  "websiteUrl": "https://github.com/kar-thik/openproject-mcp#readme",
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/kar-thik/openproject-mcp/main/assets/icon-512.png",
+      "mimeType": "image/png",
+      "sizes": ["512x512"]
+    },
+    {
+      "src": "https://raw.githubusercontent.com/kar-thik/openproject-mcp/main/assets/icon.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    }
+  ],
   "version": "0.1.1",
   "packages": [
     {
