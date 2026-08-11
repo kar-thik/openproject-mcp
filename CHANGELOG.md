@@ -12,6 +12,8 @@ PATCH releases are fixes and strictly additive changes only.
 
 ### Added
 
+- `glama.json` maintainer manifest so the Glama MCP directory
+  (glama.ai) can associate the listing with this repository.
 - MCP registry listing: `server.json` manifest
   (`io.github.kar-thik/openproject-mcp-server`) and a Release-workflow job that
   republishes the registry entry on every tag via GitHub OIDC — no stored
