@@ -1,0 +1,56 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.kar-thik/openproject-mcp-server",
+  "title": "OpenProject",
+  "description": "72 tools for the OpenProject API v3: work packages, attachments, git activity, time, reporting",
+  "repository": {
+    "url": "https://github.com/kar-thik/openproject-mcp",
+    "source": "github"
+  },
+  "version": "0.1.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "openproject-mcp-server",
+      "version": "0.1.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "OPENPROJECT_URL",
+          "description": "OpenProject instance root URL, e.g. https://openproject.example.com",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "OPENPROJECT_API_KEY",
+          "description": "API key from My account -> Access tokens in OpenProject",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "OPENPROJECT_MCP_READ_ONLY",
+          "description": "Set to 1 to serve read tools only",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "OPENPROJECT_MCP_ADMIN_TOOLS",
+          "description": "Set to 1 to enable the membership-write tools (hidden by default)",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "OPENPROJECT_MCP_DISABLE",
+          "description": "Comma-separated tool groups to drop, e.g. meetings,budgets",
+          "isRequired": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
