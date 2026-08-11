@@ -10,6 +10,8 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-11
+
 ### Added
 
 - `glama.json` maintainer manifest so the Glama MCP directory
