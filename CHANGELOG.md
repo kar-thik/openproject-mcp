@@ -17,6 +17,9 @@ PATCH releases are fixes and strictly additive changes only.
 - Listing icon (`assets/icon.svg` + `assets/icon-512.png`) referenced from
   `server.json` via `icons`, and `websiteUrl` pointing at the README — the
   registry entry now renders with an icon in MCP directories.
+- README: a "What it looks like" worked example near the top — two synthetic
+  transcript excerpts showing tool calls with their structured results and a
+  server-rendered `weekly_report` prompt.
 - MCP registry listing: `server.json` manifest
   (`io.github.kar-thik/openproject-mcp-server`) and a Release-workflow job that
   republishes the registry entry on every tag via GitHub OIDC — no stored
