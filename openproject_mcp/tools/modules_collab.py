@@ -1135,9 +1135,9 @@ def register(mcp: FastMCP) -> None:
         participants: Annotated[
             list[int] | None,
             Field(
-                description="User ids to invite, from search_principals or a project's memberships. "
-                "Every one of them needs 'view meetings' in the project or the create is "
-                "rejected. Omit to let OpenProject invite only the author."
+                description="User ids to invite, from search_principals or a project's "
+                "memberships. Every one of them needs 'view meetings' in the project or the "
+                "create is rejected. Omit to let OpenProject invite only the author."
             ),
         ] = None,
     ) -> MeetingDetail:

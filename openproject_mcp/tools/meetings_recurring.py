@@ -1039,7 +1039,8 @@ def register(mcp: FastMCP) -> None:
         """Cancel one occurrence of a series — skip a slot without touching the schedule.
 
         Use it for "no sync next Monday": the slot stays in the occurrences list as
-        'cancelled' (backed by a cancelled stub meeting) while the series keeps running. A cancelled occurrence is recoverable —
+        'cancelled' (backed by a cancelled stub meeting) while the series keeps
+        running. A cancelled occurrence is recoverable —
         `init_recurring_meeting_occurrence` at the same instant restores it to 'open' — but
         the cancellation itself may email participants when the series has `notify` set,
         which is why it is confirm-gated.
