@@ -58,14 +58,18 @@ from openproject_mcp.projections import ListEnvelope, Ref
 from openproject_mcp.tools import _forms
 from openproject_mcp.tools._shared import (
     DESTRUCTIVE,
+    FETCH_ALL_CAP,
     GROUP_PROJECTS,
     READ,
     WRITE,
+    collect_all,
     destructive_annotations,
     envelope_from_collection,
+    fetch_all_envelope,
     get_tool_context,
     read_annotations,
     require_confirmation,
+    require_first_page_for_fetch_all,
     tool_errors,
     tool_tags,
     write_annotations,
@@ -761,6 +765,16 @@ def register(mcp: FastMCP) -> None:
                 ),
             ),
         ] = DEFAULT_PAGE_SIZE,
+        fetch_all: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Aggregate every page into one result instead of returning page 1. "
+                    f"Capped at {FETCH_ALL_CAP} items with a note when the cap bites; "
+                    "mutually exclusive with page."
+                )
+            ),
+        ] = False,
     ) -> ListEnvelope[ProjectRow]:
         """List projects, filtered server-side, one page at a time.
 
@@ -833,15 +847,31 @@ def register(mcp: FastMCP) -> None:
                 )
             )
 
-        params = query_params(
-            filters=filters,
-            page=page,
-            page_size=page_size,
-            sort_by=sort_by,
-            sort_keys=PROJECT_SORT_KEYS,
-        )
+        require_first_page_for_fetch_all(fetch_all, page)
+
+        async def get_page(fetch_page: int, fetch_size: int) -> Mapping[str, Any]:
+            return await ctx.client.get_json(
+                "projects",
+                params=query_params(
+                    filters=filters,
+                    page=fetch_page,
+                    page_size=fetch_size,
+                    sort_by=sort_by,
+                    sort_keys=PROJECT_SORT_KEYS,
+                ),
+            )
+
         try:
-            payload = await ctx.client.get_json("projects", params=params)
+            if fetch_all:
+                elements, last_chunk, cap_notes = await collect_all(
+                    get_page, label="fetching all projects"
+                )
+                return fetch_all_envelope(
+                    [_project_row(element) for element in elements],
+                    last_chunk,
+                    notes=cap_notes,
+                )
+            payload = await get_page(page, page_size)
         except ValidationFailedError as exc:
             if not favorites_only:
                 raise

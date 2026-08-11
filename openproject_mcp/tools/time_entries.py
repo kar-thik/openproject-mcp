@@ -61,16 +61,20 @@ from openproject_mcp.projections import Group, ListEnvelope, Ref
 from openproject_mcp.tools import _forms
 from openproject_mcp.tools._shared import (
     DESTRUCTIVE,
+    FETCH_ALL_CAP,
     GROUP_TIME_ENTRIES,
     READ,
     WRITE,
     build_envelope,
+    collect_all,
     destructive_annotations,
     envelope_from_collection,
+    fetch_all_envelope,
     get_tool_context,
     read_annotations,
     report_progress,
     require_confirmation,
+    require_first_page_for_fetch_all,
     tool_errors,
     tool_tags,
     write_annotations,
@@ -451,6 +455,17 @@ def register(mcp: FastMCP) -> None:
                 ),
             ),
         ] = DEFAULT_PAGE_SIZE,
+        fetch_all: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Aggregate every page of rows into one result instead of returning "
+                    f"page 1. Capped at {FETCH_ALL_CAP} items with a note when the cap "
+                    "bites; mutually exclusive with page. sum_hours already reads every "
+                    "matching entry for its total, with or without fetch_all."
+                )
+            ),
+        ] = False,
     ) -> ListEnvelope[TimeEntryRow]:
         """List logged time, filtered server-side, with an optional accurate total.
 
@@ -529,7 +544,21 @@ def register(mcp: FastMCP) -> None:
                 make_filter("activity", Op.EQ, [activity_id], resource=TIME_ENTRIES_RESOURCE)
             )
 
+        require_first_page_for_fetch_all(fetch_all, page)
         if not sum_hours:
+            if fetch_all:
+                elements, last_chunk, cap_notes = await collect_all(
+                    lambda fetch_page, fetch_size: ctx.client.get_json(
+                        "time_entries",
+                        params=query_params(filters=filters, page=fetch_page, page_size=fetch_size),
+                    ),
+                    label="fetching all time entries",
+                )
+                return fetch_all_envelope(
+                    [_entry_row(element) for element in elements],
+                    last_chunk,
+                    notes=[*notes, *cap_notes],
+                )
             payload = await ctx.client.get_json(
                 "time_entries", params=query_params(filters=filters, page=page, page_size=page_size)
             )

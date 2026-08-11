@@ -129,6 +129,7 @@ async def test_the_four_time_tools_are_registered(mcp_client: Client[Any]) -> No
         "sum_hours",
         "page",
         "page_size",
+        "fetch_all",
     }
 
     logging_tool = tools["log_time"]
@@ -713,3 +714,42 @@ async def test_deleting_an_unknown_entry_returns_the_not_found_envelope(
     assert error["type"] == "not_found"
     assert error["http_status"] == 404
     assert error["error_identifier"] == "urn:openproject-org:api:v3:errors:NotFound"
+
+
+async def test_fetch_all_aggregates_rows_and_keeps_notes(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    def _entry(i: int) -> dict[str, Any]:
+        return {
+            "_type": "TimeEntry",
+            "id": i,
+            "hours": "PT1H",
+            "spentOn": "2026-08-01",
+            "_links": {"self": {"href": f"/api/v3/time_entries/{i}"}},
+        }
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["offset"])
+        elements = [_entry(i) for i in range((page - 1) * 100 + 1, min(page * 100, 150) + 1)]
+        return httpx.Response(
+            200,
+            json={
+                "_type": "Collection",
+                "total": 150,
+                "count": len(elements),
+                "pageSize": 100,
+                "offset": page,
+                "_embedded": {"elements": elements},
+            },
+        )
+
+    route = mock_api.get("time_entries").mock(side_effect=responder)
+
+    result = await mcp_client.call_tool("list_time_entries", {"fetch_all": True})
+
+    structured = result.structured_content
+    assert structured is not None
+    assert route.call_count == 2
+    assert len(structured["items"]) == 150
+    assert structured["pagination"]["has_more"] is False
+    assert structured["items"][0]["hours"] == 1.0
