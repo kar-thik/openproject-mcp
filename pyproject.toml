@@ -1,7 +1,7 @@
 [project]
 name = "openproject-mcp-server"
 dynamic = ["version"]
-description = "MCP server for OpenProject: 85 tools for work packages, attachments, git activity, time tracking, meetings and reporting over the API v3"
+description = "MCP server for OpenProject: 87 tools for work packages, attachments, git activity, time tracking, meetings and reporting over the API v3"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "kar-thik", email = "mail@karthikv.dev" }]

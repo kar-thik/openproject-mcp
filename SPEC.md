@@ -240,7 +240,7 @@ The probe runs lazily on first need, is cached 1 h, and its result is included i
 
 Legend: 🔍 read · ✏️ write · 🗑 destructive (confirm + `requiresUserInteraction`) · ⚙️ admin-gated · Ⓜ module/version-dependent (probed, G5). Ph → §15.
 
-**Count: 85 tools — Ph1: 16 · Ph2: 33 · Ph3: 36.** (Vs the old server's 62: strictly more *capability*; the count is honest, not the sales pitch. Deployments trim via tag filters, §3.2.) A CI check asserts this table always equals the registered tool set (§13.5).
+**Count: 87 tools — Ph1: 16 · Ph2: 33 · Ph3: 38.** (Vs the old server's 62: strictly more *capability*; the count is honest, not the sales pitch. Deployments trim via tag filters, §3.2.) A CI check asserts this table always equals the registered tool set (§13.5).
 
 ### 6.1 Instance & identity (Ph1: 1 · Ph2: 1)
 
@@ -324,7 +324,7 @@ Attachment ids are produced by `list_attachments` and `get_work_package(include=
 
 `github_pull_request_id` is the **OpenProject-internal id** returned by `get_work_package_git_activity` (present on every PR object), **not** the GitHub PR number — stated in both descriptions.
 
-### 6.6 Projects (Ph1: 2 · Ph2: 3 · Ph3: 3)
+### 6.6 Projects (Ph1: 2 · Ph2: 3 · Ph3: 5)
 
 | Tool | Sig (abridged) | Endpoint(s) | Ph |
 |---|---|---|---|
@@ -336,6 +336,8 @@ Attachment ids are produced by `list_attachments` and `get_work_package(include=
 | ✏️ `copy_project` | `id, new_name, …` | `POST /projects/{id}/copy` → async job | 3 |
 | 🔍 `get_job_status` | `job_id` | `GET /job_statuses/{uuid}` — poll copy/export/delete jobs | 3 |
 | ✏️ Ⓜ `set_project_favorite` | `id, favorite: bool` | `POST/DELETE /projects/{id}/favorite` (≥ 17.x) | 3 |
+| 🔍 `list_project_phase_definitions` | `page, page_size` | `GET /project_phase_definitions` (≥ 16.1; gates live here — phase *dates* are not exposed by the API) | 3 |
+| 🔍 `get_project_phase` | `phase_id` (from a work package's `project_phase` ref — no phases index exists) | `GET /project_phases/{id}` (≥ 16.1) | 3 |
 
 `status_code` enum: `on_track, at_risk, off_track, not_started, finished, discontinued` — written via the `status` link (fixing the old free-string that silently failed).
 
@@ -684,7 +686,7 @@ Each item is a deliberate exclusion, not an omission:
 - **Wiki page content & CRUD** — API v3 exposes only id/title/attachments; no index endpoint (the `get_wiki_page` description says where ids come from). Forum posts likewise (no discovery path) — `forum_post` attachment container excluded.
 - **Meetings**: sections' own CRUD. **Documents**: update (PATCH exists; low value). Both revisitable on demand.
 - **Storages**: remote file browsing, remote upload, folder creation, and file-link create/delete — all require per-user storage OAuth grants (browser flow) or origin metadata the model can't obtain; `list_file_links` (with open/download URLs) is the useful readable slice.
-- **Workspaces / portfolios / programs / project phases** (17.x) — `list_projects` covers all workspace types transparently; dedicated tools deferred until 17.x is the deployed floor.
+- **Workspaces / portfolios / programs** (17.x) — `list_projects` covers all workspace types transparently and rows carry `workspace_type`; dedicated portfolio/program tools deferred until 17.x is the deployed floor. (Project *phases* are covered read-only: definitions list, per-phase read, the `in_phase` project filter and the work-package `project_phase` ref; phase writes have no API.)
 - **Days/working-calendar, user working-hours records, help texts, `my_preferences`, shares list, cost entries (`summarized_costs_by_type`), wiki-page↔WP links, views (`POST /views/{type}`), grids/boards/my-page, render/markdown preview, notification detail sub-resources, custom-field hierarchy items, backups, OAuth app admin, string objects** — low agent value or admin-only; all reachable later via `raw_filters`/new tools if demand appears.
 - **BCF/BIM APIs; SSE transport; resource subscriptions; sampling** (no Claude-client support).
 - **S3 direct-upload (`/attachments/prepare`) flow** — plain multipart works everywhere; revisit for >100 MB use cases.

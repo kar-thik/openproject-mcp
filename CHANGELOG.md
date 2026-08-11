@@ -40,6 +40,14 @@ PATCH releases are fixes and strictly additive changes only.
   with a follow-up PATCH), `duration` as a plain number of hours, the draft
   template blocking occurrence init (500), and exact-instant occurrence
   matching (normalized to UTC). Tool count: 72 → 85.
+- Project phases (read-only, OpenProject 16.1+): `list_project_phase_definitions`
+  (the instance-wide phase catalog with start/finish gates) and
+  `get_project_phase` (one project's phase record). Work-package details carry a
+  `project_phase` reference — the id-producing path, since the API has no phases
+  index — and `list_projects` gains `in_phase`/`phase_on_date`, a date-based
+  filter ("projects in Executing today") resolved against the definition
+  catalog by id or name. Phase dates themselves are not exposed by the API and
+  the tools say so. Tool count: 85 → 87.
 
 ## [0.1.2] - 2026-08-11
 

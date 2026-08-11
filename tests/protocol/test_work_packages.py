@@ -780,3 +780,33 @@ async def test_annotations_and_schemas_are_honest(mcp_client: Client[Any]) -> No
     for name in expected:
         assert tools[name].outputSchema is not None, f"{name} must declare an outputSchema"
         assert tools[name].description, f"{name} must carry a description"
+
+
+async def test_get_surfaces_the_project_phase_reference(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    """16.1+ instances link the phase; the ref survives, hrefs do not."""
+    import copy
+
+    payload = copy.deepcopy(WORK_PACKAGE_DETAIL)
+    payload["_links"]["projectPhase"] = {
+        "href": "/api/v3/project_phases/12",
+        "title": "Executing",
+    }
+    mock_api.get(WP_PATH).mock(return_value=httpx.Response(200, json=payload))
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1))
+
+    structured = _structured(await mcp_client.call_tool("get_work_package", {"id": 1234}))
+
+    assert structured["project_phase"] == {"id": 12, "name": "Executing"}
+
+
+async def test_get_leaves_project_phase_null_when_the_instance_lacks_it(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    mock_api.get(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1))
+
+    structured = _structured(await mcp_client.call_tool("get_work_package", {"id": 1234}))
+
+    assert structured["project_phase"] is None

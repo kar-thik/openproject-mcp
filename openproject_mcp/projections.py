@@ -279,6 +279,11 @@ class WorkPackageDetail(WorkPackageRow):
     version: Ref | None = Field(default=None, description="Version / sprint.")
     category: Ref | None = Field(default=None, description="Category.")
     parent: Ref | None = Field(default=None, description="Parent work package.")
+    project_phase: Ref | None = Field(
+        default=None,
+        description="Project phase this work package sits in (16.1+, only when phases are "
+        "active in the project and visible to this user); details via get_project_phase.",
+    )
     estimated_hours: float | None = Field(default=None, description="Estimate in hours.")
     spent_hours: float | None = Field(default=None, description="Logged time in hours.")
     created_at: str | None = Field(default=None, description="ISO 8601 UTC timestamp.")

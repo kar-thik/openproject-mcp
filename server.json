@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.kar-thik/openproject-mcp-server",
   "title": "OpenProject",
-  "description": "85 tools for the OpenProject API v3: work packages, attachments, git activity, time, reporting",
+  "description": "87 tools for the OpenProject API v3: work packages, attachments, git activity, time, reporting",
   "repository": {
     "url": "https://github.com/kar-thik/openproject-mcp",
     "source": "github"
