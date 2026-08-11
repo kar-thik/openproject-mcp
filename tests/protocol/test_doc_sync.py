@@ -24,7 +24,7 @@ from tests.unit.test_config import ENV_SURFACE
 REPO = Path(__file__).resolve().parents[2]
 
 #: SPEC section 6 header: "Count: 85 tools — Ph1: 16 · Ph2: 33 · Ph3: 36."
-EXPECTED_TOOL_COUNT = 85
+EXPECTED_TOOL_COUNT = 87
 
 #: The MCP registry name marker README.md must carry verbatim.
 MCP_NAME_MARKER = "<!-- mcp-name: io.github.kar-thik/openproject-mcp-server -->"

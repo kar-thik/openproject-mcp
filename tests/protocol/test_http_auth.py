@@ -143,4 +143,4 @@ async def test_in_memory_client_is_unaffected_by_auth_tokens() -> None:
     async with Client(build_server(settings)) as client:
         assert await client.ping()
         listed = {tool.name for tool in await client.list_tools()}
-    assert len(listed) == 85
+    assert len(listed) == 87

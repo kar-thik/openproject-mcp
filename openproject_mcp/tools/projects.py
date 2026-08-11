@@ -160,6 +160,47 @@ class ProjectDetail(ProjectRow):
     updated_at: str | None = Field(default=None, description="ISO 8601 UTC timestamp.")
 
 
+class PhaseDefinitionRow(BaseModel):
+    """One instance-global project phase definition, with its gates."""
+
+    id: int | str | None = Field(
+        default=None, description="Definition id — the value list_projects' in_phase accepts."
+    )
+    name: str | None = Field(default=None, description="Phase name, e.g. 'Executing'.")
+    start_gate: bool | None = Field(
+        default=None, description="True when the phase begins with a gate."
+    )
+    start_gate_name: str | None = Field(
+        default=None, description="Display name of the start gate; null without one."
+    )
+    finish_gate: bool | None = Field(
+        default=None, description="True when the phase ends with a gate."
+    )
+    finish_gate_name: str | None = Field(
+        default=None, description="Display name of the finish gate; null without one."
+    )
+
+
+class ProjectPhaseDetail(BaseModel):
+    """One project's instance of a phase definition."""
+
+    id: int | str | None = Field(
+        default=None,
+        description="Phase id — a per-project record id, not the definition id.",
+    )
+    name: str | None = Field(default=None, description="Phase name.")
+    active: bool | None = Field(
+        default=None, description="False when the project switched this phase off."
+    )
+    definition: Ref | None = Field(
+        default=None, description="The instance-global phase definition this instantiates."
+    )
+    project: Ref | None = Field(default=None, description="Project this phase belongs to.")
+    created_at: str | None = Field(default=None, description="ISO 8601 UTC timestamp.")
+    updated_at: str | None = Field(default=None, description="ISO 8601 UTC timestamp.")
+    notes: list[str] | None = Field(default=None, description="Degradation notes for this result.")
+
+
 def _status_code(payload: Mapping[str, Any]) -> str | None:
     """Read the status code from ``_links.status`` (or the pre-13 ``status`` object)."""
     linked = hal.ref(payload, "status")
@@ -201,6 +242,72 @@ def _project_detail(payload: Mapping[str, Any]) -> ProjectDetail:
         status_explanation=hal.formattable(payload.get("statusExplanation")),
         created_at=payload.get("createdAt"),
         updated_at=payload.get("updatedAt"),
+    )
+
+
+def _phase_definition_row(payload: Mapping[str, Any]) -> PhaseDefinitionRow:
+    start_gate_name = payload.get("startGateName")
+    finish_gate_name = payload.get("finishGateName")
+    return PhaseDefinitionRow(
+        id=hal.self_id(payload),
+        name=payload.get("name"),
+        start_gate=payload.get("startGate") if isinstance(payload.get("startGate"), bool) else None,
+        start_gate_name=start_gate_name if isinstance(start_gate_name, str) else None,
+        finish_gate=(
+            payload.get("finishGate") if isinstance(payload.get("finishGate"), bool) else None
+        ),
+        finish_gate_name=finish_gate_name if isinstance(finish_gate_name, str) else None,
+    )
+
+
+def _project_phase_detail(payload: Mapping[str, Any]) -> ProjectPhaseDetail:
+    return ProjectPhaseDetail(
+        id=hal.self_id(payload),
+        name=payload.get("name"),
+        active=payload.get("active") if isinstance(payload.get("active"), bool) else None,
+        definition=Ref.from_hal(payload, "definition"),
+        project=Ref.from_hal(payload, "project"),
+        created_at=payload.get("createdAt"),
+        updated_at=payload.get("updatedAt"),
+    )
+
+
+#: The API renders phase names, activity and gates — never the phase dates.
+PHASE_DATES_NOTE = (
+    "The API does not expose phase dates; only the name, active flag and linked "
+    "definition are readable here."
+)
+
+_PHASES_UNSUPPORTED_HINT = (
+    "This OpenProject instance predates project phases (added in 16.1): the "
+    "project_phase_definitions API is absent. No phase data exists to read."
+)
+
+
+def _resolve_phase_definition(
+    definitions: list[PhaseDefinitionRow], requested: int | str
+) -> int | str:
+    """Turn an ``in_phase`` value into a definition id, or fail listing the options."""
+    known = ", ".join(f"{row.id}: {row.name}" for row in definitions) or "none defined"
+    key = str(requested).strip()
+    if key.isdigit():
+        if any(str(row.id) == key for row in definitions):
+            ids = [row.id for row in definitions if str(row.id) == key]
+            return ids[0] if ids[0] is not None else key
+        raise InputValidationError(
+            f"No phase definition with id {key}.",
+            hint=f"This instance defines: {known}.",
+        )
+    matches = [
+        row for row in definitions if (row.name or "").strip().lower() == key.lower() and row.id
+    ]
+    if len(matches) == 1:
+        assert matches[0].id is not None
+        return matches[0].id
+    problem = "is ambiguous — pass the id" if matches else "matches no phase definition"
+    raise InputValidationError(
+        f"in_phase {requested!r} {problem}.",
+        hint=f"This instance defines: {known}.",
     )
 
 
@@ -613,6 +720,25 @@ def register(mcp: FastMCP) -> None:
                 )
             ),
         ] = False,
+        in_phase: Annotated[
+            int | str | None,
+            Field(
+                description=(
+                    "Restrict to projects whose named phase covers a date (today unless "
+                    "phase_on_date says otherwise). Accepts a definition id or name from "
+                    "list_project_phase_definitions. Requires OpenProject 16.1+."
+                )
+            ),
+        ] = None,
+        phase_on_date: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "ISO date (YYYY-MM-DD) the in_phase filter should test instead of today. "
+                    "Only valid together with in_phase."
+                )
+            ),
+        ] = None,
         sort_by: Annotated[
             list[list[str]] | None,
             Field(
@@ -652,7 +778,9 @@ def register(mcp: FastMCP) -> None:
         ``parent_id`` returns direct children, so a deep hierarchy needs one call per level;
         ``status_code`` is a code such as ``on_track``, never a translated label. On
         OpenProject 17.x this listing deliberately mixes plain projects with programs and
-        portfolios — ``workspace_type`` says which each row is.
+        portfolios — ``workspace_type`` says which each row is. ``in_phase`` tests phase
+        *dates* ("which projects are in Executing today"), so projects whose phases carry
+        no dates never match it.
 
         For a single project's description and status explanation use ``get_project``. For
         the types, versions, categories and time-entry activities valid inside a project use
@@ -677,6 +805,33 @@ def register(mcp: FastMCP) -> None:
             filters.append(make_filter("parent_id", Op.EQ, [parent_id], resource=PROJECTS_RESOURCE))
         if favorites_only:
             filters.append(make_filter("favored", Op.EQ, [True], resource=PROJECTS_RESOURCE))
+        if phase_on_date is not None and in_phase is None:
+            raise InputValidationError(
+                "phase_on_date is only valid together with in_phase.",
+                hint="Pass in_phase (a definition id or name) to say WHICH phase to test.",
+            )
+        if in_phase is not None:
+            # Dynamic wire name (project_phase_<definition id>) — built directly, like the
+            # meetings time filter, because the registry only knows static names.
+            try:
+                definitions_payload = await ctx.client.get_json("project_phase_definitions")
+            except NotFoundError as exc:
+                raise ValidationFailedError(
+                    "This instance has no project-phase API.",
+                    http_status=exc.http_status,
+                    hint=_PHASES_UNSUPPORTED_HINT,
+                ) from exc
+            definitions = [
+                _phase_definition_row(element) for element in hal.collection(definitions_payload)
+            ]
+            definition_id = _resolve_phase_definition(definitions, in_phase)
+            filters.append(
+                Filter(
+                    name=f"project_phase_{definition_id}",
+                    operator=Op.ON_DATE.value if phase_on_date else Op.TODAY.value,
+                    values=[phase_on_date] if phase_on_date else [],
+                )
+            )
 
         params = query_params(
             filters=filters,
@@ -1378,3 +1533,112 @@ def register(mcp: FastMCP) -> None:
             favorite=favorite,
             message=f"Project {key!r} {state} of the authenticated user.",
         )
+
+    @mcp.tool(
+        name="list_project_phase_definitions",
+        tags=tool_tags(GROUP_PROJECTS, READ),
+        annotations=read_annotations(title="List project phase definitions"),
+    )
+    @tool_errors
+    async def list_project_phase_definitions(
+        page: Annotated[int, Field(ge=1, description="1-based page number.")] = 1,
+        page_size: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=MAX_PAGE_SIZE,
+                description=(
+                    f"Records per page (max {MAX_PAGE_SIZE}); most instances define fewer "
+                    "than a page of phases."
+                ),
+            ),
+        ] = DEFAULT_PAGE_SIZE,
+    ) -> ListEnvelope[PhaseDefinitionRow]:
+        """List the instance-global phase definitions — the vocabulary of the project life cycle.
+
+        Use it to learn which phases (Initiating, Planning, …) and gates this instance
+        defines, and to get the definition id or name that ``list_projects(in_phase=...)``
+        accepts.
+
+        Returns the standard list envelope of ``{id, name, start_gate, start_gate_name,
+        finish_gate, finish_gate_name}`` rows. Gates are the checkpoints a phase can begin
+        or end with; a definition without gates has both flags false.
+
+        Pitfalls: definitions are the instance-wide *catalog*, not any project's actual
+        phases — a project may deactivate phases or set no dates. Phase *dates* are not
+        exposed by the API at all. Requires OpenProject 16.1+ and the
+        ``view_project_phases`` permission in at least one project; older instances 404
+        (the error hint says so).
+
+        Cross-references: ``list_projects(in_phase=...)`` to find the projects a phase
+        covers today; ``get_project_phase`` for one project's phase record (its id comes
+        from a work package's ``project_phase``).
+        """
+        ctx = get_tool_context()
+        params = query_params(page=page, page_size=page_size)
+        try:
+            payload = await ctx.client.get_json("project_phase_definitions", params=params)
+        except NotFoundError as exc:
+            raise NotFoundError(
+                exc.message,
+                http_status=exc.http_status,
+                error_identifier=exc.error_identifier,
+                hint=_PHASES_UNSUPPORTED_HINT,
+            ) from exc
+        unwrapped = hal.collection(payload)
+        rows = [_phase_definition_row(element) for element in unwrapped]
+        return envelope_from_collection(unwrapped, rows, page=page, page_size=page_size)
+
+    @mcp.tool(
+        name="get_project_phase",
+        tags=tool_tags(GROUP_PROJECTS, READ),
+        annotations=read_annotations(title="Get project phase"),
+    )
+    @tool_errors
+    async def get_project_phase(
+        phase_id: Annotated[
+            int,
+            Field(
+                description=(
+                    "Per-project phase record id, from a work package's project_phase "
+                    "reference. NOT a definition id from list_project_phase_definitions."
+                )
+            ),
+        ],
+    ) -> ProjectPhaseDetail:
+        """Read one project's phase record: name, active flag and its definition.
+
+        Use it after ``get_work_package`` surfaced a ``project_phase`` reference and you
+        need to know which project and definition that phase belongs to, or whether it is
+        still active.
+
+        Returns ``{id, name, active, definition, project, created_at, updated_at}``.
+
+        Pitfalls: the API has no phases index — ids only come from work packages'
+        ``project_phase`` references. Phase dates are not exposed by the API (the ``notes``
+        say so), so "which projects are in this phase now" goes through
+        ``list_projects(in_phase=...)`` instead. A 404 covers a wrong id, a phase invisible
+        to this user (``view_project_phases``), and instances that predate project phases
+        (16.1).
+
+        Cross-references: ``list_project_phase_definitions`` for the instance-wide catalog
+        and gates; ``list_projects(in_phase=...)`` for date-based phase queries.
+        """
+        ctx = get_tool_context()
+        try:
+            payload = await ctx.client.get_json(f"project_phases/{phase_id}")
+        except NotFoundError as exc:
+            raise NotFoundError(
+                exc.message,
+                http_status=exc.http_status,
+                error_identifier=exc.error_identifier,
+                hint=(
+                    f"No phase record {phase_id} is visible to this account. Phase ids come "
+                    "from a work package's project_phase reference — there is no phases "
+                    "index. The 404 also covers missing view_project_phases permission and "
+                    "instances that predate project phases (16.1)."
+                ),
+            ) from exc
+        detail = _project_phase_detail(payload)
+        detail.notes = [PHASE_DATES_NOTE]
+        return detail

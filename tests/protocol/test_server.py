@@ -92,6 +92,9 @@ READ_TOOLS = {
     "get_job_status",
     "list_file_links",
     "get_project_report_data",
+    # 0.2.0
+    "list_project_phase_definitions",
+    "get_project_phase",
 }
 WRITE_TOOLS = {
     # Phase 1

@@ -335,6 +335,7 @@ def _detail_fields(
         "version": Ref.from_hal(payload, "version"),
         "category": Ref.from_hal(payload, "category"),
         "parent": Ref.from_hal(payload, "parent"),
+        "project_phase": Ref.from_hal(payload, "projectPhase"),
         "estimated_hours": hal.duration_hours(payload.get("estimatedTime")),
         "spent_hours": hal.duration_hours(payload.get("spentTime")),
         "created_at": payload.get("createdAt"),

@@ -270,3 +270,175 @@ async def test_get_project_rejects_a_blank_identifier(mcp_client: Client[Any]) -
     error = error_envelope(result)
     assert error["type"] == "invalid_input"
     assert "list_projects" in error["hint"]
+
+
+# --- project phases (0.2.0) ----------------------------------------------
+
+PHASE_DEFINITIONS: dict[str, Any] = {
+    "_type": "Collection",
+    "total": 2,
+    "count": 2,
+    "_embedded": {
+        "elements": [
+            {
+                "_type": "ProjectPhaseDefinition",
+                "id": 1,
+                "name": "Planning",
+                "startGate": True,
+                "startGateName": "Ready to plan",
+                "finishGate": False,
+                "finishGateName": None,
+                "_links": {"self": {"href": "/api/v3/project_phase_definitions/1"}},
+            },
+            {
+                "_type": "ProjectPhaseDefinition",
+                "id": 3,
+                "name": "Executing",
+                "startGate": False,
+                "startGateName": None,
+                "finishGate": True,
+                "finishGateName": "Done check",
+                "_links": {"self": {"href": "/api/v3/project_phase_definitions/3"}},
+            },
+        ]
+    },
+}
+
+PROJECT_PHASE: dict[str, Any] = {
+    "_type": "ProjectPhase",
+    "id": 12,
+    "name": "Executing",
+    "active": True,
+    "createdAt": "2026-05-01T08:00:00Z",
+    "updatedAt": "2026-08-01T09:30:00Z",
+    "_links": {
+        "self": {"href": "/api/v3/project_phases/12"},
+        "definition": {"href": "/api/v3/project_phase_definitions/3", "title": "Executing"},
+        "project": {"href": "/api/v3/projects/7", "title": "Demo project"},
+    },
+}
+
+
+async def test_phase_definitions_list_gates(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.get("project_phase_definitions").mock(
+        return_value=httpx.Response(200, json=PHASE_DEFINITIONS)
+    )
+
+    result = await mcp_client.call_tool("list_project_phase_definitions", {})
+
+    structured = result.structured_content
+    assert structured is not None
+    assert structured["items"][0] == {
+        "id": 1,
+        "name": "Planning",
+        "start_gate": True,
+        "start_gate_name": "Ready to plan",
+        "finish_gate": False,
+        "finish_gate_name": None,
+    }
+    assert structured["items"][1]["finish_gate_name"] == "Done check"
+    assert structured["pagination"]["has_more"] is False
+
+
+async def test_phase_definitions_404_names_the_version_floor(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.get("project_phase_definitions").mock(return_value=httpx.Response(404, json={}))
+
+    result = await mcp_client.call_tool("list_project_phase_definitions", {}, raise_on_error=False)
+
+    error = error_envelope(result)
+    assert error["type"] == "not_found"
+    assert "16.1" in error["hint"]
+
+
+async def test_get_project_phase_reads_definition_and_project(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.get("project_phases/12").mock(return_value=httpx.Response(200, json=PROJECT_PHASE))
+
+    result = await mcp_client.call_tool("get_project_phase", {"phase_id": 12})
+
+    structured = result.structured_content
+    assert structured is not None
+    assert structured["id"] == 12
+    assert structured["active"] is True
+    assert structured["definition"] == {"id": 3, "name": "Executing"}
+    assert structured["project"] == {"id": 7, "name": "Demo project"}
+    assert structured["notes"] == [
+        "The API does not expose phase dates; only the name, active flag and linked "
+        "definition are readable here."
+    ]
+
+
+async def test_get_project_phase_404_explains_where_ids_come_from(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.get("project_phases/999").mock(return_value=httpx.Response(404, json={}))
+
+    result = await mcp_client.call_tool(
+        "get_project_phase", {"phase_id": 999}, raise_on_error=False
+    )
+
+    error = error_envelope(result)
+    assert error["type"] == "not_found"
+    assert "project_phase reference" in error["hint"]
+
+
+async def test_in_phase_by_name_sends_the_today_operator(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.get("project_phase_definitions").mock(
+        return_value=httpx.Response(200, json=PHASE_DEFINITIONS)
+    )
+    route = mock_api.get("projects").mock(return_value=httpx.Response(200, json=PROJECT_COLLECTION))
+
+    await mcp_client.call_tool("list_projects", {"in_phase": "executing"})
+
+    sent = json.loads(route.calls[0].request.url.params["filters"])
+    assert {"project_phase_3": {"operator": "t", "values": []}} in sent
+
+
+async def test_in_phase_with_date_sends_the_on_date_operator(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.get("project_phase_definitions").mock(
+        return_value=httpx.Response(200, json=PHASE_DEFINITIONS)
+    )
+    route = mock_api.get("projects").mock(return_value=httpx.Response(200, json=PROJECT_COLLECTION))
+
+    await mcp_client.call_tool("list_projects", {"in_phase": 1, "phase_on_date": "2026-09-01"})
+
+    sent = json.loads(route.calls[0].request.url.params["filters"])
+    assert {"project_phase_1": {"operator": "=d", "values": ["2026-09-01"]}} in sent
+
+
+async def test_in_phase_unknown_name_lists_the_definitions(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_api.get("project_phase_definitions").mock(
+        return_value=httpx.Response(200, json=PHASE_DEFINITIONS)
+    )
+
+    result = await mcp_client.call_tool(
+        "list_projects", {"in_phase": "Shipping"}, raise_on_error=False
+    )
+
+    error = error_envelope(result)
+    assert error["type"] == "invalid_input"
+    assert "1: Planning" in error["hint"]
+    assert "3: Executing" in error["hint"]
+
+
+async def test_phase_on_date_without_in_phase_is_rejected_locally(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    result = await mcp_client.call_tool(
+        "list_projects", {"phase_on_date": "2026-09-01"}, raise_on_error=False
+    )
+
+    error = error_envelope(result)
+    assert error["type"] == "invalid_input"
+    assert "in_phase" in error["hint"]

@@ -7,7 +7,7 @@
 
 An MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) server for the
 [OpenProject](https://www.openproject.org/) API v3. It gives Claude and any other MCP client
-85 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
+87 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
 saved queries, notifications, time tracking, versions, people and memberships, meetings, news,
 documents, budgets and reporting — plus 4 report/workflow prompts and 3 resource templates.
 Built on FastMCP 3.x and httpx (HTTP/2).
@@ -304,7 +304,7 @@ explicit `confirm=true` argument before it acts.
 
 ## Tools
 
-85 tools: 37 read, 45 write and 3 admin-gated writes. The admin tools stay hidden unless
+87 tools: 39 read, 45 write and 3 admin-gated writes. The admin tools stay hidden unless
 `OPENPROJECT_MCP_ADMIN_TOOLS=1`; the 13 destructive tools additionally require `confirm=true`
 on every call. Each section heading names the group tag accepted by
 `OPENPROJECT_MCP_DISABLE`.
@@ -366,6 +366,8 @@ on every call. Each section heading names the group tag accepted by
 | `copy_project` | Write | Copy a project — its settings, and optionally its work packages — into a new one. |
 | `get_job_status` | Read | Check whether a background job (a project copy, a scheduled deletion) has finished. |
 | `set_project_favorite` | Write | Add or remove a project from the authenticated user's favorites (OpenProject 17+). |
+| `list_project_phase_definitions` | Read | List the instance-wide phase catalog (Initiating, Planning, ...) with start/finish gates (OpenProject 16.1+). |
+| `get_project_phase` | Read | Read one project's phase record; ids come from a work package's `project_phase` reference. |
 
 ### Saved queries (`queries`)
 
