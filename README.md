@@ -4,6 +4,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/openproject-mcp-server)](https://pypi.org/project/openproject-mcp-server/)
 [![CI](https://github.com/kar-thik/openproject-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/kar-thik/openproject-mcp/actions/workflows/ci.yml)
+[![openproject-mcp MCP server](https://glama.ai/mcp/servers/kar-thik/openproject-mcp/badges/score.svg)](https://glama.ai/mcp/servers/kar-thik/openproject-mcp)
 
 An MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) server for the
 [OpenProject](https://www.openproject.org/) API v3. It gives Claude and any other MCP client
