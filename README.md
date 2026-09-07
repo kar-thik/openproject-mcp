@@ -495,6 +495,10 @@ account with the Manage members permission).
 
 ## Prompts and resources
 
+Report data uses `closed_updated` for currently closed work updated in the requested
+window. This replaces the former `closed` field in v0.3.0. It does not establish when
+work was completed; sprint health remains unassessed without supporting data.
+
 Four prompt templates render live OpenProject data into ready-to-use briefings:
 
 - **weekly_report** — a weekly status report for one project: currently closed and updated / in progress / planned,

@@ -22,9 +22,13 @@ versions = ["Smoke release A", "Smoke release B"].map do |name|
 end
 outsider = User.create!(login: "mcp-outsider", firstname: "Smoke", lastname: "Outsider",
                         mail: "mcp-outsider@example.invalid", password: SecureRandom.hex(24) + "aA1!", status: 1)
-# display_value yields plaintext only on this freshly created token on hashed-token versions.
-admin_token = Token::API.create!(user: admin).display_value
-outsider_token = Token::API.create!(user: outsider).display_value
+# New versions hash stored tokens; older versions expose the fresh token through value.
+def api_token_for(user)
+  token = Token::API.create!(user: user)
+  token.respond_to?(:display_value) ? token.display_value : token.value
+end
+admin_token = api_token_for(admin)
+outsider_token = api_token_for(outsider)
 puts "MCP_SMOKE_FIXTURE=" + {
   project_id: project.id, type_id: type.id, version_ids: versions,
   custom_field: "customField#{field.id}", admin_token: admin_token,
