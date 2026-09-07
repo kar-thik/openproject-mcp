@@ -699,3 +699,7 @@ Each item is a deliberate exclusion, not an omission:
 2. **Version floor** — the spec targets 14 LTS with probes (§4.7) for the verified divergences (time-entry filters, internal comments, favorites, capabilities contexts, emoji reactions). If the deployed instance is ≥ 16, the probe layer shrinks; confirm the actual target instance version to descope.
 3. **OpenProject's first-party MCP server** — it has **shipped** in 17.x core (`/mcp` endpoint, Enterprise-gated via `mcp_server` token, admin-configured). Positioning: this server is the free/self-hosted-friendly, deeper alternative (files, git aggregation, reporting, 14-LTS support). Track its tool surface each OpenProject release to avoid name collisions and to steal good ideas.
 4. **Old-name compatibility aliases** — should v1 ship hidden aliases for the old server's 62 tool names (FastMCP tool transformation makes this cheap) to ease migration for existing prompt libraries, or is the §16 mapping table enough? Leaning: mapping table only; aliases add permanent surface for a temporary problem.
+
+### v0.3 target-version compatibility
+
+Work-package details carry `target_versions: Ref[]`; legacy `version` is the sole assignment or null. Create/update accept `target_versions` (omitted/null leaves unchanged, `[]` clears), mutually exclusive with the legacy `version` argument. Schema presence of `targetVersions` selects the new wire dialect; legacy schemas accept at most one assignment. Form defaults must never cause both wire fields to be committed together.

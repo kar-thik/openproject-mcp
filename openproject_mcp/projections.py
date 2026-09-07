@@ -276,7 +276,14 @@ class WorkPackageDetail(WorkPackageRow):
     )
     author: Ref | None = Field(default=None, description="Creating user.")
     responsible: Ref | None = Field(default=None, description="Accountable user.")
-    version: Ref | None = Field(default=None, description="Version / sprint.")
+    version: Ref | None = Field(
+        default=None,
+        description="Legacy alias: the sole target version, or null for zero/multiple.",
+    )
+    target_versions: list[Ref] = Field(
+        default_factory=list[Ref],
+        description="All target versions; legacy instances yield zero or one.",
+    )
     category: Ref | None = Field(default=None, description="Category.")
     parent: Ref | None = Field(default=None, description="Parent work package.")
     project_phase: Ref | None = Field(

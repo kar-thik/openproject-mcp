@@ -10,6 +10,12 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+### Added
+
+- Target-version lists in work-package details and create/update calls, with
+  schema-driven compatibility for OpenProject 17.8 and older instances.
+  The existing `version` argument remains a single-assignment alias.
+
 ## [0.2.0] - 2026-08-11
 
 ### Added

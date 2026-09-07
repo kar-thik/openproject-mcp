@@ -509,6 +509,10 @@ The server targets OpenProject **14 LTS through 17.x**. Instead of assuming one 
 it probes the instance lazily on first need and caches the result for an hour. The
 version-dependent surfaces:
 
+- **Target versions**: work-package details expose `target_versions` on every supported
+  instance. Create/update accept a list of version ids (`[]` clears); the schema selects
+  `targetVersions` on 17.8+ or a single legacy `version`. The old `version` argument remains
+  a single-value alias; do not pass both. On reads it is null for multiple assignments.
 - **Internal (private) comments** need OpenProject >= 16. Older servers silently ignore the
   internal flag, so below 16 the server refuses with a clear error rather than posting a
   comment publicly that you asked to keep internal.

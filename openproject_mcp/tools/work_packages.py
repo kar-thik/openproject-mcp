@@ -320,6 +320,55 @@ def _availability(payload: Mapping[str, Any]) -> dict[str, bool]:
     }
 
 
+def _target_versions(payload: Mapping[str, Any]) -> list[Ref]:
+    # An explicitly empty new field wins over a stale legacy link.
+    if "targetVersions" in _links_of(payload):
+        return Ref.list_from_hal(payload, "targetVersions")
+    legacy = Ref.from_hal(payload, "version")
+    return [legacy] if legacy is not None else []
+
+
+def _legacy_version(payload: Mapping[str, Any]) -> Ref | None:
+    versions = _target_versions(payload)
+    return versions[0] if len(versions) == 1 else None
+
+
+def _version_links(
+    schema: Mapping[str, Any], version: str | None, target_versions: list[int] | None
+) -> dict[str, Any]:
+    if target_versions is not None and not _is_keep(version):
+        raise InputValidationError(
+            "version and target_versions cannot be supplied together.",
+            hint="Use target_versions alone; [] clears every assignment.",
+        )
+    ids = target_versions
+    if ids is None:
+        ids = (
+            []
+            if _is_clear(version)
+            else [_numeric_id(version, field="version", produced_by="get_project_metadata")]
+        )
+    if any(isinstance(value, bool) or value <= 0 for value in ids):
+        raise InputValidationError(
+            "Target version ids must be positive integers.",
+            hint="Read version ids from get_project_metadata.",
+        )
+    ids = list(dict.fromkeys(ids))
+    if "targetVersions" in schema:
+        return {"targetVersions": [link("versions", value) for value in ids]}
+    if "version" not in schema:
+        raise InputValidationError(
+            "The work-package schema does not expose version assignments.",
+            hint="Refresh get_work_package_schema and check the enabled project modules.",
+        )
+    if len(ids) > 1:
+        raise InputValidationError(
+            "This instance supports only one version per work package.",
+            hint="Pass at most one target version, or enable multiple versions on 17.8+.",
+        )
+    return {"version": link("versions", ids[0] if ids else None)}
+
+
 def _detail_fields(
     payload: Mapping[str, Any],
     schema: Mapping[str, Any] | None,
@@ -332,7 +381,8 @@ def _detail_fields(
         "description": hal.formattable(payload.get("description")),
         "author": Ref.from_hal(payload, "author"),
         "responsible": Ref.from_hal(payload, "responsible"),
-        "version": Ref.from_hal(payload, "version"),
+        "version": _legacy_version(payload),
+        "target_versions": _target_versions(payload),
         "category": Ref.from_hal(payload, "category"),
         "parent": Ref.from_hal(payload, "parent"),
         "project_phase": Ref.from_hal(payload, "projectPhase"),
@@ -1172,6 +1222,13 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(description="Numeric version / sprint id; from get_project_metadata."),
         ] = None,
+        target_versions: Annotated[
+            list[int] | None,
+            Field(
+                description="Target version ids. [] clears assignments; omit to use defaults. "
+                "Multiple values require instance support. Mutually exclusive with version."
+            ),
+        ] = None,
         parent_id: Annotated[
             int | None,
             Field(description="Create this as a child of an existing work package id."),
@@ -1269,10 +1326,12 @@ def register(mcp: FastMCP) -> None:
                 "users",
                 _numeric_id(responsible, field="responsible", produced_by="search_principals"),
             )
-        if version is not None:
-            links["version"] = link(
-                "versions",
-                _numeric_id(version, field="version", produced_by="get_project_metadata"),
+        if version is not None or target_versions is not None:
+            version_schema = await _schema_for_project_type(ctx, project_id, type_id)
+            links.update(
+                _version_links(
+                    version_schema, KEEP if version is None else version, target_versions
+                )
             )
         if parent_id is not None:
             links["parent"] = link("work_packages", parent_id)
@@ -1303,6 +1362,12 @@ def register(mcp: FastMCP) -> None:
         form = await ctx.client.post_json("work_packages/form", json=payload)
         _raise_form_validation_errors(form)
         body = _forms.merge_form_payload(_forms.form_payload(form) or {}, payload)
+        # The form can echo both API dialects. Never commit both assignment fields.
+        body_links = body.get("_links", {})
+        if "targetVersions" in links:
+            body_links.pop("version", None)
+        elif "version" in links:
+            body_links.pop("targetVersions", None)
 
         created = await ctx.client.post_json(
             "work_packages", json=body, params={"notify": "true" if notify else "false"}
@@ -1378,6 +1443,13 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(description="Numeric version / sprint id; null removes it from the version."),
         ] = KEEP,
+        target_versions: Annotated[
+            list[int] | None,
+            Field(
+                description="Target version ids. [] clears assignments; omit to leave unchanged. "
+                "Multiple values require instance support. Mutually exclusive with version."
+            ),
+        ] = None,
         parent_id: Annotated[
             int | str | None,
             Field(
@@ -1484,13 +1556,6 @@ def register(mcp: FastMCP) -> None:
                 if _is_clear(responsible)
                 else _numeric_id(responsible, field="responsible", produced_by="search_principals"),
             )
-        if not _is_keep(version):
-            links["version"] = link(
-                "versions",
-                None
-                if _is_clear(version)
-                else _numeric_id(version, field="version", produced_by="get_project_metadata"),
-            )
         if not _is_keep(parent_id):
             links["parent"] = link(
                 "work_packages",
@@ -1499,7 +1564,13 @@ def register(mcp: FastMCP) -> None:
                 else _numeric_id(parent_id, field="parent_id", produced_by="list_work_packages"),
             )
 
-        if not attributes and not links and not custom_fields:
+        if (
+            not attributes
+            and not links
+            and not custom_fields
+            and _is_keep(version)
+            and target_versions is None
+        ):
             raise InputValidationError(
                 "update_work_package was called with nothing to change.",
                 hint="Pass at least one writable field, e.g. subject, status or assignee.",
@@ -1507,7 +1578,20 @@ def register(mcp: FastMCP) -> None:
 
         # One read serves both the custom-field schema link and the lock version, so the two can
         # never come from different snapshots of the work package.
-        current = await ctx.client.get_json(path) if custom_fields or lock_version is None else None
+        versions_requested = not _is_keep(version) or target_versions is not None
+        current = (
+            await ctx.client.get_json(path)
+            if custom_fields or lock_version is None or versions_requested
+            else None
+        )
+        if versions_requested:
+            version_schema, version_note = await _schema_for(ctx, current or {})
+            if version_schema is None:
+                raise InputValidationError(
+                    f"Cannot write target versions: {version_note}.",
+                    hint="Read get_work_package_schema before retrying.",
+                )
+            links.update(_version_links(version_schema, version, target_versions))
 
         if custom_fields:
             cf_schema, cf_note = await _schema_for(ctx, current or {})
