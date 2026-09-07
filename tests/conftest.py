@@ -1,4 +1,4 @@
-"""Shared test fixtures. No test in this suite touches the network.
+"""Shared offline fixtures; integration tests opt in to separate disposable credentials.
 
 Fixtures Phase 1 will use:
 
@@ -98,3 +98,22 @@ def mcp_server(settings: Settings) -> FastMCP:
 async def mcp_client(mcp_server: FastMCP) -> AsyncIterator[Client[Any]]:
     async with Client(mcp_server) as client:
         yield client
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--live-openproject",
+        action="store_true",
+        default=False,
+        help="Enable integration tests against a disposable OpenProject fixture.",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if not config.getoption("--live-openproject"):
+        skip = pytest.mark.skip(
+            reason="Live checks require scripts/live_smoke.py or --live-openproject"
+        )
+        for item in items:
+            if "integration" in item.keywords:
+                item.add_marker(skip)

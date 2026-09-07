@@ -23,6 +23,10 @@ PATCH releases are fixes and strictly additive changes only.
 
 ### Added
 
+- Opt-in disposable-instance compatibility tests and a CI matrix for OpenProject
+  14.6, 15.5, 16.6 and 17.8, covering custom fields, target versions, batch
+  preview/apply, stale locks, permissions and meeting API variants.
+
 - `bulk_update_work_packages`: preview up to 50 updates with before/after diffs,
   then apply with reviewed lock versions. Whole-batch preflight and per-item
   execution results expose conflicts, partial failures and uncertain outcomes.

@@ -589,8 +589,19 @@ uv run ruff format --check .
 uv run pyright             # strict mode
 ```
 
-The suite currently contains no tests that need a live OpenProject instance; an opt-in
-`integration` marker is registered and reserved for any that are added later. The
+The default suite stays offline. Opt-in compatibility checks run against fresh official
+OpenProject 14.6, 15.5, 16.6 and 17.8 containers in the Compatibility workflow
+(including both single- and multiple-version modes on 17.8). To run one
+locally with Docker running:
+
+```sh
+uv run python scripts/live_smoke.py --image openproject/openproject:17.8.0
+```
+
+The harness seeds a private project, temporary users, custom fields and versions; it tests
+through MCP, then removes the container and its volumes. Existing instances and credentials
+are not used. Direct pytest runs skip these tests unless `--live-openproject` is supplied
+with a disposable fixture file. The
 full technical specification lives in
 [SPEC.md](https://github.com/kar-thik/openproject-mcp/blob/main/SPEC.md).
 

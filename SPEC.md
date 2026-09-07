@@ -253,7 +253,7 @@ Legend: 🔍 read · ✏️ write · 🗑 destructive (confirm + `requiresUserIn
 
 `list_permissions` (né `check_permissions` — renamed; the old tool returned a user profile and called it permissions): resolves the **numeric** principal id via cached `users/me` (the capabilities API has **no** `"me"` value), filters context as `g` (global) or `p{id}` (with `w{id}` fallback, §4.7). Optional `permission?` returns a `{allowed: bool}` predicate. Description carries the API's own caveat: **only a subset of actions is exposed** — absence of a capability is not proof of missing permission.
 
-### 6.2 Work packages — core (Ph1: 6)
+### 6.2 Work packages — core (Ph1: 7)
 
 | Tool | Sig (abridged) | Endpoint(s) | Ph |
 |---|---|---|---|
@@ -263,8 +263,11 @@ Legend: 🔍 read · ✏️ write · 🗑 destructive (confirm + `requiresUserIn
 | ✏️ `create_work_package` | `project, type, subject, description?, …, custom_fields?, attachment_paths?` | `POST /work_packages/form` → `POST /work_packages` | 1 |
 | ✏️ `update_work_package` | `id, lock_version?, …any writable field…, custom_fields?` | form → `PATCH /work_packages/{id}` | 1 |
 | 🗑 `delete_work_package` | `id, confirm` | `DELETE /work_packages/{id}` | 1 |
-
 | ✏️ `bulk_update_work_packages` | `updates[{id, changes, lock_version?}], dry_run=true, notify=true` | Per-item form → PATCH, maximum 50; preview first | 1 |
+
+Work-package details carry `target_versions: Ref[]`; legacy `version` is the sole assignment or null. Create/update accept `target_versions` (omitted/null leaves unchanged, `[]` clears), mutually exclusive with the legacy `version` argument. Schema presence of `targetVersions` selects the new wire dialect; legacy schemas accept at most one assignment. Form defaults must never cause both wire fields to be committed together.
+
+`bulk_update_work_packages` defaults to a read-only preview of up to 50 distinct ids. Applying requires every item's reviewed `lock_version`. All forms are validated before any PATCH; any preflight error blocks the whole batch. Execution is sequential and non-atomic, returning per-item success, conflict, failure or unknown outcome. Never replay successful items; re-read unknown outcomes before retrying. The tool belongs to the work_packages write group and is hidden in read-only mode.
 
 **Status scoping — explicit and uniform.** OpenProject's server default (open-only when no filter is sent) is never relied on: both tools always send an explicit status filter derived from `status_scope`. `search_work_packages` defaults to `'all'` (finding closed items is the point of search); `list_work_packages` defaults to `'open'`. Each default is stated in the tool description. `status_ids` overrides `status_scope` (documented; no silent fight).
 
@@ -442,6 +445,8 @@ Users and groups are **read-only** (`search_principals` covers group-id discover
 
 ### 6.14 Reporting (Ph3: 1)
 
+The former `closed` report bucket is renamed `closed_updated`: currently closed work packages updated in the requested window. Neither the tool nor weekly/standup prompts claim these are completions in the window. Notes explicitly state that completion dates are unknown. Sprint health is not assessed from ticket counts; the report marks it as not assessed.
+
 | Tool | Sig (abridged) | Ph |
 |---|---|---|
 | 🔍 `get_project_report_data` | `project_id, from_date, to_date` | 3 |
@@ -589,7 +594,7 @@ Typed params cover the 95% case. `raw_filters` covers the rest — **typed, not 
 1. **Unit** — client layer against `respx`: error taxonomy per status, retry/backoff (429 `Retry-After` honored; writes never retried), redirect auth-stripping, HAL property tests (hypothesis: id-from-href, collection unwrap), filter builder (every operator × type combo, golden URLs), lockVersion flows incl. 409 shaping, version-probe fallbacks (§4.7: `entityId`→`workPackage`, `p{id}`→`w{id}`, `internal` rejection).
 2. **Protocol** — in-memory `fastmcp.Client(server)`: every tool callable end-to-end with mocked upstream; assertions on **result contents** (not just absence-of-error); `structuredContent` validates against declared `outputSchema`; annotations asserted (all reads `readOnlyHint`, all 🗑 `destructiveHint` + `requiresUserInteraction`); read-only mode hides writes; the §9.3 envelope on every list tool; progress notifications emitted by paging tools; cancellation honored between pages.
 3. **Fixtures** — golden HAL payloads captured from a live 17.x instance (scrubbed), one per resource; a 14 LTS fixture set for the version-sensitive surfaces (time-entry filters, comments) — if a 14 instance is unobtainable, the risk is documented in the README rather than silently untested.
-4. **Integration (opt-in, CI-nightly)** — docker-compose OpenProject; seeded project; smoke: search→get→create→comment→upload→download→log time→report data. Marked `-m integration`; never required for default `pytest` (the old repo's tests needed a live server and always exited 0 — both banned).
+4. **Integration (opt-in)** — `scripts/live_smoke.py` starts an official all-in-one image bound only to localhost, seeds isolated fixtures, drives the MCP server through real API calls, and removes the container and anonymous volumes in a finally block. `tests/integration` requires explicit `--live-openproject` opt-in. CI covers 14.6.0, 15.5.0, 16.6.0, and 17.8.0; tests verify reads/writes, custom fields, target versions, batch preflight/locking, permissions and meeting route availability. Both single- and multiple-version modes are exercised on 17.8. Runs on relevant pull requests, main changes, or manual workflow dispatch.
 5. **Quality gates** — `uv run pytest` green; `ruff` + `ruff format`; **pyright strict on `client/` AND `tools/`** (the old server's nonexistent-method bug lived in a tool module); coverage ≥ 85% on `client/` + `tools/`; **doc-sync check**: the §6 catalog table, the README tool table, and the registered tool set must match (script compares them in CI).
 
 ---
@@ -701,11 +706,3 @@ Each item is a deliberate exclusion, not an omission:
 2. **Version floor** — the spec targets 14 LTS with probes (§4.7) for the verified divergences (time-entry filters, internal comments, favorites, capabilities contexts, emoji reactions). If the deployed instance is ≥ 16, the probe layer shrinks; confirm the actual target instance version to descope.
 3. **OpenProject's first-party MCP server** — it has **shipped** in 17.x core (`/mcp` endpoint, Enterprise-gated via `mcp_server` token, admin-configured). Positioning: this server is the free/self-hosted-friendly, deeper alternative (files, git aggregation, reporting, 14-LTS support). Track its tool surface each OpenProject release to avoid name collisions and to steal good ideas.
 4. **Old-name compatibility aliases** — should v1 ship hidden aliases for the old server's 62 tool names (FastMCP tool transformation makes this cheap) to ease migration for existing prompt libraries, or is the §16 mapping table enough? Leaning: mapping table only; aliases add permanent surface for a temporary problem.
-
-### v0.3 target-version compatibility
-
-Work-package details carry `target_versions: Ref[]`; legacy `version` is the sole assignment or null. Create/update accept `target_versions` (omitted/null leaves unchanged, `[]` clears), mutually exclusive with the legacy `version` argument. Schema presence of `targetVersions` selects the new wire dialect; legacy schemas accept at most one assignment. Form defaults must never cause both wire fields to be committed together.
-
-### v0.3 report semantics
-
-The former `closed` report bucket is renamed `closed_updated`: currently closed work packages updated in the requested window. Neither the tool nor weekly/standup prompts claim these are completions in the window. Notes explicitly state that completion dates are unknown. Sprint health is not assessed from ticket counts; the report marks it as not assessed.
