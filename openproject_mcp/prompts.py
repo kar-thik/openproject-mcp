@@ -22,7 +22,7 @@ Non-negotiables for this module:
   lifespan client the tools use. A prompt therefore returns a *rendered*
   document, not instructions telling the model to go and call tools — the model
   gets the numbers with the template, in one round trip.
-* **Done comes from ``isClosed``**, never from status names:
+* **Current closure comes from ``isClosed``**, never from status names:
   ``ReportWorkPackage.is_closed`` carries the instance's own flag, and a row
   whose flag is unknown is never silently called open (SPEC §6.14). Among the
   open rows, *Planned* is the ones whose last change is still the day they were
@@ -103,16 +103,14 @@ LABELS: dict[str, dict[str, str]] = {
         "project_id": "Project id",
         "open_now": "Open work packages now",
         "progress": "Progress against the sprint goal",
-        "on_track": "On track",
-        "at_risk": "At risk",
-        "off_track": "Off track",
-        "top_deliverables": "Highlighted deliverables (done):",
-        "none_done": "Nothing was completed in this window.",
+        "not_assessed": "Not assessed — sprint goal and completion dates are not available",
+        "top_deliverables": "Currently closed work updated in the window:",
+        "none_done": "No currently closed work packages were updated in this window.",
         "biggest_blocker": "Biggest impediment",
         "no_blockers": "none found",
         "blocked_items": "blocking relation(s) on open work",
         "needs_decision": "Support / decisions needed",
-        "sub_done": "1) Completed (Done)",
+        "sub_done": "1) Currently closed, updated in the window",
         "sub_in_progress": "2) In progress",
         "sub_planned": "3) Raised but not started (Planned)",
         "th_ticket": "Ticket",
@@ -149,7 +147,7 @@ LABELS: dict[str, dict[str, str]] = {
         "went_well": "What went well",
         "improve": "What to improve",
         "actions": "Action items",
-        "done_count": "Done",
+        "done_count": "Closed, updated in window",
         "in_progress_count": "In progress",
         "planned_count": "Planned",
         "blockers_count": "Blocking relations",
@@ -180,16 +178,14 @@ LABELS: dict[str, dict[str, str]] = {
         "project_id": "Project ID",
         "open_now": "Work package đang mở",
         "progress": "Tiến độ so với Sprint Goal",
-        "on_track": "Đúng tiến độ",
-        "at_risk": "Có rủi ro",
-        "off_track": "Chậm tiến độ",
-        "top_deliverables": "Deliverables nổi bật (đã Done):",
-        "none_done": "Chưa có work package nào hoàn thành trong tuần.",
+        "not_assessed": "Chưa đánh giá — chưa có mục tiêu sprint và ngày hoàn thành",
+        "top_deliverables": "Công việc hiện đã đóng, được cập nhật trong kỳ:",
+        "none_done": "Không có công việc hiện đã đóng được cập nhật trong kỳ.",
         "biggest_blocker": "Vướng mắc lớn nhất",
         "no_blockers": "không có",
         "blocked_items": "quan hệ chặn trên công việc đang mở",
         "needs_decision": "Cần hỗ trợ / quyết định",
-        "sub_done": "1) Công việc đã hoàn thành (Done)",
+        "sub_done": "1) Hiện đã đóng, được cập nhật trong kỳ",
         "sub_in_progress": "2) Công việc đang thực hiện (In Progress)",
         "sub_planned": "3) Công việc đề ra nhưng chưa bắt đầu (Planned)",
         "th_ticket": "Ticket",
@@ -226,7 +222,7 @@ LABELS: dict[str, dict[str, str]] = {
         "went_well": "Điều làm tốt",
         "improve": "Điều cần cải thiện",
         "actions": "Action items",
-        "done_count": "Done",
+        "done_count": "Hiện đã đóng, cập nhật trong kỳ",
         "in_progress_count": "In progress",
         "planned_count": "Planned",
         "blockers_count": "Quan hệ chặn",
@@ -369,14 +365,15 @@ def _untouched_since_raised(row: ReportWorkPackage) -> bool:
 def _classify(
     data: ProjectReportData,
 ) -> tuple[list[ReportWorkPackage], list[ReportWorkPackage], list[ReportWorkPackage]]:
-    """Split the window into done / in progress / planned using ``is_closed``.
+    """Split changed work into currently closed / in progress / planned using ``is_closed``.
 
-    A row is *done* when the instance flags its status as closed — the only Done
-    signal, and never a status name. An open row is *planned* when it was raised
+    A row is currently closed when the status carries isClosed. This does not
+    establish when it was completed. Never infer a completion date from updatedAt.
+    An open row is *planned* when it was raised
     and left alone (see :func:`_untouched_since_raised`), and *in progress*
     otherwise.
     """
-    rows = _dedupe([data.closed.items, data.updated.items, data.created.items])
+    rows = _dedupe([data.closed_updated.items, data.updated.items, data.created.items])
     done = [row for row in rows if row.is_closed is True]
     open_rows = [row for row in rows if row.is_closed is not True]
     planned = [row for row in open_rows if _untouched_since_raised(row)]
@@ -457,17 +454,6 @@ def _window(from_date: str | None, to_date: str | None) -> tuple[str, str, str |
 # --- the weekly report ----------------------------------------------------
 
 
-def _health(
-    done: Sequence[ReportWorkPackage], in_progress: Sequence[ReportWorkPackage], blockers: int
-) -> str:
-    """The one-word verdict the executive summary opens with."""
-    if blockers:
-        return "off_track"
-    if len(done) < len(in_progress):
-        return "at_risk"
-    return "on_track"
-
-
 def render_weekly_report(
     data: ProjectReportData,
     impediments: Sequence[Impediment],
@@ -504,7 +490,7 @@ def render_weekly_report(
         )
     )
 
-    health = labels[_health(done, in_progress, len(impediments))]
+    health = labels["not_assessed"]
     lines += ["", f"## {labels['b']}", "", f"**{labels['progress']}:** {health}", ""]
     lines.append(f"**{labels['top_deliverables']}**")
     if done:
@@ -670,11 +656,12 @@ def register(mcp: FastMCP) -> None:
     ) -> str:
         """Render the 8-section Agile/Scrum weekly report for one project, with live data.
 
-        The server does the reading: work packages created, changed and completed in the
+        The server does the reading: work packages created, updated, and currently closed in the
         window, the server-side open-by-status counts, logged hours per activity and per
-        person, the membership roster, and the blocking relations on open work. Done is
+        person, the membership roster, and the blocking relations on open work. Closed is
         decided by each status's own `isClosed` flag, so the report is correct on
-        translated and renamed workflows; the rest split into Planned (raised in the
+        translated and renamed workflows. Completion dates are unknown; the rest split into
+        Planned (raised in the
         window and untouched since) and In progress.
 
         Args:
@@ -721,7 +708,7 @@ def register(mcp: FastMCP) -> None:
         """Render today's standup for one project: yesterday's movement, what is due today,
         and what is blocked.
 
-        The window is yesterday on the server's clock. Completed items are the ones whose
+        The window is yesterday on the server's clock. Closed items are the ones whose
         status carries the instance's `isClosed` flag, never a status name; "due today"
         is an open-status query on today's date; blockers are the `blocks`/`blocked`
         relations visible on the open work packages that moved.
@@ -757,9 +744,11 @@ def register(mcp: FastMCP) -> None:
             "",
             f"_Yesterday: {yesterday} · today: {today.isoformat()}_",
             "",
-            f"## Completed yesterday ({len(done)})",
+            f"## Currently closed, updated yesterday ({len(done)})",
             "",
-            *_work_package_table(done, labels, "Nothing was completed yesterday."),
+            *_work_package_table(
+                done, labels, "No currently closed work packages were updated yesterday."
+            ),
             "",
             f"## Moved yesterday, still open ({len(in_progress)})",
             "",

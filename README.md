@@ -8,7 +8,7 @@
 
 An MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) server for the
 [OpenProject](https://www.openproject.org/) API v3. It gives Claude and any other MCP client
-87 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
+88 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
 saved queries, notifications, time tracking, versions, people and memberships, meetings, news,
 documents, budgets and reporting — plus 4 report/workflow prompts and 3 resource templates.
 Built on FastMCP 3.x and httpx (HTTP/2).
@@ -82,9 +82,9 @@ You         /weekly_report project=website-relaunch
             ...
             ## B. EXECUTIVE SUMMARY
 
-            **Progress against the sprint goal:** At risk
+            **Progress against the sprint goal:** Not assessed — sprint goal and completion dates are not available
 
-            **Highlighted deliverables (done):**
+            **Currently closed work updated in the window:**
             1. #4802 - Ship the new pricing page
             2. #4795 - Halve the hero image payload
             ...
@@ -265,7 +265,7 @@ held in memory as Pydantic `SecretStr` values and are never written to logs; the
 Three settings shrink the tool surface at startup (the tool list is fixed for the lifetime of
 the process):
 
-- `OPENPROJECT_MCP_READ_ONLY=1` serves only the 37 read tools.
+- `OPENPROJECT_MCP_READ_ONLY=1` serves only the 39 read tools.
 - `OPENPROJECT_MCP_ADMIN_TOOLS=1` reveals the three membership write tools
   (`create_membership`, `update_membership`, `delete_membership`); they are hidden by default.
 - `OPENPROJECT_MCP_DISABLE` drops whole groups to cut prompt cost, e.g.
@@ -275,7 +275,7 @@ the process):
   `documents`, `budgets`, `news`, `reporting` — the same tags that head each section of the
   tool catalog below.
 
-Independent of all three, every destructive tool (the eight permanent deletes) requires an
+Independent of all three, every destructive tool (the 13 permanent deletes) requires an
 explicit `confirm=true` argument before it acts.
 
 ## Transports
@@ -305,7 +305,7 @@ explicit `confirm=true` argument before it acts.
 
 ## Tools
 
-87 tools: 39 read, 45 write and 3 admin-gated writes. The admin tools stay hidden unless
+88 tools: 39 read, 46 write and 3 admin-gated writes. The admin tools stay hidden unless
 `OPENPROJECT_MCP_ADMIN_TOOLS=1`; the 13 destructive tools additionally require `confirm=true`
 on every call. Each section heading names the group tag accepted by
 `OPENPROJECT_MCP_DISABLE`.
@@ -319,7 +319,15 @@ on every call. Each section heading names the group tag accepted by
 | `get_work_package` | Read | Read one work package in full: description, dates, custom fields, parent and progress. |
 | `create_work_package` | Write | Create a work package, validated through OpenProject's own form endpoint first. |
 | `update_work_package` | Write | Change any writable field of a work package, with optimistic locking. |
+| `bulk_update_work_packages` | Write | Preview or apply up to 50 updates with per-item diffs, validation and conflict results. |
 | `delete_work_package` | Write (destructive) | Permanently delete a work package and everything attached to it. |
+
+Batch workflow: call `bulk_update_work_packages(updates=[{"id": 4821,
+"changes": {"target_versions": [3, 4]}}])` to preview. Review the returned changes,
+then repeat with `dry_run=false` and each item's returned `lock_version` included
+in `updates`. Any preflight error prevents the whole batch from writing. A later
+conflict can produce partial success; inspect every item and never replay successful
+updates. `unknown` means the write may have committed before the response was lost.
 
 ### Comments, relations, watchers, reminders (`wp_collaboration`)
 
@@ -487,9 +495,13 @@ account with the Manage members permission).
 
 ## Prompts and resources
 
+Report data uses `closed_updated` for currently closed work updated in the requested
+window. This replaces the former `closed` field in v0.3.0. It does not establish when
+work was completed; sprint health remains unassessed without supporting data.
+
 Four prompt templates render live OpenProject data into ready-to-use briefings:
 
-- **weekly_report** — a weekly status report for one project: done / in progress / planned,
+- **weekly_report** — a weekly status report for one project: currently closed and updated / in progress / planned,
   hours and impediments.
 - **daily_standup** — today's standup for one project: yesterday's movement, what is due
   today, and what is blocked.
@@ -509,6 +521,10 @@ The server targets OpenProject **14 LTS through 17.x**. Instead of assuming one 
 it probes the instance lazily on first need and caches the result for an hour. The
 version-dependent surfaces:
 
+- **Target versions**: work-package details expose `target_versions` on every supported
+  instance. Create/update accept a list of version ids (`[]` clears); the schema selects
+  `targetVersions` on 17.8+ or a single legacy `version`. The old `version` argument remains
+  a single-value alias; do not pass both. On reads it is null for multiple assignments.
 - **Internal (private) comments** need OpenProject >= 16. Older servers silently ignore the
   internal flag, so below 16 the server refuses with a clear error rather than posting a
   comment publicly that you asked to keep internal.
@@ -577,8 +593,19 @@ uv run ruff format --check .
 uv run pyright             # strict mode
 ```
 
-The suite currently contains no tests that need a live OpenProject instance; an opt-in
-`integration` marker is registered and reserved for any that are added later. The
+The default suite stays offline. Opt-in compatibility checks run against fresh official
+OpenProject 14.6, 15.5, 16.6 and 17.8 containers in the Compatibility workflow
+(including both single- and multiple-version modes on 17.8). To run one
+locally with Docker running:
+
+```sh
+uv run python scripts/live_smoke.py --image openproject/openproject:17.8.0
+```
+
+The harness seeds a private project, temporary users, custom fields and versions; it tests
+through MCP, then removes the container and its volumes. Existing instances and credentials
+are not used. Direct pytest runs skip these tests unless `--live-openproject` is supplied
+with a disposable fixture file. The
 full technical specification lives in
 [SPEC.md](https://github.com/kar-thik/openproject-mcp/blob/main/SPEC.md).
 

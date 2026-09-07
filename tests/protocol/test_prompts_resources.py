@@ -163,7 +163,7 @@ async def test_weekly_report_renders_the_eight_sections_from_live_data(
 
     # Done is decided by isClosed: neither 'Shipped' nor 'Rejected' contains a
     # keyword the old classifier looked for, and both land under Done.
-    assert "1) Completed (Done) (2)" in text
+    assert "1) Currently closed, updated in the window (2)" in text
     assert "#1236" in text
     assert "Pool the httpx client" in text
     assert "#1237" in text
@@ -187,7 +187,9 @@ async def test_weekly_report_renders_the_eight_sections_from_live_data(
     # Impediments come from the blocks/blocked relations that are visible.
     assert "blocked by #1240 Provision the CI runners" in text
     assert "Waiting on the infrastructure ticket." in text
-    assert "Off track" in text
+    assert "Not assessed — sprint goal and completion dates are not available" in text
+    assert "Completed (Done)" not in text
+    assert "not completed in it" in text
 
     # Server-side open counts, verbatim.
     assert "| In progress | 4 |" in text
@@ -230,8 +232,8 @@ async def test_weekly_report_renders_the_vietnamese_template(
         "PHỤ LỤC: BẢN SIÊU GỌN CHO LÃNH ĐẠO",
     ):
         assert f"## {heading}" in text
-    assert "1) Công việc đã hoàn thành (Done) (2)" in text
-    assert "Chậm tiến độ" in text
+    assert "1) Hiện đã đóng, được cập nhật trong kỳ (2)" in text
+    assert "Chưa đánh giá" in text
     # The numbers are the same document, only the labels changed.
     assert "7.5 giờ" in text
     assert "#1236" in text
@@ -316,7 +318,7 @@ async def test_daily_standup_renders_yesterday_due_today_and_blockers(
 
     yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
     assert f"Yesterday: {yesterday}" in text
-    assert "## Completed yesterday (2)" in text
+    assert "## Currently closed, updated yesterday (2)" in text
     assert "#1236" in text and "#1237" in text
     assert "## Moved yesterday, still open (1)" in text
     assert "## Due today (1)" in text

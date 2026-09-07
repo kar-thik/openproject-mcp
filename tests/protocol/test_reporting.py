@@ -127,9 +127,10 @@ async def test_report_data_aggregates_the_whole_window(
 
     # 'Shipped' and 'Rejected' are closed because the API says isClosed, not
     # because their names contain a keyword — they contain none.
-    assert payload["closed"]["total"] == 2
+    assert payload["closed_updated"]["total"] == 2
     closed_rows = [
-        (row["id"], row["status"]["name"], row["is_closed"]) for row in payload["closed"]["items"]
+        (row["id"], row["status"]["name"], row["is_closed"])
+        for row in payload["closed_updated"]["items"]
     ]
     assert closed_rows == [(1236, "Shipped", True), (1237, "Rejected", True)]
 
@@ -326,7 +327,7 @@ async def test_an_unreadable_roster_degrades_to_a_note(
     assert payload["roster"] == []
     assert any("membership roster unavailable" in note for note in payload["notes"])
     # Everything else still came back.
-    assert payload["closed"]["total"] == 2
+    assert payload["closed_updated"]["total"] == 2
     assert payload["time"]["total_hours"] == 7.5
 
 
@@ -349,7 +350,7 @@ async def test_unreadable_time_entries_degrade_to_a_note(
     note = next(note for note in payload["notes"] if "time entries unavailable" in note)
     assert "no permission" in note
     # Everything else still came back.
-    assert payload["closed"]["total"] == 2
+    assert payload["closed_updated"]["total"] == 2
     assert payload["roster"][0]["principal"] == {"id": 12, "name": "Grace Hopper"}
 
 

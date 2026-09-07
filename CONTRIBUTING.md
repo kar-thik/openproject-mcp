@@ -30,7 +30,11 @@ uv run pyright                # strict mode
   may require the network or a live OpenProject instance. Tests that do need a
   live instance go behind the `integration` marker — CI excludes them with
   `-m "not integration"`; run them explicitly with
-  `uv run pytest -m integration`.
+  `uv run python scripts/live_smoke.py --image openproject/openproject:17.8.0`.
+  Docker must be running. The harness owns the instance and deletes its container/volumes
+  even when assertions fail; it never reads your real instance credentials. The Compatibility
+  workflow exercises 14.6.0, 15.5.0, 16.6.0 and 17.8.0 independently. Default pytest runs skip
+  integration tests; the harness explicitly opts in with `--live-openproject`.
 - **pyright is strict over the whole package.** New code must type-check clean
   under `typeCheckingMode = "strict"`.
 - **Doc-sync.** The README tool table, the SPEC §6 catalog, and the registered

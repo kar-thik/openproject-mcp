@@ -132,7 +132,9 @@ BLOCK_RELATION_TYPES: frozenset[str] = frozenset({"blocks", "blocked"})
 
 STATUS_FLAG_NOTE = (
     "open/closed bucketing uses each status's isClosed flag from GET /statuses, not status "
-    "names; a status this instance renamed or translated is still bucketed correctly"
+    "names; a status this instance renamed or translated is still bucketed correctly. "
+    "closed_updated means currently closed and updated in the window, not completed in it. "
+    "Completion dates and historical sprint health are not established by these reads."
 )
 
 
@@ -244,9 +246,9 @@ class ProjectReportData(BaseModel):
         description="Work packages changed inside the window (updatedAt range filter). Includes "
         "the ones that were closed."
     )
-    closed: TruncatedList[ReportWorkPackage] = Field(
-        description="Work packages in a closed status that changed inside the window — the "
-        "'done this week' set."
+    closed_updated: TruncatedList[ReportWorkPackage] = Field(
+        description="Work packages currently closed and updated inside the window. "
+        "This is not a completion-date filter; old closed tickets can be edited later."
     )
     open_total: int = Field(
         default=0, description="Open work packages in the project right now, server-reported."
@@ -644,7 +646,7 @@ async def collect_report_data(
         wp_path,
         [status_filter("closed"), date_range_filter("updatedAt", after=start, before=end)],
         cap=WORK_PACKAGE_CAP,
-        label="work packages closed in the window",
+        label="currently closed work packages updated in the window",
         sort_by=[["updated_at", "desc"]],
     )
 
@@ -695,7 +697,7 @@ async def collect_report_data(
                 f"updated_since='{start}')"
             ),
         ),
-        closed=_bucket(
+        closed_updated=_bucket(
             closed,
             index,
             more_via=(
@@ -1045,21 +1047,22 @@ def register(mcp: FastMCP) -> None:
 
         Use it for weekly reports, sprint reviews, standups and "what happened in June" —
         one call replaces a dozen filtered listings. It returns, for the window: `created`,
-        `updated` and `closed` work-package buckets (each `{items, total, truncated,
+        `updated` and `closed_updated` work-package buckets (each `{items, total, truncated,
         more_via}` with compact rows), `open_total` plus `open_by_status` counts computed
         server-side over the whole open set, a `time` summary (total hours with per-activity
         and per-user breakdowns) and the project's membership `roster`.
 
         Done/in-progress classification is safe here: every row carries `is_closed`, read
         from the status's own `isClosed` flag on this instance, so it works on translated
-        and renamed workflows where matching status names would not. `closed` is exactly
-        "in a closed status and touched inside the window" — the done-this-week set.
+        and renamed workflows where matching status names would not. `closed_updated` means
+        "currently closed and updated inside the window", not completed in that window.
+        Completion dates are not established by these reads.
 
         Pitfalls. Counts and row lists are different things: `total` is always the server's
         number, while `items` stops at an internal cap and then sets `truncated` and adds a
         `notes` entry — quote the count, not the row count. `open_by_status` covers the open
         set as it is *now*, not as it was during the window. `updated` includes the rows in
-        `closed`. Time visibility is permission-bound, so a `total_hours` of 0 can mean "not
+        `closed_updated`. Time visibility is permission-bound, so a `total_hours` of 0 can mean "not
         allowed to see" rather than "nobody logged time" — an unreadable time ledger and an
         unreadable `roster` each degrade into a `notes` entry instead of failing the call.
         Read `notes` before calling any number complete.
