@@ -44,10 +44,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import quote
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from openproject_mcp.client import hal
 from openproject_mcp.client.errors import InputValidationError, NotFoundError, OpenProjectError
@@ -621,6 +622,211 @@ def _custom_actions(payload: Mapping[str, Any]) -> TruncatedList[CustomActionRow
 
 
 # --- registration ---------------------------------------------------------
+
+
+class WorkPackageChanges(BaseModel):
+    """The fields shared by individual and batch updates. Omitted fields are untouched."""
+
+    model_config = ConfigDict(extra="forbid")
+    subject: str | None = None
+    description: str | None = KEEP
+    type: str | None = None
+    status: str | None = None
+    priority: str | None = None
+    assignee: str | None = Field(default=KEEP, description="Numeric user id; null unassigns.")
+    responsible: str | None = KEEP
+    version: str | None = Field(
+        default=KEEP, description="Legacy single-version alias; null clears."
+    )
+    target_versions: list[Annotated[int, Field(gt=0, strict=True)]] | None = Field(
+        default=None, description="Target version ids; [] clears. Do not combine with version."
+    )
+    parent_id: int | str | None = KEEP
+    start_date: str | None = KEEP
+    due_date: str | None = KEEP
+    date: str | None = KEEP
+    percentage_done: int | None = Field(default=None, ge=0, le=100)
+    estimated_hours: float | None = Field(default=None, ge=0)
+    custom_fields: dict[str, Any] | None = None
+
+
+@dataclass
+class PreparedWorkPackageUpdate:
+    id: int
+    lock_version: int
+    payload: dict[str, Any]
+    current: dict[str, Any]
+    form: dict[str, Any]
+
+
+async def prepare_work_package_update(
+    ctx: ToolContext,
+    id: int,
+    changes: WorkPackageChanges,
+    lock_version: int | None = None,
+    *,
+    include_current: bool = False,
+) -> PreparedWorkPackageUpdate:
+    """Resolve fields and validate the form without committing an update."""
+    subject = changes.subject
+    description = changes.description
+    type = changes.type
+    status = changes.status
+    priority = changes.priority
+    assignee = changes.assignee
+    responsible = changes.responsible
+    version = changes.version
+    target_versions = changes.target_versions
+    parent_id = changes.parent_id
+    start_date = changes.start_date
+    due_date = changes.due_date
+    date = changes.date
+    percentage_done = changes.percentage_done
+    estimated_hours = changes.estimated_hours
+    custom_fields = changes.custom_fields
+    path = f"work_packages/{id}"
+
+    attributes: dict[str, Any] = {}
+    links: dict[str, Any] = {}
+
+    if subject is not None:
+        if not subject.strip():
+            raise InputValidationError(
+                "subject must not be blank.",
+                hint="Omit 'subject' to leave the title unchanged.",
+            )
+        attributes["subject"] = subject
+    if not _is_keep(description):
+        attributes["description"] = formattable_field(description or "")
+    for wire_name, value in (
+        ("startDate", start_date),
+        ("dueDate", due_date),
+        ("date", date),
+    ):
+        if not _is_keep(value):
+            attributes[wire_name] = None if _is_clear(value) else value
+    if percentage_done is not None:
+        attributes["percentageDone"] = percentage_done
+    if estimated_hours is not None:
+        attributes["estimatedTime"] = _duration_from_hours(estimated_hours)
+
+    if type is not None:
+        links["type"] = link("types", await _resolve_named(ctx, "type", type))
+    if status is not None:
+        links["status"] = link("statuses", await _resolve_named(ctx, "status", status))
+    if priority is not None:
+        links["priority"] = link("priorities", await _resolve_named(ctx, "priority", priority))
+    if not _is_keep(assignee):
+        links["assignee"] = link(
+            "users",
+            None
+            if _is_clear(assignee)
+            else _numeric_id(assignee, field="assignee", produced_by="search_principals"),
+        )
+    if not _is_keep(responsible):
+        links["responsible"] = link(
+            "users",
+            None
+            if _is_clear(responsible)
+            else _numeric_id(responsible, field="responsible", produced_by="search_principals"),
+        )
+    if not _is_keep(parent_id):
+        links["parent"] = link(
+            "work_packages",
+            None
+            if _is_clear(parent_id)
+            else _numeric_id(parent_id, field="parent_id", produced_by="list_work_packages"),
+        )
+
+    if (
+        not attributes
+        and not links
+        and not custom_fields
+        and _is_keep(version)
+        and target_versions is None
+    ):
+        raise InputValidationError(
+            "update_work_package was called with nothing to change.",
+            hint="Pass at least one writable field, e.g. subject, status or assignee.",
+        )
+
+    # One read serves both the custom-field schema link and the lock version, so the two can
+    # never come from different snapshots of the work package.
+    versions_requested = not _is_keep(version) or target_versions is not None
+    current = (
+        await ctx.client.get_json(path)
+        if include_current or custom_fields or lock_version is None or versions_requested
+        else None
+    )
+    if include_current and lock_version is not None:
+        fresh_version = extract_lock_version(current or {})
+        if fresh_version != lock_version:
+            from openproject_mcp.client.errors import ConflictError
+
+            raise ConflictError(
+                "Work package changed since preview.",
+                http_status=409,
+                lock_version=fresh_version,
+                hint="Preview this item again and review the new changes before applying.",
+            )
+    if versions_requested:
+        version_schema, version_note = await _schema_for(ctx, current or {})
+        if version_schema is None:
+            raise InputValidationError(
+                f"Cannot write target versions: {version_note}.",
+                hint="Read get_work_package_schema before retrying.",
+            )
+        links.update(_version_links(version_schema, version, target_versions))
+
+    if custom_fields:
+        cf_schema, cf_note = await _schema_for(ctx, current or {})
+        if cf_schema is None:
+            raise InputValidationError(
+                f"Cannot write custom fields: {cf_note}.",
+                hint=(
+                    "Read the schema with get_work_package_schema and pass wire keys, or drop "
+                    "custom_fields from the call."
+                ),
+            )
+        cf_attributes, cf_links = custom_field_payload(custom_fields, cf_schema)
+        attributes.update(cf_attributes)
+        links.update(cf_links)
+
+    supplied_version = lock_version
+    if supplied_version is None and current is not None:
+        supplied_version = extract_lock_version(current)
+    resolved_version, _ = await resolve_lock_version(ctx.client, path, supplied=supplied_version)
+    payload = build_write_payload(attributes, links)
+
+    # Form first (SPEC §4.5): the form knows the workflow, so an invalid status transition
+    # comes back with the reachable statuses instead of an opaque 422.
+    form = await ctx.client.post_json(
+        f"{path}/form",
+        json=build_write_payload(attributes, links, lock_version=resolved_version),
+    )
+    _raise_form_validation_errors(form)
+
+    return PreparedWorkPackageUpdate(id, resolved_version, payload, current or {}, form)
+
+
+async def apply_work_package_update(
+    ctx: ToolContext,
+    prepared: PreparedWorkPackageUpdate,
+    *,
+    notify: bool = True,
+) -> WorkPackageFull:
+    """Commit only the requested fields, using the validated snapshot's lock."""
+    updated = await patch_with_lock(
+        ctx.client,
+        f"work_packages/{prepared.id}",
+        prepared.payload,
+        lock_version=prepared.lock_version,
+        params={"notify": "true" if notify else "false"},
+    )
+    schema, schema_note = await _schema_for(ctx, updated)
+    return WorkPackageFull(
+        **_detail_fields(updated, schema, [schema_note] if schema_note else None)
+    )
 
 
 def register(mcp: FastMCP) -> None:
@@ -1510,132 +1716,26 @@ def register(mcp: FastMCP) -> None:
         version values come from `get_project_metadata`.
         """
         ctx = _shared.get_tool_context()
-        path = f"work_packages/{id}"
-
-        attributes: dict[str, Any] = {}
-        links: dict[str, Any] = {}
-
-        if subject is not None:
-            if not subject.strip():
-                raise InputValidationError(
-                    "subject must not be blank.",
-                    hint="Omit 'subject' to leave the title unchanged.",
-                )
-            attributes["subject"] = subject
-        if not _is_keep(description):
-            attributes["description"] = formattable_field(description or "")
-        for wire_name, value in (
-            ("startDate", start_date),
-            ("dueDate", due_date),
-            ("date", date),
-        ):
-            if not _is_keep(value):
-                attributes[wire_name] = None if _is_clear(value) else value
-        if percentage_done is not None:
-            attributes["percentageDone"] = percentage_done
-        if estimated_hours is not None:
-            attributes["estimatedTime"] = _duration_from_hours(estimated_hours)
-
-        if type is not None:
-            links["type"] = link("types", await _resolve_named(ctx, "type", type))
-        if status is not None:
-            links["status"] = link("statuses", await _resolve_named(ctx, "status", status))
-        if priority is not None:
-            links["priority"] = link("priorities", await _resolve_named(ctx, "priority", priority))
-        if not _is_keep(assignee):
-            links["assignee"] = link(
-                "users",
-                None
-                if _is_clear(assignee)
-                else _numeric_id(assignee, field="assignee", produced_by="search_principals"),
-            )
-        if not _is_keep(responsible):
-            links["responsible"] = link(
-                "users",
-                None
-                if _is_clear(responsible)
-                else _numeric_id(responsible, field="responsible", produced_by="search_principals"),
-            )
-        if not _is_keep(parent_id):
-            links["parent"] = link(
-                "work_packages",
-                None
-                if _is_clear(parent_id)
-                else _numeric_id(parent_id, field="parent_id", produced_by="list_work_packages"),
-            )
-
-        if (
-            not attributes
-            and not links
-            and not custom_fields
-            and _is_keep(version)
-            and target_versions is None
-        ):
-            raise InputValidationError(
-                "update_work_package was called with nothing to change.",
-                hint="Pass at least one writable field, e.g. subject, status or assignee.",
-            )
-
-        # One read serves both the custom-field schema link and the lock version, so the two can
-        # never come from different snapshots of the work package.
-        versions_requested = not _is_keep(version) or target_versions is not None
-        current = (
-            await ctx.client.get_json(path)
-            if custom_fields or lock_version is None or versions_requested
-            else None
+        changes = WorkPackageChanges(
+            subject=subject,
+            description=description,
+            type=type,
+            status=status,
+            priority=priority,
+            assignee=assignee,
+            responsible=responsible,
+            version=version,
+            target_versions=target_versions,
+            parent_id=parent_id,
+            start_date=start_date,
+            due_date=due_date,
+            date=date,
+            percentage_done=percentage_done,
+            estimated_hours=estimated_hours,
+            custom_fields=custom_fields,
         )
-        if versions_requested:
-            version_schema, version_note = await _schema_for(ctx, current or {})
-            if version_schema is None:
-                raise InputValidationError(
-                    f"Cannot write target versions: {version_note}.",
-                    hint="Read get_work_package_schema before retrying.",
-                )
-            links.update(_version_links(version_schema, version, target_versions))
-
-        if custom_fields:
-            cf_schema, cf_note = await _schema_for(ctx, current or {})
-            if cf_schema is None:
-                raise InputValidationError(
-                    f"Cannot write custom fields: {cf_note}.",
-                    hint=(
-                        "Read the schema with get_work_package_schema and pass wire keys, or drop "
-                        "custom_fields from the call."
-                    ),
-                )
-            cf_attributes, cf_links = custom_field_payload(custom_fields, cf_schema)
-            attributes.update(cf_attributes)
-            links.update(cf_links)
-
-        supplied_version = lock_version
-        if supplied_version is None and current is not None:
-            supplied_version = extract_lock_version(current)
-        resolved_version, _ = await resolve_lock_version(
-            ctx.client, path, supplied=supplied_version
-        )
-        payload = build_write_payload(attributes, links)
-
-        # Form first (SPEC §4.5): the form knows the workflow, so an invalid status transition
-        # comes back with the reachable statuses instead of an opaque 422.
-        form = await ctx.client.post_json(
-            f"{path}/form",
-            json=build_write_payload(attributes, links, lock_version=resolved_version),
-        )
-        _raise_form_validation_errors(form)
-
-        # The PATCH deliberately sends only what the caller asked for, not the form's echoed
-        # payload — echoing that back would rewrite fields somebody else just changed.
-        updated = await patch_with_lock(
-            ctx.client,
-            path,
-            payload,
-            lock_version=resolved_version,
-            params={"notify": "true" if notify else "false"},
-        )
-        schema, schema_note = await _schema_for(ctx, updated)
-        return WorkPackageFull(
-            **_detail_fields(updated, schema, [schema_note] if schema_note else None)
-        )
+        prepared = await prepare_work_package_update(ctx, id, changes, lock_version)
+        return await apply_work_package_update(ctx, prepared, notify=notify)
 
     @mcp.tool(
         name="delete_work_package",

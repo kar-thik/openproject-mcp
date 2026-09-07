@@ -240,7 +240,7 @@ The probe runs lazily on first need, is cached 1 h, and its result is included i
 
 Legend: 🔍 read · ✏️ write · 🗑 destructive (confirm + `requiresUserInteraction`) · ⚙️ admin-gated · Ⓜ module/version-dependent (probed, G5). Ph → §15.
 
-**Count: 87 tools — Ph1: 16 · Ph2: 33 · Ph3: 38.** (Vs the old server's 62: strictly more *capability*; the count is honest, not the sales pitch. Deployments trim via tag filters, §3.2.) A CI check asserts this table always equals the registered tool set (§13.5).
+**Count: 88 tools — Ph1: 17 · Ph2: 33 · Ph3: 38.** (Vs the old server's 62: strictly more *capability*; the count is honest, not the sales pitch. Deployments trim via tag filters, §3.2.) A CI check asserts this table always equals the registered tool set (§13.5).
 
 ### 6.1 Instance & identity (Ph1: 1 · Ph2: 1)
 
@@ -263,6 +263,8 @@ Legend: 🔍 read · ✏️ write · 🗑 destructive (confirm + `requiresUserIn
 | ✏️ `create_work_package` | `project, type, subject, description?, …, custom_fields?, attachment_paths?` | `POST /work_packages/form` → `POST /work_packages` | 1 |
 | ✏️ `update_work_package` | `id, lock_version?, …any writable field…, custom_fields?` | form → `PATCH /work_packages/{id}` | 1 |
 | 🗑 `delete_work_package` | `id, confirm` | `DELETE /work_packages/{id}` | 1 |
+
+| ✏️ `bulk_update_work_packages` | `updates[{id, changes, lock_version?}], dry_run=true, notify=true` | Per-item form → PATCH, maximum 50; preview first | 1 |
 
 **Status scoping — explicit and uniform.** OpenProject's server default (open-only when no filter is sent) is never relied on: both tools always send an explicit status filter derived from `status_scope`. `search_work_packages` defaults to `'all'` (finding closed items is the point of search); `list_work_packages` defaults to `'open'`. Each default is stated in the tool description. `status_ids` overrides `status_scope` (documented; no silent fight).
 

@@ -23,6 +23,10 @@ PATCH releases are fixes and strictly additive changes only.
 
 ### Added
 
+- `bulk_update_work_packages`: preview up to 50 updates with before/after diffs,
+  then apply with reviewed lock versions. Whole-batch preflight and per-item
+  execution results expose conflicts, partial failures and uncertain outcomes.
+
 - Target-version lists in work-package details and create/update calls, with
   schema-driven compatibility for OpenProject 17.8 and older instances.
   The existing `version` argument remains a single-assignment alias.

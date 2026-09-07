@@ -8,7 +8,7 @@
 
 An MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) server for the
 [OpenProject](https://www.openproject.org/) API v3. It gives Claude and any other MCP client
-87 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
+88 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
 saved queries, notifications, time tracking, versions, people and memberships, meetings, news,
 documents, budgets and reporting — plus 4 report/workflow prompts and 3 resource templates.
 Built on FastMCP 3.x and httpx (HTTP/2).
@@ -305,7 +305,7 @@ explicit `confirm=true` argument before it acts.
 
 ## Tools
 
-87 tools: 39 read, 45 write and 3 admin-gated writes. The admin tools stay hidden unless
+88 tools: 39 read, 46 write and 3 admin-gated writes. The admin tools stay hidden unless
 `OPENPROJECT_MCP_ADMIN_TOOLS=1`; the 13 destructive tools additionally require `confirm=true`
 on every call. Each section heading names the group tag accepted by
 `OPENPROJECT_MCP_DISABLE`.
@@ -319,7 +319,15 @@ on every call. Each section heading names the group tag accepted by
 | `get_work_package` | Read | Read one work package in full: description, dates, custom fields, parent and progress. |
 | `create_work_package` | Write | Create a work package, validated through OpenProject's own form endpoint first. |
 | `update_work_package` | Write | Change any writable field of a work package, with optimistic locking. |
+| `bulk_update_work_packages` | Write | Preview or apply up to 50 updates with per-item diffs, validation and conflict results. |
 | `delete_work_package` | Write (destructive) | Permanently delete a work package and everything attached to it. |
+
+Batch workflow: call `bulk_update_work_packages(updates=[{"id": 4821,
+"changes": {"target_versions": [3, 4]}}])` to preview. Review the returned changes,
+then repeat with `dry_run=false` and each item's returned `lock_version` included
+in `updates`. Any preflight error prevents the whole batch from writing. A later
+conflict can produce partial success; inspect every item and never replay successful
+updates. `unknown` means the write may have committed before the response was lost.
 
 ### Comments, relations, watchers, reminders (`wp_collaboration`)
 

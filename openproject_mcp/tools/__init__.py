@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from openproject_mcp.tools import (
     attachments,
+    bulk_updates,
     git_activity,
     meetings_recurring,
     metadata,
@@ -40,6 +41,7 @@ __all__ = ["TOOL_MODULES", "register_all"]
 #: Registration order. Only affects listing order, not behavior.
 TOOL_MODULES: tuple[ModuleType, ...] = (
     work_packages,
+    bulk_updates,
     wp_collaboration,
     attachments,
     git_activity,

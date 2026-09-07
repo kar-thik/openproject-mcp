@@ -97,6 +97,7 @@ READ_TOOLS = {
     "get_project_phase",
 }
 WRITE_TOOLS = {
+    "bulk_update_work_packages",
     # Phase 1
     "create_work_package",
     "update_work_package",
