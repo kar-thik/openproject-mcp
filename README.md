@@ -82,9 +82,9 @@ You         /weekly_report project=website-relaunch
             ...
             ## B. EXECUTIVE SUMMARY
 
-            **Progress against the sprint goal:** At risk
+            **Progress against the sprint goal:** Not assessed — sprint goal and completion dates are not available
 
-            **Highlighted deliverables (done):**
+            **Currently closed work updated in the window:**
             1. #4802 - Ship the new pricing page
             2. #4795 - Halve the hero image payload
             ...
@@ -265,7 +265,7 @@ held in memory as Pydantic `SecretStr` values and are never written to logs; the
 Three settings shrink the tool surface at startup (the tool list is fixed for the lifetime of
 the process):
 
-- `OPENPROJECT_MCP_READ_ONLY=1` serves only the 37 read tools.
+- `OPENPROJECT_MCP_READ_ONLY=1` serves only the 39 read tools.
 - `OPENPROJECT_MCP_ADMIN_TOOLS=1` reveals the three membership write tools
   (`create_membership`, `update_membership`, `delete_membership`); they are hidden by default.
 - `OPENPROJECT_MCP_DISABLE` drops whole groups to cut prompt cost, e.g.
@@ -275,7 +275,7 @@ the process):
   `documents`, `budgets`, `news`, `reporting` — the same tags that head each section of the
   tool catalog below.
 
-Independent of all three, every destructive tool (the eight permanent deletes) requires an
+Independent of all three, every destructive tool (the 13 permanent deletes) requires an
 explicit `confirm=true` argument before it acts.
 
 ## Transports
@@ -489,7 +489,7 @@ account with the Manage members permission).
 
 Four prompt templates render live OpenProject data into ready-to-use briefings:
 
-- **weekly_report** — a weekly status report for one project: done / in progress / planned,
+- **weekly_report** — a weekly status report for one project: currently closed and updated / in progress / planned,
   hours and impediments.
 - **daily_standup** — today's standup for one project: yesterday's movement, what is due
   today, and what is blocked.

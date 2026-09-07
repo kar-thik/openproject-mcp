@@ -444,7 +444,7 @@ Users and groups are **read-only** (`search_principals` covers group-id discover
 |---|---|---|
 | 🔍 `get_project_report_data` | `project_id, from_date, to_date` | 3 |
 
-Structured JSON aggregation powering the report prompts: WPs created/updated/closed in window (correct `createdAt`/`updatedAt` `<>d` + `status c` filters — no 30-day fudge), open-by-status counts (`groupBy=status` server-side), time entries in window with per-activity totals, membership roster. Internal caps: 3,000 WPs and 5,000 time entries per window — cap-hits reported in-band (G1). Status bucketing uses each status's **`isClosed` flag from the API**, never name keywords (the old EN-keyword classifier broke on every localized instance). Rendering (weekly report, standup) is done by **prompts** (§10), parameterized `locale='en'|'vi'|…` — preserving the valued 8-section Agile template without hardcoding Vietnamese into code.
+Structured JSON aggregation powering the report prompts: WPs created/updated in window and currently closed WPs updated in window (`closed_updated`; no inferred completion date; correct `createdAt`/`updatedAt` `<>d` + `status c` filters — no 30-day fudge), open-by-status counts (`groupBy=status` server-side), time entries in window with per-activity totals, membership roster. Internal caps: 3,000 WPs and 5,000 time entries per window — cap-hits reported in-band (G1). Status bucketing uses each status's **`isClosed` flag from the API**, never name keywords (the old EN-keyword classifier broke on every localized instance). Rendering (weekly report, standup) is done by **prompts** (§10), parameterized `locale='en'|'vi'|…` — preserving the valued 8-section Agile template without hardcoding Vietnamese into code.
 
 ---
 
@@ -703,3 +703,7 @@ Each item is a deliberate exclusion, not an omission:
 ### v0.3 target-version compatibility
 
 Work-package details carry `target_versions: Ref[]`; legacy `version` is the sole assignment or null. Create/update accept `target_versions` (omitted/null leaves unchanged, `[]` clears), mutually exclusive with the legacy `version` argument. Schema presence of `targetVersions` selects the new wire dialect; legacy schemas accept at most one assignment. Form defaults must never cause both wire fields to be committed together.
+
+### v0.3 report semantics
+
+The former `closed` report bucket is renamed `closed_updated`: currently closed work packages updated in the requested window. Neither the tool nor weekly/standup prompts claim these are completions in the window. Notes explicitly state that completion dates are unknown. Sprint health is not assessed from ticket counts; the report marks it as not assessed.

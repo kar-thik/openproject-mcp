@@ -10,6 +10,17 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+### Changed
+
+- Reporting renames `closed` to `closed_updated`: currently closed work updated
+  in the window, not verified completions. Weekly and standup wording now
+  reflects that distinction. Sprint health is marked unassessed instead of
+  inferred from ticket counts.
+
+### Fixed
+
+- Correct stale read-tool and destructive-tool counts in the README.
+
 ### Added
 
 - Target-version lists in work-package details and create/update calls, with
