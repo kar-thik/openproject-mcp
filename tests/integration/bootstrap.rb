@@ -22,10 +22,10 @@ versions = ["Smoke release A", "Smoke release B"].map do |name|
 end
 outsider = User.create!(login: "mcp-outsider", firstname: "Smoke", lastname: "Outsider",
                         mail: "mcp-outsider@example.invalid", password: SecureRandom.hex(24) + "aA1!", status: 1)
-# New versions hash stored tokens; older versions expose the fresh token through value.
+# Read freshly generated plaintext; the database value is hashed on supported versions.
 def api_token_for(user)
   token = Token::API.create!(user: user)
-  token.respond_to?(:display_value) ? token.display_value : token.value
+  token.respond_to?(:plain_value) ? token.plain_value : token.value
 end
 admin_token = api_token_for(admin)
 outsider_token = api_token_for(outsider)
