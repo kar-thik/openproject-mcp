@@ -10,16 +10,7 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
-### Changed
-
-- Reporting renames `closed` to `closed_updated`: currently closed work updated
-  in the window, not verified completions. Weekly and standup wording now
-  reflects that distinction. Sprint health is marked unassessed instead of
-  inferred from ticket counts.
-
-### Fixed
-
-- Correct stale read-tool and destructive-tool counts in the README.
+## [0.3.0] - 2026-09-07
 
 ### Added
 
@@ -34,6 +25,17 @@ PATCH releases are fixes and strictly additive changes only.
 - Target-version lists in work-package details and create/update calls, with
   schema-driven compatibility for OpenProject 17.8 and older instances.
   The existing `version` argument remains a single-assignment alias.
+
+### Changed
+
+- Reporting renames `closed` to `closed_updated`: currently closed work updated
+  in the window, not verified completions. Weekly and standup wording now
+  reflects that distinction. Sprint health is marked unassessed instead of
+  inferred from ticket counts.
+
+### Fixed
+
+- Correct stale read-tool and destructive-tool counts in the README.
 
 ## [0.2.0] - 2026-08-11
 
