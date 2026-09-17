@@ -1460,6 +1460,12 @@ def register(mcp: FastMCP) -> None:
             float | None,
             Field(ge=0, description="Estimate in hours as a decimal (7.5 = seven and a half)."),
         ] = None,
+        story_points: Annotated[
+            int | None, Field(ge=0, description="Story points as a non-negative integer.")
+        ] = None,
+        remaining_hours: Annotated[
+            float | None, Field(ge=0, description="Remaining work in hours as a decimal.")
+        ] = None,
         custom_fields: Annotated[
             dict[str, Any] | None,
             Field(
@@ -1531,6 +1537,10 @@ def register(mcp: FastMCP) -> None:
             attributes["date"] = date
         if estimated_hours is not None:
             attributes["estimatedTime"] = _duration_from_hours(estimated_hours)
+        if story_points is not None:
+            attributes["storyPoints"] = story_points
+        if remaining_hours is not None:
+            attributes["remainingTime"] = _duration_from_hours(remaining_hours)
 
         links: dict[str, Any] = {
             "project": link("projects", project_id),

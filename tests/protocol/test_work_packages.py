@@ -477,6 +477,8 @@ async def test_create_resolves_names_claims_attachments_and_keeps_form_defaults(
                 "priority": "High",
                 "assignee": "12",
                 "estimated_hours": 7.5,
+                "story_points": 3,
+                "remaining_hours": 2.5,
                 "custom_fields": {"Severity": "High"},
                 "attachment_paths": ["/tmp/spec.pdf"],
             },
@@ -496,6 +498,8 @@ async def test_create_resolves_names_claims_attachments_and_keeps_form_defaults(
     assert form_body["_links"]["project"] == {"href": "/api/v3/projects/5"}
     assert form_body["_links"]["customField12"] == {"href": "/api/v3/custom_options/4"}
     assert form_body["estimatedTime"] == "PT7H30M"
+    assert form_body["storyPoints"] == 3
+    assert form_body["remainingTime"] == "PT2H30M"
 
     commit_body = _body(commit.calls[0].request)
     assert commit_body["subject"] == "Write the tools layer"
