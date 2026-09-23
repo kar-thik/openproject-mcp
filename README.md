@@ -537,6 +537,9 @@ version-dependent surfaces:
   back to the `w{id}` spelling introduced in 17.2).
 - **Meetings time filter**: OpenProject 17.6 changed the wire dialect; `list_meetings`
   discovers which spelling the instance accepts and caches it.
+- **Story points** need the Backlogs module and a type Backlogs treats as a story. 17.x
+  refuses `story_points` otherwise; 14.x accepts the write and silently drops the value, so
+  the result carries a note saying it was not saved (bulk previews warn before writing).
 
 Features that depend on optional instance modules (meetings, news, documents, budgets, wiki,
 backlogs, GitHub/GitLab integration, external storages) degrade honestly when the module is
