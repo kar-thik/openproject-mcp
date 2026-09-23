@@ -293,6 +293,8 @@ class WorkPackageDetail(WorkPackageRow):
     )
     estimated_hours: float | None = Field(default=None, description="Estimate in hours.")
     spent_hours: float | None = Field(default=None, description="Logged time in hours.")
+    story_points: int | None = Field(default=None, description="Story points.")
+    remaining_hours: float | None = Field(default=None, description="Remaining work in hours.")
     created_at: str | None = Field(default=None, description="ISO 8601 UTC timestamp.")
     lock_version: int | None = Field(
         default=None, description="Optimistic-locking version; pass to update_work_package."

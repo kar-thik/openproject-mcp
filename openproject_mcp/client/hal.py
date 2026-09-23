@@ -340,3 +340,10 @@ def duration_hours(value: Any) -> float | None:
         + float(parts["seconds"] or 0) / 3600
     )
     return -total if parts["sign"] else total
+
+
+def integer(value: Any) -> int | None:
+    """A strictly-integer attribute such as ``storyPoints``; bools and non-integers → ``None``."""
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None

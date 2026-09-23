@@ -389,6 +389,8 @@ def _detail_fields(
         "project_phase": Ref.from_hal(payload, "projectPhase"),
         "estimated_hours": hal.duration_hours(payload.get("estimatedTime")),
         "spent_hours": hal.duration_hours(payload.get("spentTime")),
+        "story_points": hal.integer(payload.get("storyPoints")),
+        "remaining_hours": hal.duration_hours(payload.get("remainingTime")),
         "created_at": payload.get("createdAt"),
         "lock_version": payload.get("lockVersion"),
         "custom_fields": _custom_fields(payload, schema),
@@ -647,6 +649,8 @@ class WorkPackageChanges(BaseModel):
     date: str | None = KEEP
     percentage_done: int | None = Field(default=None, ge=0, le=100)
     estimated_hours: float | None = Field(default=None, ge=0)
+    story_points: int | None = Field(default=None, ge=0)
+    remaining_hours: float | None = Field(default=None, ge=0)
     custom_fields: dict[str, Any] | None = None
 
 
@@ -683,6 +687,8 @@ async def prepare_work_package_update(
     date = changes.date
     percentage_done = changes.percentage_done
     estimated_hours = changes.estimated_hours
+    story_points = changes.story_points
+    remaining_hours = changes.remaining_hours
     custom_fields = changes.custom_fields
     path = f"work_packages/{id}"
 
@@ -709,6 +715,10 @@ async def prepare_work_package_update(
         attributes["percentageDone"] = percentage_done
     if estimated_hours is not None:
         attributes["estimatedTime"] = _duration_from_hours(estimated_hours)
+    if story_points is not None:
+        attributes["storyPoints"] = story_points
+    if remaining_hours is not None:
+        attributes["remainingTime"] = _duration_from_hours(remaining_hours)
 
     if type is not None:
         links["type"] = link("types", await _resolve_named(ctx, "type", type))
@@ -1443,6 +1453,12 @@ def register(mcp: FastMCP) -> None:
             float | None,
             Field(ge=0, description="Estimate in hours as a decimal (7.5 = seven and a half)."),
         ] = None,
+        story_points: Annotated[
+            int | None, Field(ge=0, description="Story points as a non-negative integer.")
+        ] = None,
+        remaining_hours: Annotated[
+            float | None, Field(ge=0, description="Remaining work in hours as a decimal.")
+        ] = None,
         custom_fields: Annotated[
             dict[str, Any] | None,
             Field(
@@ -1514,6 +1530,10 @@ def register(mcp: FastMCP) -> None:
             attributes["date"] = date
         if estimated_hours is not None:
             attributes["estimatedTime"] = _duration_from_hours(estimated_hours)
+        if story_points is not None:
+            attributes["storyPoints"] = story_points
+        if remaining_hours is not None:
+            attributes["remainingTime"] = _duration_from_hours(remaining_hours)
 
         links: dict[str, Any] = {
             "project": link("projects", project_id),
@@ -1682,6 +1702,12 @@ def register(mcp: FastMCP) -> None:
         estimated_hours: Annotated[
             float | None, Field(ge=0, description="Estimate in hours as a decimal.")
         ] = None,
+        story_points: Annotated[
+            int | None, Field(ge=0, description="Story points as a non-negative integer.")
+        ] = None,
+        remaining_hours: Annotated[
+            float | None, Field(ge=0, description="Remaining work in hours as a decimal.")
+        ] = None,
         custom_fields: Annotated[
             dict[str, Any] | None,
             Field(
@@ -1732,6 +1758,8 @@ def register(mcp: FastMCP) -> None:
             date=date,
             percentage_done=percentage_done,
             estimated_hours=estimated_hours,
+            story_points=story_points,
+            remaining_hours=remaining_hours,
             custom_fields=custom_fields,
         )
         prepared = await prepare_work_package_update(ctx, id, changes, lock_version)
