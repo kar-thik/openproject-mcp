@@ -10,6 +10,15 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+### Added
+
+- `story_points` and `remaining_hours` on `create_work_package`,
+  `update_work_package` and `bulk_update_work_packages`, surfaced by
+  `get_work_package` and the `openproject://work_package/{id}` resource.
+  Omitted means untouched; zero is written as zero.
+  ([#19](https://github.com/kar-thik/openproject-mcp/pull/19), thanks
+  [@sinasadeghi83](https://github.com/sinasadeghi83))
+
 ## [0.3.0] - 2026-09-07
 
 ### Added
