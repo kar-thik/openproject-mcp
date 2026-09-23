@@ -123,6 +123,8 @@ def _work_package_detail(payload: dict[str, Any]) -> WorkPackageDetail:
         parent=Ref.from_hal(payload, "parent"),
         estimated_hours=hal.duration_hours(payload.get("estimatedTime")),
         spent_hours=hal.duration_hours(payload.get("spentTime")),
+        story_points=hal.integer(payload.get("storyPoints")),
+        remaining_hours=hal.duration_hours(payload.get("remainingTime")),
         created_at=payload.get("createdAt"),
         lock_version=payload.get("lockVersion"),
         custom_fields=[],

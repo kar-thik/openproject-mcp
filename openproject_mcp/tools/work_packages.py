@@ -370,13 +370,6 @@ def _version_links(
     return {"version": link("versions", ids[0] if ids else None)}
 
 
-def _story_points(value: Any) -> int | None:
-    """Wire storyPoints → int, dropping bools and non-integers rather than guessing."""
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
-
-
 def _detail_fields(
     payload: Mapping[str, Any],
     schema: Mapping[str, Any] | None,
@@ -396,7 +389,7 @@ def _detail_fields(
         "project_phase": Ref.from_hal(payload, "projectPhase"),
         "estimated_hours": hal.duration_hours(payload.get("estimatedTime")),
         "spent_hours": hal.duration_hours(payload.get("spentTime")),
-        "story_points": _story_points(payload.get("storyPoints")),
+        "story_points": hal.integer(payload.get("storyPoints")),
         "remaining_hours": hal.duration_hours(payload.get("remainingTime")),
         "created_at": payload.get("createdAt"),
         "lock_version": payload.get("lockVersion"),

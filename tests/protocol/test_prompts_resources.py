@@ -425,6 +425,21 @@ async def test_the_work_package_resource_returns_the_detail_projection(
     assert any("get_work_package" in note for note in payload["notes"])
 
 
+async def test_the_work_package_resource_surfaces_story_points_and_remaining_hours(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    detail = {**WORK_PACKAGE_DETAIL, "storyPoints": 5, "remainingTime": "PT2H30M"}
+    mock_api.get(f"work_packages/{WORK_PACKAGE_ID}").mock(
+        return_value=httpx.Response(200, json=detail)
+    )
+
+    contents = await mcp_client.read_resource(f"openproject://work_package/{WORK_PACKAGE_ID}")
+    payload = json.loads(contents[0].text)  # type: ignore[union-attr]
+
+    assert payload["story_points"] == 5
+    assert payload["remaining_hours"] == 2.5
+
+
 async def test_the_project_resource_returns_the_overview(
     mcp_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
