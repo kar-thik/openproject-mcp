@@ -207,3 +207,53 @@ async def test_meeting_api_variant(live: tuple[Client[Any], dict[str, Any]]) -> 
         error = json.loads(result.content[0].text)["error"]
         assert error["http_status"] in (404, 405)
         assert "version" in error["hint"].lower() or "17." in error["hint"]
+
+
+def _story_points_accounted_for(result: Any, wanted: int) -> bool:
+    """Saved, refused, or flagged in a note: never silently lost."""
+    if result.is_error:
+        return "story" in str(result.content).lower()
+    body = result.structured_content or {}
+    return body.get("story_points") == wanted or any(
+        "story_points was not saved" in note for note in body.get("notes") or []
+    )
+
+
+async def test_story_points_without_backlogs_are_never_silently_dropped(
+    live: tuple[Client[Any], dict[str, Any]],
+) -> None:
+    # The bootstrap project runs without Backlogs: 14.x drops storyPoints with a 200,
+    # 17.x refuses it in the form.
+    client, fixture = live
+    created_result = await client.call_tool(
+        "create_work_package",
+        {
+            "project": fixture["project_id"],
+            "type": str(fixture["type_id"]),
+            "subject": "Story points without Backlogs",
+            "story_points": 3,
+            "notify": False,
+        },
+        raise_on_error=False,
+    )
+    assert _story_points_accounted_for(created_result, 3), created_result.content
+
+    created = await create(client, fixture)
+    updated = await client.call_tool(
+        "update_work_package",
+        {"id": created["id"], "story_points": 5, "notify": False},
+        raise_on_error=False,
+    )
+    assert _story_points_accounted_for(updated, 5), updated.content
+
+    preview = await call(
+        client,
+        "bulk_update_work_packages",
+        {"updates": [{"id": created["id"], "changes": {"story_points": 8}}]},
+    )
+    item = preview["items"][0]
+    saved = not updated.is_error and (updated.structured_content or {}).get("story_points") == 5
+    flagged = item["status"] == "invalid" or any(
+        "story_points will not be saved" in note for note in item["notes"] or []
+    )
+    assert flagged is not saved, item
