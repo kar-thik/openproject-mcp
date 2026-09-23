@@ -573,30 +573,6 @@ async def test_create_rejects_an_unknown_status_name_before_any_write(
     assert not form.called
 
 
-async def test_create_refuses_story_points_when_backlogs_is_off(
-    mock_api: respx.MockRouter,
-    create_routes: dict[str, respx.Route],
-    mcp_client: Client[Any],
-) -> None:
-    schema = {k: v for k, v in WORK_PACKAGE_SCHEMA_5_1.items() if k != "storyPoints"}
-    create_routes["schema"].mock(return_value=httpx.Response(200, json=schema))
-    form = mock_api.post("work_packages/form").mock(
-        return_value=httpx.Response(200, json=CREATE_FORM_OK)
-    )
-
-    result = await mcp_client.call_tool(
-        "create_work_package",
-        {"project": "demo", "type": "Task", "subject": "Estimate me", "story_points": 3},
-        raise_on_error=False,
-    )
-
-    assert result.is_error
-    error = _envelope(result)
-    assert error["type"] == "invalid_input"
-    assert "Backlogs" in error["hint"]
-    assert not form.called
-
-
 async def test_create_rejects_milestone_dates_mixed_with_ranges(
     mcp_client: Client[Any],
 ) -> None:

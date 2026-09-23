@@ -370,40 +370,6 @@ def _version_links(
     return {"version": link("versions", ids[0] if ids else None)}
 
 
-#: Wire attributes that only some projects/types expose, with the fix to name when absent.
-_SCHEMA_GATED_ATTRIBUTES: dict[str, tuple[str, str]] = {
-    "storyPoints": (
-        "story_points",
-        "Story points need the Backlogs module enabled on the project and a story type; "
-        "drop story_points or check get_work_package_schema.",
-    ),
-    "remainingTime": (
-        "remaining_hours",
-        "Remaining work is derived from status in status-based progress mode; "
-        "drop remaining_hours or check get_work_package_schema.",
-    ),
-}
-
-
-def _gated_attributes(attributes: Mapping[str, Any]) -> list[str]:
-    """The schema-gated wire attributes this write sets."""
-    return [key for key in _SCHEMA_GATED_ATTRIBUTES if key in attributes]
-
-
-def _require_writable(schema: Mapping[str, Any], attributes: Mapping[str, Any]) -> None:
-    """Refuse a gated attribute the schema hides or marks read-only, instead of letting
-    OpenProject drop it or fail with a less specific error."""
-    for key in _gated_attributes(attributes):
-        field, hint = _SCHEMA_GATED_ATTRIBUTES[key]
-        entry = hal.as_object(schema.get(key))
-        if entry is None:
-            raise InputValidationError(
-                f"{field} is not available on this work package's schema.", hint=hint
-            )
-        if entry.get("writable") is False:
-            raise InputValidationError(f"{field} is read-only on this work package.", hint=hint)
-
-
 def _detail_fields(
     payload: Mapping[str, Any],
     schema: Mapping[str, Any] | None,
@@ -797,10 +763,9 @@ async def prepare_work_package_update(
     # One read serves both the custom-field schema link and the lock version, so the two can
     # never come from different snapshots of the work package.
     versions_requested = not _is_keep(version) or target_versions is not None
-    gated = _gated_attributes(attributes)
     current = (
         await ctx.client.get_json(path)
-        if include_current or custom_fields or lock_version is None or versions_requested or gated
+        if include_current or custom_fields or lock_version is None or versions_requested
         else None
     )
     if include_current and lock_version is not None:
@@ -822,15 +787,6 @@ async def prepare_work_package_update(
                 hint="Read get_work_package_schema before retrying.",
             )
         links.update(_version_links(version_schema, version, target_versions))
-
-    if gated:
-        gated_schema, gated_note = await _schema_for(ctx, current or {})
-        if gated_schema is None:
-            raise InputValidationError(
-                f"Cannot write {', '.join(gated)}: {gated_note}.",
-                hint="Read get_work_package_schema before retrying.",
-            )
-        _require_writable(gated_schema, attributes)
 
     if custom_fields:
         cf_schema, cf_note = await _schema_for(ctx, current or {})
@@ -1605,9 +1561,6 @@ def register(mcp: FastMCP) -> None:
             )
         if parent_id is not None:
             links["parent"] = link("work_packages", parent_id)
-
-        if _gated_attributes(attributes):
-            _require_writable(await _schema_for_project_type(ctx, project_id, type_id), attributes)
 
         if custom_fields:
             schema = await _schema_for_project_type(ctx, project_id, type_id)
