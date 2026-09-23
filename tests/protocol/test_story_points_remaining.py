@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 import httpx
+import pytest
 import respx
 from fastmcp import Client
 
@@ -135,3 +136,62 @@ async def test_bulk_dry_run_shows_story_and_remaining_diffs(
     body = _body(patch.calls[0].request)
     assert body["storyPoints"] == 3
     assert body["remainingTime"] == "PT1H30M"
+
+
+def _schema_with(key: str, entry: dict[str, Any] | None) -> dict[str, Any]:
+    schema = deepcopy(WORK_PACKAGE_SCHEMA_5_1)
+    if entry is None:
+        del schema[key]
+    else:
+        schema[key] = entry
+    return schema
+
+
+@pytest.mark.parametrize(
+    ("arguments", "key", "entry", "message"),
+    [
+        # Backlogs disabled on the project, or not a story type: the field is absent.
+        ({"story_points": 3}, "storyPoints", None, "not available"),
+        # Status-based progress mode: remaining work is derived, not writable.
+        (
+            {"remaining_hours": 1.5},
+            "remainingTime",
+            {"type": "Duration", "name": "Remaining work", "writable": False},
+            "read-only",
+        ),
+    ],
+)
+async def test_update_refuses_fields_the_schema_does_not_allow(
+    mock_api: respx.MockRouter,
+    mcp_client: Client[Any],
+    arguments: dict[str, Any],
+    key: str,
+    entry: dict[str, Any] | None,
+    message: str,
+) -> None:
+    mock_api.get(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=_schema_with(key, entry)))
+
+    result = await mcp_client.call_tool(
+        "update_work_package", {"id": 1234, **arguments}, raise_on_error=False
+    )
+
+    assert result.is_error
+    assert message in str(result.content)
+    assert all(call.request.method == "GET" for call in mock_api.calls), "must not write"
+
+
+async def test_bulk_preview_refuses_story_points_without_backlogs(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    mock_api.get(WP_PATH).respond(200, json=WORK_PACKAGE_DETAIL)
+    mock_api.get(SCHEMA_PATH).respond(200, json=_schema_with("storyPoints", None))
+
+    result = await mcp_client.call_tool(
+        "bulk_update_work_packages",
+        {"updates": [{"id": 1234, "changes": {"story_points": 3}}]},
+        raise_on_error=False,
+    )
+
+    assert "story_points is not available" in str(result.content)
+    assert all(call.request.method == "GET" for call in mock_api.calls), "must not write"

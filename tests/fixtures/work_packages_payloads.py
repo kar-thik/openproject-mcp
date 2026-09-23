@@ -151,6 +151,8 @@ WORK_PACKAGE_SCHEMA_5_1: dict[str, Any] = {
     "version": {"type": "Version", "writable": True},
     "_type": "Schema",
     "subject": {"type": "String", "name": "Subject", "required": True, "writable": True},
+    "storyPoints": {"type": "Integer", "name": "Story Points", "writable": True},
+    "remainingTime": {"type": "Duration", "name": "Remaining work", "writable": True},
     "customField7": {
         "type": "String",
         "name": "Ticket URL",
