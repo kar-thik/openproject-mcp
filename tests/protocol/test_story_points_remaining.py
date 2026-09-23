@@ -71,6 +71,24 @@ async def test_update_leaves_story_and_remaining_untouched_when_omitted(
     assert "remainingTime" not in body
 
 
+async def test_update_writes_zero_story_points_and_remaining_hours(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    """Zero is a value, not "omitted": both fields must reach the wire."""
+    mock_api.get(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1))
+    mock_api.post(f"{WP_PATH}/form").mock(return_value=httpx.Response(200, json=UPDATE_FORM_OK))
+    patch = mock_api.patch(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
+
+    await mcp_client.call_tool(
+        "update_work_package", {"id": 1234, "story_points": 0, "remaining_hours": 0}
+    )
+
+    body = _body(patch.calls[0].request)
+    assert body["storyPoints"] == 0
+    assert body["remainingTime"] == "PT0H"
+
+
 async def test_get_surfaces_story_points_and_remaining_hours(
     mock_api: respx.MockRouter, mcp_client: Client[Any]
 ) -> None:
