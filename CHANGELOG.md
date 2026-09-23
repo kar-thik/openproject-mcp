@@ -10,6 +10,8 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-23
+
 ### Added
 
 - `story_points` and `remaining_hours` on `create_work_package`,
