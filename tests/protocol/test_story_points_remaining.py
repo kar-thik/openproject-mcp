@@ -38,9 +38,7 @@ async def test_update_writes_story_points_and_remaining_hours(
     updated["storyPoints"] = 3
     updated["remainingTime"] = "PT1H30M"
     mock_api.get(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
-    mock_api.get(SCHEMA_PATH).mock(
-        return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1)
-    )
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1))
     mock_api.post(f"{WP_PATH}/form").mock(return_value=httpx.Response(200, json=UPDATE_FORM_OK))
     patch = mock_api.patch(WP_PATH).mock(return_value=httpx.Response(200, json=updated))
 
@@ -62,13 +60,9 @@ async def test_update_leaves_story_and_remaining_untouched_when_omitted(
     mock_api: respx.MockRouter, mcp_client: Client[Any]
 ) -> None:
     mock_api.get(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
-    mock_api.get(SCHEMA_PATH).mock(
-        return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1)
-    )
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1))
     mock_api.post(f"{WP_PATH}/form").mock(return_value=httpx.Response(200, json=UPDATE_FORM_OK))
-    patch = mock_api.patch(WP_PATH).mock(
-        return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL)
-    )
+    patch = mock_api.patch(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
 
     await mcp_client.call_tool("update_work_package", {"id": 1234, "subject": "Renamed"})
 
@@ -84,9 +78,7 @@ async def test_get_surfaces_story_points_and_remaining_hours(
     current["storyPoints"] = 5
     current["remainingTime"] = "PT2H"
     mock_api.get(WP_PATH).mock(return_value=httpx.Response(200, json=current))
-    mock_api.get(SCHEMA_PATH).mock(
-        return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1)
-    )
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1))
 
     structured = _structured(await mcp_client.call_tool("get_work_package", {"id": 1234}))
 
@@ -115,9 +107,7 @@ async def test_bulk_dry_run_shows_story_and_remaining_diffs(
     assert not patch.called, "dry run must not write"
 
     updates = [{"id": 1234, "changes": {"story_points": 3, "remaining_hours": 1.5}}]
-    for update, item in zip(
-        updates, preview.structured_content["items"], strict=True
-    ):
+    for update, item in zip(updates, preview.structured_content["items"], strict=True):
         update["lock_version"] = item["lock_version"]
     result = await mcp_client.call_tool(
         "bulk_update_work_packages", {"updates": updates, "dry_run": False}
