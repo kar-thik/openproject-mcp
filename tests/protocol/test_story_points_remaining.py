@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 import httpx
+import pytest
 import respx
 from fastmcp import Client
 
@@ -56,6 +57,49 @@ async def test_update_writes_story_points_and_remaining_hours(
     assert body["remainingTime"] == "PT1H30M"
 
 
+@pytest.mark.parametrize(
+    ("echoed", "dropped"),
+    [({}, True), ({"storyPoints": 3}, False), ({"storyPoints": 5}, True)],
+    ids=["absent", "saved", "different"],
+)
+async def test_update_notes_story_points_openproject_silently_dropped(
+    mock_api: respx.MockRouter,
+    mcp_client: Client[Any],
+    echoed: dict[str, Any],
+    dropped: bool,
+) -> None:
+    """14.x answers 200 but drops storyPoints without Backlogs; the response omits it."""
+    mock_api.get(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1))
+    mock_api.post(f"{WP_PATH}/form").mock(return_value=httpx.Response(200, json=UPDATE_FORM_OK))
+    mock_api.patch(WP_PATH).mock(
+        return_value=httpx.Response(200, json={**WORK_PACKAGE_DETAIL, **echoed})
+    )
+
+    structured = _structured(
+        await mcp_client.call_tool("update_work_package", {"id": 1234, "story_points": 3})
+    )
+
+    notes = structured["notes"] or []
+    assert any("story_points was not saved" in note for note in notes) is dropped
+    assert any("Backlogs" in note for note in notes) is dropped
+
+
+async def test_update_without_story_points_adds_no_drop_note(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    mock_api.get(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1))
+    mock_api.post(f"{WP_PATH}/form").mock(return_value=httpx.Response(200, json=UPDATE_FORM_OK))
+    mock_api.patch(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
+
+    structured = _structured(
+        await mcp_client.call_tool("update_work_package", {"id": 1234, "remaining_hours": 2})
+    )
+
+    assert not any("story_points" in note for note in structured["notes"] or [])
+
+
 async def test_update_leaves_story_and_remaining_untouched_when_omitted(
     mock_api: respx.MockRouter, mcp_client: Client[Any]
 ) -> None:
@@ -102,6 +146,60 @@ async def test_get_surfaces_story_points_and_remaining_hours(
 
     assert structured["story_points"] == 5
     assert structured["remaining_hours"] == 2.0
+
+
+def _form_echoing(payload: dict[str, Any]) -> dict[str, Any]:
+    form = deepcopy(UPDATE_FORM_OK)
+    form["_embedded"]["payload"].update(payload)
+    return form
+
+
+@pytest.mark.parametrize(
+    ("form_echo", "dropped"),
+    [({}, True), ({"storyPoints": 3}, False)],
+    ids=["form-omits", "form-echoes"],
+)
+async def test_bulk_dry_run_warns_when_the_form_drops_story_points(
+    mock_api: respx.MockRouter,
+    mcp_client: Client[Any],
+    form_echo: dict[str, Any],
+    dropped: bool,
+) -> None:
+    """On 14.x the form payload leaves out a storyPoints the write would silently drop."""
+    mock_api.get(SCHEMA_PATH).respond(200, json=WORK_PACKAGE_SCHEMA_5_1)
+    mock_api.get(WP_PATH).respond(200, json=WORK_PACKAGE_DETAIL)
+    mock_api.post(f"{WP_PATH}/form").respond(200, json=_form_echoing(form_echo))
+
+    preview = await mcp_client.call_tool(
+        "bulk_update_work_packages",
+        {"updates": [{"id": 1234, "changes": {"story_points": 3}}]},
+    )
+
+    assert not preview.is_error
+    notes = preview.structured_content["items"][0]["notes"] or []
+    assert any("story_points will not be saved" in note for note in notes) is dropped
+
+
+async def test_bulk_apply_notes_story_points_openproject_dropped(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    mock_api.get(SCHEMA_PATH).respond(200, json=WORK_PACKAGE_SCHEMA_5_1)
+    mock_api.get(WP_PATH).respond(200, json=WORK_PACKAGE_DETAIL)
+    mock_api.post(f"{WP_PATH}/form").respond(200, json=UPDATE_FORM_OK)
+    mock_api.patch(WP_PATH).respond(200, json={**WORK_PACKAGE_DETAIL, "lockVersion": 8})
+
+    result = await mcp_client.call_tool(
+        "bulk_update_work_packages",
+        {
+            "updates": [{"id": 1234, "changes": {"story_points": 3}, "lock_version": 7}],
+            "dry_run": False,
+        },
+    )
+
+    assert not result.is_error
+    item = result.structured_content["items"][0]
+    assert item["status"] == "updated"
+    assert any("story_points was not saved" in note for note in item["notes"] or [])
 
 
 async def test_bulk_dry_run_shows_story_and_remaining_diffs(

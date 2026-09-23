@@ -23,6 +23,7 @@ from openproject_mcp.tools.work_packages import (
     WorkPackageChanges,
     apply_work_package_update,
     prepare_work_package_update,
+    story_points_dropped_note,
 )
 
 if TYPE_CHECKING:
@@ -53,6 +54,7 @@ class BulkItemResult(BaseModel):
     lock_version: int | None = None
     changes: list[FieldChange] = Field(default_factory=list[FieldChange])
     error: ErrorDetail | None = None
+    notes: list[str] | None = None
 
 
 class BulkUpdateResult(BaseModel):
@@ -103,6 +105,15 @@ def _diff(prepared: PreparedWorkPackageUpdate) -> list[FieldChange]:
     return changes
 
 
+def _preview_notes(prepared: PreparedWorkPackageUpdate) -> list[str] | None:
+    # The form leaves out a storyPoints it will drop, so the preview can warn before writing.
+    form_payload = _forms.form_payload(prepared.form)
+    if form_payload is None:
+        return None
+    note = story_points_dropped_note(prepared.payload, form_payload, committed=False)
+    return [note] if note else None
+
+
 def _error(exc: OpenProjectError) -> ErrorDetail:
     return ErrorDetail.model_validate(exc.to_envelope()["error"])
 
@@ -133,10 +144,11 @@ def register(mcp: FastMCP) -> None:
         All items are validated before any update. If any preflight fails, nothing is applied;
         correct those items or submit a valid subset. Execution is sequential and NOT atomic:
         concurrent edits can still conflict after validation. Each item reports its result;
-        partial_failure is true when some apply and others fail. An unknown outcome means a
-        connection/server failure may have happened after committing: re-read that item before
-        retrying. Writes are never automatically retried or rolled back. Never rerun successful
-        items. Notifications use the same notify flag for the whole batch.
+        partial_failure is true when some apply and others fail. Item notes flag values
+        OpenProject will ignore or ignored, such as story_points without Backlogs. An unknown
+        outcome means a connection/server failure may have happened after committing: re-read
+        that item before retrying. Writes are never automatically retried or rolled back. Never
+        rerun successful items. Notifications use the same notify flag for the whole batch.
         """
         ids = [item.id for item in updates]
         if len(set(ids)) != len(ids):
@@ -168,6 +180,7 @@ def register(mcp: FastMCP) -> None:
                         status="ready",
                         lock_version=prepared.lock_version,
                         changes=_diff(prepared),
+                        notes=_preview_notes(prepared),
                     )
                 )
                 prepared_items.append(prepared)
@@ -189,6 +202,7 @@ def register(mcp: FastMCP) -> None:
                     updated = await apply_work_package_update(ctx, prepared, notify=notify)
                     result.status = "updated"
                     result.lock_version = updated.lock_version
+                    result.notes = updated.notes
                 except OpenProjectError as exc:
                     result.status = (
                         "conflict"

@@ -370,6 +370,26 @@ def _version_links(
     return {"version": link("versions", ids[0] if ids else None)}
 
 
+def story_points_dropped_note(
+    requested: Mapping[str, Any], echoed: Mapping[str, Any], *, committed: bool
+) -> str | None:
+    """Say so when OpenProject silently ignores a requested ``storyPoints``.
+
+    Without the Backlogs module, or on a type Backlogs does not treat as a story, 14.x
+    answers 200 and drops the value; the form payload and the write response then leave
+    ``storyPoints`` out. 17.x rejects the same write in the form instead. The schema is no
+    guide here: 17.x omits ``storyPoints`` from it even when the write succeeds.
+    """
+    wanted = hal.integer(requested.get("storyPoints"))
+    if wanted is None or hal.integer(echoed.get("storyPoints")) == wanted:
+        return None
+    outcome = "was not saved" if committed else "will not be saved"
+    return (
+        f"story_points {outcome}: OpenProject ignored it. Enable the Backlogs module on the "
+        "project and add this type to the Backlogs story types, then set it again."
+    )
+
+
 def _detail_fields(
     payload: Mapping[str, Any],
     schema: Mapping[str, Any] | None,
@@ -834,9 +854,9 @@ async def apply_work_package_update(
         params={"notify": "true" if notify else "false"},
     )
     schema, schema_note = await _schema_for(ctx, updated)
-    return WorkPackageFull(
-        **_detail_fields(updated, schema, [schema_note] if schema_note else None)
-    )
+    dropped_note = story_points_dropped_note(prepared.payload, updated, committed=True)
+    notes = [note for note in (schema_note, dropped_note) if note]
+    return WorkPackageFull(**_detail_fields(updated, schema, notes))
 
 
 def register(mcp: FastMCP) -> None:
@@ -1599,9 +1619,9 @@ def register(mcp: FastMCP) -> None:
             "work_packages", json=body, params={"notify": "true" if notify else "false"}
         )
         schema, schema_note = await _schema_for(ctx, created)
-        return WorkPackageFull(
-            **_detail_fields(created, schema, [schema_note] if schema_note else None)
-        )
+        dropped_note = story_points_dropped_note(attributes, created, committed=True)
+        notes = [note for note in (schema_note, dropped_note) if note]
+        return WorkPackageFull(**_detail_fields(created, schema, notes))
 
     @mcp.tool(
         name="update_work_package",

@@ -10,6 +10,8 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-23
+
 ### Added
 
 - `story_points` and `remaining_hours` on `create_work_package`,
@@ -18,6 +20,11 @@ PATCH releases are fixes and strictly additive changes only.
   Omitted means untouched; zero is written as zero.
   ([#19](https://github.com/kar-thik/openproject-mcp/pull/19), thanks
   [@sinasadeghi83](https://github.com/sinasadeghi83))
+- Work-package writes flag a `story_points` that OpenProject ignores: 14.x
+  accepts it without the Backlogs module (or on a type Backlogs does not treat
+  as a story) and drops it silently. The result gets a note with the fix, and
+  `bulk_update_work_packages` previews warn per item before anything is
+  written.
 
 ## [0.3.0] - 2026-09-07
 
