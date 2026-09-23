@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 import httpx
+import pytest
 import respx
 from fastmcp import Client
 
@@ -54,6 +55,49 @@ async def test_update_writes_story_points_and_remaining_hours(
     body = _body(patch.calls[0].request)
     assert body["storyPoints"] == 3
     assert body["remainingTime"] == "PT1H30M"
+
+
+@pytest.mark.parametrize(
+    ("echoed", "dropped"),
+    [({}, True), ({"storyPoints": 3}, False), ({"storyPoints": 5}, True)],
+    ids=["absent", "saved", "different"],
+)
+async def test_update_notes_story_points_openproject_silently_dropped(
+    mock_api: respx.MockRouter,
+    mcp_client: Client[Any],
+    echoed: dict[str, Any],
+    dropped: bool,
+) -> None:
+    """14.x answers 200 but drops storyPoints without Backlogs; the response omits it."""
+    mock_api.get(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1))
+    mock_api.post(f"{WP_PATH}/form").mock(return_value=httpx.Response(200, json=UPDATE_FORM_OK))
+    mock_api.patch(WP_PATH).mock(
+        return_value=httpx.Response(200, json={**WORK_PACKAGE_DETAIL, **echoed})
+    )
+
+    structured = _structured(
+        await mcp_client.call_tool("update_work_package", {"id": 1234, "story_points": 3})
+    )
+
+    notes = structured["notes"] or []
+    assert any("story_points was not saved" in note for note in notes) is dropped
+    assert any("Backlogs" in note for note in notes) is dropped
+
+
+async def test_update_without_story_points_adds_no_drop_note(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    mock_api.get(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
+    mock_api.get(SCHEMA_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_SCHEMA_5_1))
+    mock_api.post(f"{WP_PATH}/form").mock(return_value=httpx.Response(200, json=UPDATE_FORM_OK))
+    mock_api.patch(WP_PATH).mock(return_value=httpx.Response(200, json=WORK_PACKAGE_DETAIL))
+
+    structured = _structured(
+        await mcp_client.call_tool("update_work_package", {"id": 1234, "remaining_hours": 2})
+    )
+
+    assert not any("story_points" in note for note in structured["notes"] or [])
 
 
 async def test_update_leaves_story_and_remaining_untouched_when_omitted(

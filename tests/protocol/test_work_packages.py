@@ -509,6 +509,35 @@ async def test_create_resolves_names_claims_attachments_and_keeps_form_defaults(
     assert commit.calls[0].request.url.params["notify"] == "true"
 
 
+@pytest.mark.parametrize(
+    ("echoed", "dropped"),
+    [({}, True), ({"storyPoints": 3}, False)],
+    ids=["dropped", "saved"],
+)
+async def test_create_notes_story_points_openproject_silently_dropped(
+    mock_api: respx.MockRouter,
+    create_routes: dict[str, respx.Route],
+    mcp_client: Client[Any],
+    echoed: dict[str, Any],
+    dropped: bool,
+) -> None:
+    """14.x answers 201 but drops storyPoints without Backlogs; the response omits it."""
+    mock_api.post("work_packages/form").mock(return_value=httpx.Response(200, json=CREATE_FORM_OK))
+    mock_api.post("work_packages").mock(
+        return_value=httpx.Response(201, json={**CREATED_WORK_PACKAGE, **echoed})
+    )
+
+    structured = _structured(
+        await mcp_client.call_tool(
+            "create_work_package",
+            {"project": "demo", "type": "Task", "subject": "Estimate me", "story_points": 3},
+        )
+    )
+
+    notes = structured["notes"] or []
+    assert any("story_points was not saved" in note for note in notes) is dropped
+
+
 async def test_create_surfaces_form_validation_errors_with_allowed_values(
     mock_api: respx.MockRouter,
     create_routes: dict[str, respx.Route],
