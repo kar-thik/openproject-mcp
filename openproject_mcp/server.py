@@ -55,7 +55,10 @@ SERVER_INSTRUCTIONS = (
     "statuses. Every list result reports total/page/page_size/has_more — page explicitly "
     "rather than assuming you saw everything. Destructive tools require confirm=true and "
     "should be confirmed with the user first. Errors come back as structured JSON with a "
-    "hint describing how to correct the call."
+    "hint describing how to correct the call. Some tools are hidden by this server's "
+    "configuration (read-only mode, the admin gate, disabled groups); if a description "
+    "names a tool that is not in your tool list, tell the user it is disabled on this "
+    "server instead of improvising."
 )
 
 
