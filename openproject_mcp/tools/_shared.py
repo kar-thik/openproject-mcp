@@ -75,13 +75,39 @@ from openproject_mcp.client.filters import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, to_
 from openproject_mcp.client.hal import HalCollection, as_object, collection, duration_hours
 from openproject_mcp.client.http import OpenProjectClient
 from openproject_mcp.config import Settings
+from openproject_mcp.groups import (
+    ALL_GROUPS,
+    CORE_PROFILE_HIDDEN_GROUPS,
+    GROUP_ATTACHMENTS,
+    GROUP_BUDGETS,
+    GROUP_DOCUMENTS,
+    GROUP_GIT,
+    GROUP_MEETINGS,
+    GROUP_MEETINGS_RECURRING,
+    GROUP_METADATA,
+    GROUP_NEWS,
+    GROUP_NOTIFICATIONS,
+    GROUP_PEOPLE,
+    GROUP_PROJECTS,
+    GROUP_QUERIES,
+    GROUP_REPORTING,
+    GROUP_TIME_ENTRIES,
+    GROUP_TITLES,
+    GROUP_VERSIONS,
+    GROUP_WIKI,
+    GROUP_WORK_PACKAGES,
+    GROUP_WP_COLLABORATION,
+    PARENT_GROUP,
+)
 from openproject_mcp.observability import correlation_scope, get_logger
 from openproject_mcp.projections import Group, ListEnvelope, Pagination
 from openproject_mcp.version_probe import InstanceProbe, get_probe
 
 __all__ = [
     "ADMIN",
+    "ALL_GROUPS",
     "CACHE_KEY_CONFIGURATION",
+    "CORE_PROFILE_HIDDEN_GROUPS",
     "DESTRUCTIVE",
     "FETCH_ALL_CAP",
     "GROUP_ATTACHMENTS",
@@ -89,6 +115,7 @@ __all__ = [
     "GROUP_DOCUMENTS",
     "GROUP_GIT",
     "GROUP_MEETINGS",
+    "GROUP_MEETINGS_RECURRING",
     "GROUP_METADATA",
     "GROUP_NEWS",
     "GROUP_NOTIFICATIONS",
@@ -97,11 +124,13 @@ __all__ = [
     "GROUP_QUERIES",
     "GROUP_REPORTING",
     "GROUP_TIME_ENTRIES",
+    "GROUP_TITLES",
     "GROUP_VERSIONS",
     "GROUP_WIKI",
     "GROUP_WORK_PACKAGES",
     "GROUP_WP_COLLABORATION",
     "LIFESPAN_KEY",
+    "PARENT_GROUP",
     "READ",
     "WRITE",
     "ToolContext",
@@ -143,23 +172,8 @@ WRITE = "write"
 DESTRUCTIVE = "destructive"
 ADMIN = "admin"
 
-GROUP_WORK_PACKAGES = "work_packages"
-GROUP_WP_COLLABORATION = "wp_collaboration"
-GROUP_ATTACHMENTS = "attachments"
-GROUP_PROJECTS = "projects"
-GROUP_METADATA = "metadata"
-GROUP_GIT = "git_activity"
-GROUP_QUERIES = "queries"
-GROUP_NOTIFICATIONS = "notifications"
-GROUP_TIME_ENTRIES = "time_entries"
-GROUP_VERSIONS = "versions"
-GROUP_PEOPLE = "people"
-GROUP_MEETINGS = "meetings"
-GROUP_NEWS = "news"
-GROUP_DOCUMENTS = "documents"
-GROUP_BUDGETS = "budgets"
-GROUP_WIKI = "wiki"
-GROUP_REPORTING = "reporting"
+# Group tags live in the leaf module ``openproject_mcp.groups`` so that
+# ``config`` can use them too; they are re-exported here for tool modules.
 
 
 def tool_tags(group: str, *kinds: str) -> set[str]:
