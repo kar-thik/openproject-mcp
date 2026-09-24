@@ -643,9 +643,8 @@ def register(mcp: FastMCP) -> None:
         project_id: Annotated[
             int | str,
             Field(
-                description="Numeric id or identifier of the project the series belongs to. It "
-                "must have the Meetings module enabled and this account needs the 'create "
-                "meetings' permission in it."
+                description="Numeric id or identifier of the project; needs the Meetings "
+                "module and 'create meetings' permission."
             ),
         ],
         title: Annotated[
@@ -655,34 +654,33 @@ def register(mcp: FastMCP) -> None:
         start_time: Annotated[
             str,
             Field(
-                description="First occurrence as ISO 8601 WITH a timezone: "
-                "'2026-09-01T09:00:00Z' or '2026-09-01T11:00:00+02:00'. Must be now or in the "
-                "future; a time without an offset is rejected locally."
+                description="First occurrence as ISO 8601 with a timezone: "
+                "'2026-09-01T09:00:00Z' or '...+02:00'. Must be now or later; offset-less "
+                "times are rejected locally."
             ),
         ],
         duration_minutes: Annotated[
             int,
             Field(
                 ge=1,
-                description="Length of each occurrence in minutes (90 = one and a half "
-                "hours). The result reports it back as duration_hours.",
+                description="Length of each occurrence in minutes (90 = 1.5 hours); echoed as "
+                "duration_hours.",
             ),
         ],
         time_zone: Annotated[
             str,
             Field(
-                description="IANA time zone the schedule computes in, e.g. 'Europe/Berlin' or "
-                "'Etc/UTC' — required, because it decides what 'every Monday 09:00' means "
-                "across DST changes. Validated locally: OpenProject would store a typo "
-                "silently and fall back to the account's zone."
+                description="IANA time zone the schedule computes in, e.g. 'Europe/Berlin'; "
+                "decides what 'every Monday 09:00' means across DST. Validated locally — "
+                "OpenProject would silently store a typo and fall back to the account's zone."
             ),
         ],
         frequency: Annotated[
             Frequency,
             Field(
-                description="Repetition rule: 'daily', 'working_days' (every working day), "
-                "'weekly' (the default), 'monthly_day_of_month' (needs monthly_day) or "
-                "'monthly_nth_weekday' (needs monthly_ordinal + monthly_weekday)."
+                description="Repetition rule: 'daily', 'working_days', 'weekly' (default), "
+                "'monthly_day_of_month' (needs monthly_day) or 'monthly_nth_weekday' (needs "
+                "monthly_ordinal + monthly_weekday)."
             ),
         ] = "weekly",
         interval: Annotated[
@@ -690,8 +688,8 @@ def register(mcp: FastMCP) -> None:
             Field(
                 ge=1,
                 le=100,
-                description="Every N days/weeks/months (default 1 = every occurrence of the "
-                "rule). Not applicable to 'working_days'.",
+                description="Every N days/weeks/months (default 1). Not applicable to "
+                "'working_days'.",
             ),
         ] = 1,
         monthly_day: Annotated[
@@ -699,22 +697,21 @@ def register(mcp: FastMCP) -> None:
             Field(
                 ge=1,
                 le=31,
-                description="Day of the month (1-31); required for, and only valid with, "
-                "frequency='monthly_day_of_month'.",
+                description="Day of the month (1-31); only with frequency='monthly_day_of_month'.",
             ),
         ] = None,
         monthly_ordinal: Annotated[
             Literal[1, 2, 3, 4, -1] | None,
             Field(
-                description="Which weekday of the month: 1-4, or -1 for the last one; "
-                "required for, and only valid with, frequency='monthly_nth_weekday'."
+                description="Which weekday of the month: 1-4, or -1 for the last one; only "
+                "with frequency='monthly_nth_weekday'."
             ),
         ] = None,
         monthly_weekday: Annotated[
             MonthlyWeekday | None,
             Field(
-                description="Weekday name ('monday'…'sunday'); required for, and only valid "
-                "with, frequency='monthly_nth_weekday'."
+                description="Weekday name ('monday'…'sunday'); only with "
+                "frequency='monthly_nth_weekday'."
             ),
         ] = None,
         end_after: Annotated[
@@ -726,56 +723,49 @@ def register(mcp: FastMCP) -> None:
         ] = "never",
         end_date: Annotated[
             str | None,
-            Field(
-                description="Last possible date as 'YYYY-MM-DD'; required for, and only valid "
-                "with, end_after='specific_date'."
-            ),
+            Field(description="Last date as 'YYYY-MM-DD'; only with end_after='specific_date'."),
         ] = None,
         iterations: Annotated[
             int | None,
             Field(
                 ge=1,
                 le=1000,
-                description="Total number of occurrences (1-1000); required for, and only "
-                "valid with, end_after='iterations'.",
+                description="Total occurrences (1-1000); only with end_after='iterations'.",
             ),
         ] = None,
         location: Annotated[
             str | None,
-            Field(description="Room name or meeting URL every occurrence inherits. Omit for none."),
+            Field(description="Room name or URL every occurrence inherits; omit for none."),
         ] = None,
         notify: Annotated[
             bool,
             Field(
-                description="True emails participants about schedule changes and "
-                "cancellations. Defaults to false — an API-created series stays quiet."
+                description="Emails participants about schedule changes and cancellations; "
+                "defaults to false (quiet)."
             ),
         ] = False,
     ) -> RecurringMeetingDetail:
         """Create a recurring meeting series: a schedule plus a template the occurrences copy.
 
-        Use it for "set up a weekly sync Mondays at 9" style requests. The frequency and
-        end_after combinations are validated locally BEFORE anything is sent — OpenProject's
-        own "infer the monthly fields" defaults never apply to API creates, so a bad
-        combination is rejected here with the allowed matrix spelled out.
+        For "set up a weekly sync Mondays at 9" requests. frequency/end_after combinations are
+        validated locally before anything is sent, rejecting a bad combination with the
+        allowed matrix spelled out.
 
-        Returns the created series in the same shape as `get_recurring_meeting`, including
-        the computed next `occurrences` (their `start_time` strings are what the occurrence
-        tools take) and `template_meeting_id`.
+        Returns the created series in `get_recurring_meeting`'s shape, including computed
+        next `occurrences` (their `start_time` is what occurrence tools take) and
+        `template_meeting_id`.
 
-        Pitfalls — two upstream quirks are handled but must be understood. First, the
-        template meeting is created as a DRAFT: `notes` says so, and occurrences cannot be
-        initialized until `update_meeting(meeting_id=<template_meeting_id>, state='open')`
-        publishes it. Second, OpenProject overwrites `time_zone` on create with the API
-        account's own zone; this tool detects that and corrects it with a follow-up PATCH —
-        if that correction is refused (it needs 'edit meetings'), the series is still created
-        and `notes` names the zone it actually runs in. `start_time` must be now or in the
-        future, or the create is rejected with a validation error.
+        Pitfalls. The template meeting is created as a DRAFT: `notes` says so, and occurrences
+        can't be initialized until `update_meeting(meeting_id=<template_meeting_id>,
+        state='open')` publishes it. OpenProject also overwrites `time_zone` on create with
+        its own account zone; this tool corrects it with a follow-up PATCH — if refused
+        (needs 'edit meetings'), the series is still created and `notes` names the zone it
+        runs in.
 
-        Cross-references: `get_recurring_meeting` to read it back;
-        `update_meeting(meeting_id=<template_meeting_id>, ...)` to build the shared agenda
-        and publish the template; `init_recurring_meeting_occurrence` to materialize a slot;
-        `list_projects` for the project id.
+        Cross-references: `get_recurring_meeting` reads it back;
+        `update_meeting(meeting_id=<template_meeting_id>, ...)` builds the agenda and
+        publishes it; `init_recurring_meeting_occurrence` materializes a slot; `list_projects`
+        for the project id.
         """
         if not title.strip():
             raise InputValidationError(
