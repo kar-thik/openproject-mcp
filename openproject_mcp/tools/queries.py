@@ -565,8 +565,8 @@ def register(mcp: FastMCP) -> None:
             bool,
             Field(
                 description="Also star (favorite) the view, so it appears in the sidebar. A "
-                "second call after the query exists; a failure still leaves it saved, noted "
-                "in 'notes'."
+                "second call after the query exists; a failure still leaves it saved (noted "
+                "in 'notes') — don't re-save."
             ),
         ] = False,
         sort_by: Annotated[

@@ -1092,7 +1092,7 @@ def register(mcp: FastMCP) -> None:
             Field(
                 description=(
                     "Group the full filtered set by one snake_case column (e.g. 'status'). "
-                    "Counts in `groups` cover every page, not just this one."
+                    "Counts in `groups` cover every page."
                 )
             ),
         ] = None,
@@ -1133,7 +1133,8 @@ def register(mcp: FastMCP) -> None:
         Pitfalls: returns **open work packages only** unless `status_scope` or `status_ids` is
         given (`status_ids` overrides `status_scope`), so say so when reporting counts. Status,
         type, priority and version ids come from `get_project_metadata`; user ids (assignee,
-        author, responsible, watcher) from `search_principals` — never guess either.
+        author, responsible, watcher) from `search_principals` — never guess either. Date
+        filters take YYYY-MM-DD.
 
         For text lookups use `search_work_packages`; for one work package's description, custom
         fields and children use `get_work_package`.
