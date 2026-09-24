@@ -95,6 +95,8 @@ READ_TOOLS = {
     # 0.2.0
     "list_project_phase_definitions",
     "get_project_phase",
+    # 0.3.2
+    "enable_tool_group",
 }
 WRITE_TOOLS = {
     "bulk_update_work_packages",
@@ -176,6 +178,14 @@ MEETINGS_GROUP_TOOLS = {
     "init_recurring_meeting_occurrence",
     "cancel_recurring_meeting_occurrence",
 }
+MEETINGS_RECURRING_GROUP_TOOLS = {
+    "list_recurring_meetings",
+    "get_recurring_meeting",
+    "create_recurring_meeting",
+    "delete_recurring_meeting",
+    "init_recurring_meeting_occurrence",
+    "cancel_recurring_meeting_occurrence",
+}
 NEWS_GROUP_TOOLS = {"list_news", "get_news", "create_news", "update_news", "delete_news"}
 PROMPT_NAMES = {"weekly_report", "daily_standup", "triage_inbox", "groom_backlog"}
 RESOURCE_TEMPLATES = {
@@ -244,6 +254,8 @@ async def test_lifespan_provides_the_tool_context(settings: Settings) -> None:
         (True, True, "", {"read_tool", "grouped_tool"}),
         (False, True, "", {"read_tool", "write_tool", "admin_tool", "grouped_tool"}),
         (False, False, "meetings", {"read_tool", "write_tool"}),
+        (False, False, "meetings_recurring", {"read_tool", "write_tool", "grouped_tool"}),
+        (False, False, "meetings,meetings_recurring", {"read_tool", "write_tool"}),
     ],
 )
 async def test_tag_filtering_paths(
@@ -391,3 +403,22 @@ async def test_disable_prunes_exactly_the_named_groups() -> None:
     assert (
         listed == DEFAULT_TOOLS - ATTACHMENT_GROUP_TOOLS - MEETINGS_GROUP_TOOLS - NEWS_GROUP_TOOLS
     )
+
+
+@pytest.mark.parametrize(
+    ("disable", "hidden"),
+    [
+        ("meetings_recurring", MEETINGS_RECURRING_GROUP_TOOLS),
+        ("meetings", MEETINGS_GROUP_TOOLS),
+    ],
+)
+async def test_meetings_recurring_sub_tag_prunes_only_the_series_tools(
+    disable: str, hidden: set[str]
+) -> None:
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None, url=TEST_URL, api_key="test-token", disable=disable
+    )
+    async with Client(build_server(settings)) as client:
+        listed = {tool.name for tool in await client.list_tools()}
+    assert listed == DEFAULT_TOOLS - hidden
+    assert len(DEFAULT_TOOLS - listed) == len(hidden)

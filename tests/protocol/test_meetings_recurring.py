@@ -98,13 +98,21 @@ async def test_all_six_tools_are_registered_with_honest_annotations(
     assert listing.annotations is not None
     assert listing.annotations.readOnlyHint is True
     assert set(listing.inputSchema["properties"]) == {"page", "page_size"}
-    assert set((listing.meta or {})["fastmcp"]["tags"]) == {"meetings", "read"}
+    assert set((listing.meta or {})["fastmcp"]["tags"]) == {
+        "meetings",
+        "meetings_recurring",
+        "read",
+    }
 
     reading = tools["get_recurring_meeting"]
     assert reading.annotations is not None
     assert reading.annotations.readOnlyHint is True
     assert set(reading.inputSchema["properties"]) == {"recurring_meeting_id"}
-    assert set((reading.meta or {})["fastmcp"]["tags"]) == {"meetings", "read"}
+    assert set((reading.meta or {})["fastmcp"]["tags"]) == {
+        "meetings",
+        "meetings_recurring",
+        "read",
+    }
 
     creating = tools["create_recurring_meeting"]
     assert creating.annotations is not None
@@ -127,13 +135,21 @@ async def test_all_six_tools_are_registered_with_honest_annotations(
         "location",
         "notify",
     }
-    assert set((creating.meta or {})["fastmcp"]["tags"]) == {"meetings", "write"}
+    assert set((creating.meta or {})["fastmcp"]["tags"]) == {
+        "meetings",
+        "meetings_recurring",
+        "write",
+    }
 
     initing = tools["init_recurring_meeting_occurrence"]
     assert initing.annotations is not None
     assert initing.annotations.destructiveHint is False
     assert set(initing.inputSchema["properties"]) == {"recurring_meeting_id", "start_time"}
-    assert set((initing.meta or {})["fastmcp"]["tags"]) == {"meetings", "write"}
+    assert set((initing.meta or {})["fastmcp"]["tags"]) == {
+        "meetings",
+        "meetings_recurring",
+        "write",
+    }
 
     # The two destructive tools carry the full contract: annotations, tags, and
     # (asserted separately below) the confirm=false refusal.
@@ -150,6 +166,7 @@ async def test_all_six_tools_are_registered_with_honest_annotations(
         assert set(destroying.inputSchema["properties"]) == properties, name
         assert set((destroying.meta or {})["fastmcp"]["tags"]) == {
             "meetings",
+            "meetings_recurring",
             "write",
             "destructive",
         }, name

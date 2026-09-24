@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from openproject_mcp.config import Settings, check_runtime_config
+from openproject_mcp.groups import CORE_PROFILE_HIDDEN_GROUPS
 
 #: Every environment variable the server reads, frozen at the first release.
 #: Adding, renaming or removing a name is a compatibility decision — when you
@@ -22,6 +24,7 @@ ENV_SURFACE = frozenset(
         "OPENPROJECT_MCP_READ_ONLY",
         "OPENPROJECT_MCP_ADMIN_TOOLS",
         "OPENPROJECT_MCP_DISABLE",
+        "OPENPROJECT_MCP_PROFILE",
         "OPENPROJECT_MCP_INSECURE",
         "OPENPROJECT_MCP_DOWNLOAD_DIR",
         "OPENPROJECT_MCP_MAX_DOWNLOAD_MB",
@@ -59,6 +62,7 @@ def test_every_documented_env_var_is_read(monkeypatch: pytest.MonkeyPatch) -> No
         "OPENPROJECT_MCP_READ_ONLY": "1",
         "OPENPROJECT_MCP_ADMIN_TOOLS": "true",
         "OPENPROJECT_MCP_DISABLE": "meetings, news",
+        "OPENPROJECT_MCP_PROFILE": "CORE",
         "OPENPROJECT_MCP_DOWNLOAD_DIR": "/tmp/downloads",
         "OPENPROJECT_MCP_MAX_DOWNLOAD_MB": "42",
         "OPENPROJECT_MCP_CACHE_TTL": "60",
@@ -84,6 +88,7 @@ def test_every_documented_env_var_is_read(monkeypatch: pytest.MonkeyPatch) -> No
     assert settings.api_key is not None and settings.api_key.get_secret_value() == "secret"
     assert settings.read_only and settings.admin_tools and settings.insecure
     assert settings.disabled_groups == {"meetings", "news"}
+    assert settings.profile == "core"
     assert str(settings.download_dir) == "/tmp/downloads"
     assert settings.max_download_mb == 42
     assert settings.max_download_bytes == 42 * 1024 * 1024
@@ -99,6 +104,30 @@ def test_every_documented_env_var_is_read(monkeypatch: pytest.MonkeyPatch) -> No
     assert settings.pool_timeout == 4.5
     assert settings.max_connections == 7
     assert settings.max_retries == 5
+
+
+def test_profile_defaults_to_full_and_hides_nothing() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.profile == "full"
+    assert settings.profile_hidden_groups == frozenset()
+
+
+def test_core_profile_hides_the_module_backed_groups() -> None:
+    settings = Settings(_env_file=None, profile="core")  # type: ignore[call-arg]
+    assert settings.profile_hidden_groups == CORE_PROFILE_HIDDEN_GROUPS
+
+
+def test_invalid_profile_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENPROJECT_MCP_PROFILE", "minimal")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_unknown_disabled_groups_are_reported() -> None:
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None, disable="meetings,meeting,meetings_recurring,wikis"
+    )
+    assert settings.unknown_disabled_groups == {"meeting", "wikis"}
 
 
 def test_env_surface_is_frozen() -> None:

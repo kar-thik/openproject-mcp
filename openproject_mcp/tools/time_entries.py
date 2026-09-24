@@ -384,9 +384,8 @@ def register(mcp: FastMCP) -> None:
             int | None,
             Field(
                 description=(
-                    "Only entries booked on this work package. Ids come from "
-                    "search_work_packages / list_work_packages. The filter name differs between "
-                    "OpenProject versions; this tool probes the instance and uses the right one."
+                    "Only entries on this work package; ids from search_work_packages / "
+                    "list_work_packages."
                 )
             ),
         ] = None,
@@ -394,8 +393,8 @@ def register(mcp: FastMCP) -> None:
             int | str | None,
             Field(
                 description=(
-                    "Only entries in this project (numeric id or identifier, from "
-                    "list_projects). Includes project-level entries that have no work package."
+                    "Only entries in this project (numeric id or identifier; from "
+                    "list_projects), including project-level entries with no work package."
                 )
             ),
         ] = None,
@@ -403,10 +402,8 @@ def register(mcp: FastMCP) -> None:
             int | str | None,
             Field(
                 description=(
-                    "Whose time to list: a numeric user id, or the literal 'me' for the token "
-                    "owner. Omit for everyone you are allowed to see — on most instances that "
-                    "is only your own entries unless you hold the view-all-time-entries "
-                    "permission."
+                    "Whose time to list: numeric user id, or 'me'. Omit for everyone you're "
+                    "permitted to see."
                 )
             ),
         ] = None,
@@ -414,8 +411,8 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(
                 description=(
-                    "Earliest spent-on date, ISO YYYY-MM-DD, inclusive. Combine with to_date "
-                    "for a range; either bound may be omitted for an open-ended one."
+                    "Earliest spent-on date, ISO YYYY-MM-DD, inclusive; combine with to_date "
+                    "for a range (either bound optional)."
                 )
             ),
         ] = None,
@@ -427,8 +424,8 @@ def register(mcp: FastMCP) -> None:
             int | None,
             Field(
                 description=(
-                    "Only entries booked on this activity. Activity ids are instance-specific "
-                    "and come from get_project_metadata(project_id=...)."
+                    "Only entries booked on this activity; ids are instance-specific, from "
+                    "get_project_metadata(project_id=...)."
                 )
             ),
         ] = None,
@@ -436,10 +433,9 @@ def register(mcp: FastMCP) -> None:
             bool,
             Field(
                 description=(
-                    "Compute an accurate total over EVERY matching entry (not just this page) "
-                    "and break it down per activity. Costs one request per 100 matches and is "
-                    f"capped at {SUM_ENTRY_CAP} entries — a cap hit is reported in 'notes'. "
-                    "Leave false when you only need rows."
+                    "Accurate total over every matching entry (not just this page), broken "
+                    f"down per activity. One request per 100 matches, capped at "
+                    f"{SUM_ENTRY_CAP} (noted if hit). Leave false for rows only."
                 )
             ),
         ] = False,
@@ -450,8 +446,8 @@ def register(mcp: FastMCP) -> None:
                 ge=1,
                 le=MAX_PAGE_SIZE,
                 description=(
-                    f"Entries per page (max {MAX_PAGE_SIZE}); the instance may clamp it lower "
-                    "and the returned pagination reports what actually came back."
+                    f"Entries per page (max {MAX_PAGE_SIZE}); the instance may clamp lower, "
+                    "reported in pagination."
                 ),
             ),
         ] = DEFAULT_PAGE_SIZE,
@@ -459,43 +455,36 @@ def register(mcp: FastMCP) -> None:
             bool,
             Field(
                 description=(
-                    "Aggregate every page of rows into one result instead of returning "
-                    f"page 1. Capped at {FETCH_ALL_CAP} items with a note when the cap "
-                    "bites; mutually exclusive with page. sum_hours already reads every "
-                    "matching entry for its total, with or without fetch_all."
+                    "Aggregate every page into one result instead of page 1. Capped at "
+                    f"{FETCH_ALL_CAP} items (noted when it bites); mutually exclusive with "
+                    "page. sum_hours already reads every entry regardless."
                 )
             ),
         ] = False,
     ) -> ListEnvelope[TimeEntryRow]:
         """List logged time, filtered server-side, with an optional accurate total.
 
-        Use it to answer "how much time went into this ticket?", "what did I
-        book last week?" or "how much did the team spend on project X in June?".
-        Filters combine with AND, so `project_id` + `user='me'` + a date range is
-        one call.
+        Answers "how much time went into this ticket?" or "how much did the team spend on
+        project X in June?". Filters combine with AND, so `project_id` + `user='me'` + a date
+        range is one call.
 
         Returns the standard list envelope: ``items`` of ``{id, hours, spent_on,
         comment, user, activity, work_package, project}`` plus ``pagination``.
         ``hours`` is a float (1.5 = 1h30), never an ISO duration. With
-        ``sum_hours=true`` the envelope also carries ``sums.total_hours`` over
-        all matches and one ``groups`` bucket per activity with its own
-        ``count`` and ``sums.total_hours`` — those cover the whole filtered set,
-        so never add pages up yourself.
+        ``sum_hours=true``, the envelope also carries ``sums.total_hours`` over
+        all matches and a ``groups`` bucket per activity with its own
+        ``count``/``sums.total_hours`` — both over the whole filtered set, so
+        never add pages up yourself.
 
-        Pitfalls. Visibility is permission-bound: without the
-        view-all-time-entries permission you see only your own entries, and a
-        small total may mean "not allowed to see" rather than "nobody booked
-        time". ``work_package_id`` scopes to that one work package — child
-        work packages are **not** included, so a parent's roll-up needs a query
-        per child. The summing path stops at 2000 entries and says so in
-        ``notes``; narrow the date range or the project when that happens
-        rather than trusting the number.
+        Pitfalls. Without view-all-time-entries you see only your own entries, so a small
+        total may mean "not allowed to see" rather than "nobody booked time". ``work_package_id``
+        scopes to that one work package — child work packages are **not** included; a
+        parent's roll-up needs a query per child. Summing stops at 2000 entries, noted in
+        ``notes``; narrow the range or project rather than trusting the number.
 
-        Cross-references: book time with ``log_time``; correct an entry with
-        ``update_time_entry`` and remove one with ``delete_time_entry``; the
-        activity ids and names valid in a project come from
-        ``get_project_metadata``; the work package itself (including its
-        aggregated ``spent_hours``) comes from ``get_work_package``.
+        Cross-references: book time with ``log_time``; correct with ``update_time_entry``,
+        remove with ``delete_time_entry``; activity ids/names from ``get_project_metadata``;
+        the work package from ``get_work_package``.
         """
         ctx = get_tool_context()
         notes: list[str] = []

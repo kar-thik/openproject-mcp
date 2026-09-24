@@ -964,8 +964,8 @@ def register(mcp: FastMCP) -> None:
             int | str | None,
             Field(
                 description=(
-                    "Numeric project id or project identifier (URL slug) to scope the query. "
-                    "Both come from list_projects. Omit for a cross-project view."
+                    "Numeric project id or identifier (URL slug); from list_projects. Omit "
+                    "for a cross-project view."
                 )
             ),
         ] = None,
@@ -973,8 +973,8 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(
                 description=(
-                    "Optional free text, AND-combined with every other filter. Matches subject, "
-                    "description and comments. For text-only lookups prefer search_work_packages."
+                    "Free text, AND-combined with other filters; matches subject, description "
+                    "and comments."
                 )
             ),
         ] = None,
@@ -982,122 +982,99 @@ def register(mcp: FastMCP) -> None:
             StatusScope,
             Field(
                 description=(
-                    "Status bucket: 'open' (default), 'closed' or 'all'. An explicit status "
-                    "filter is always sent, so the server's implicit open-only default never "
-                    "silently applies. Ignored when status_ids is given."
+                    "Status bucket: 'open' (default), 'closed' or 'all'. Ignored when status_ids "
+                    "is given."
                 )
             ),
         ] = "open",
         status_ids: Annotated[
             list[int] | None,
-            Field(
-                description=(
-                    "Exact status ids. **Overrides status_scope** — the two never fight. Ids come "
-                    "from get_project_metadata."
-                )
-            ),
+            Field(description="Exact status ids. **Overrides status_scope**."),
         ] = None,
         type_ids: Annotated[
             list[int] | None,
-            Field(description="Work package type ids (Task, Bug…); from get_project_metadata."),
+            Field(description="Type ids (Task, Bug…)."),
         ] = None,
         priority_ids: Annotated[
             list[int] | None,
-            Field(
-                description=(
-                    "Priority ids; from get_project_metadata. Never guess these — priority ids "
-                    "differ per instance."
-                )
-            ),
+            Field(description="Priority ids."),
         ] = None,
         assignee: Annotated[
             list[str] | None,
             Field(
                 description=(
-                    "Assignee filter: numeric user ids, the single value 'me', or the single "
-                    "value 'none' for unassigned work. Ids come from search_principals; "
+                    "Assignee filter: numeric user ids, 'me', or 'none' for unassigned work. "
                     "get_instance_info gives the current user."
                 )
             ),
         ] = None,
         author: Annotated[
             list[str] | None,
-            Field(description="Author (creator) user ids, or 'me'. 'none' is not valid here."),
+            Field(description="Author (creator) user ids, or 'me' ('none' not valid)."),
         ] = None,
         responsible: Annotated[
             list[str] | None,
-            Field(description="Accountable user ids, 'me', or 'none' for no accountable user."),
+            Field(description="Accountable user ids, 'me', or 'none' (no accountable user)."),
         ] = None,
         version_ids: Annotated[
             list[int] | None,
-            Field(description="Version / sprint ids; from get_project_metadata."),
+            Field(description="Version / sprint ids."),
         ] = None,
         parent_id: Annotated[
             int | None,
             Field(
                 description=(
-                    "Direct children of this work package only. Mutually exclusive with "
-                    "top_level_only; use ancestor_id for the whole subtree."
+                    "Direct children only. Mutually exclusive with top_level_only; use "
+                    "ancestor_id for the whole subtree."
                 )
             ),
         ] = None,
         top_level_only: Annotated[
             bool,
-            Field(description="Only work packages that have no parent. Excludes every subtask."),
+            Field(description="Work packages with no parent (excludes every subtask)."),
         ] = False,
         ancestor_id: Annotated[
             int | None,
-            Field(
-                description=(
-                    "Everything in this work package's subtree at any depth, unlike parent_id "
-                    "which is one level only."
-                )
-            ),
+            Field(description="Whole subtree, any depth (parent_id is one level only)."),
         ] = None,
         milestones_only: Annotated[
             bool,
             Field(
                 description=(
-                    "Only milestone-type work packages. Resolved against this instance's own "
-                    "types (no hardcoded ids) and intersected with type_ids when both are given."
+                    "Only milestone-type work packages; intersected with type_ids when both "
+                    "are given."
                 )
             ),
         ] = False,
-        due_before: Annotated[
-            str | None, Field(description="Due on or before this ISO date (YYYY-MM-DD).")
-        ] = None,
-        due_after: Annotated[
-            str | None, Field(description="Due on or after this ISO date (YYYY-MM-DD).")
-        ] = None,
+        due_before: Annotated[str | None, Field(description="Due on/before, ISO date.")] = None,
+        due_after: Annotated[str | None, Field(description="Due on/after, ISO date.")] = None,
         start_before: Annotated[
-            str | None, Field(description="Starts on or before this ISO date (YYYY-MM-DD).")
+            str | None, Field(description="Starts on/before, ISO date.")
         ] = None,
-        start_after: Annotated[
-            str | None, Field(description="Starts on or after this ISO date (YYYY-MM-DD).")
-        ] = None,
+        start_after: Annotated[str | None, Field(description="Starts on/after, ISO date.")] = None,
         created_since: Annotated[
-            str | None, Field(description="Created on or after this ISO date (YYYY-MM-DD).")
+            str | None, Field(description="Created on/after, ISO date.")
         ] = None,
         updated_since: Annotated[
-            str | None, Field(description="Last changed on or after this ISO date (YYYY-MM-DD).")
+            str | None, Field(description="Changed on/after, ISO date.")
         ] = None,
         percentage_done_min: Annotated[
-            int | None, Field(ge=0, le=100, description="Minimum progress percentage, 0-100.")
+            int | None, Field(ge=0, le=100, description="Minimum progress percent.")
         ] = None,
         percentage_done_max: Annotated[
-            int | None, Field(ge=0, le=100, description="Maximum progress percentage, 0-100.")
+            int | None, Field(ge=0, le=100, description="Maximum progress percent.")
         ] = None,
         watcher: Annotated[
             list[str] | None,
-            Field(description="Work packages watched by these user ids, or 'me'."),
+            Field(description="Watched by these user ids, or 'me'."),
         ] = None,
         raw_filters: Annotated[
             list[RawFilter] | None,
             Field(
                 description=(
-                    "Escape hatch for filters this tool does not type, most importantly custom "
-                    "fields: [{'name': 'customField12', 'operator': '=', 'values': ['4']}]. "
-                    "Custom field names and option ids come from get_work_package_schema."
+                    "Escape hatch for untyped filters, e.g. custom fields: [{'name': "
+                    "'customField12', 'operator': '=', 'values': ['4']}]. Field names and "
+                    "option ids come from get_work_package_schema."
                 )
             ),
         ] = None,
@@ -1105,8 +1082,8 @@ def register(mcp: FastMCP) -> None:
             list[list[str]] | None,
             Field(
                 description=(
-                    "Server-side sort as snake_case pairs, e.g. [['due_date','asc'],"
-                    "['priority','desc']]. An unknown key fails with the allowed set listed."
+                    "Sort as snake_case pairs, e.g. [['due_date','asc'],['priority','desc']]. "
+                    "An unknown key fails, listing the allowed set."
                 )
             ),
         ] = None,
@@ -1114,8 +1091,8 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(
                 description=(
-                    "Group the full filtered set by one snake_case column (e.g. 'status', "
-                    "'assignee'). Counts in `groups` cover every page, not just this one."
+                    "Group the full filtered set by one snake_case column (e.g. 'status'). "
+                    "Counts in `groups` cover every page."
                 )
             ),
         ] = None,
@@ -1123,8 +1100,8 @@ def register(mcp: FastMCP) -> None:
             bool,
             Field(
                 description=(
-                    "Ask the server for totals (estimated/remaining/spent hours, story points) "
-                    "over the full filtered set. Never add up pages yourself."
+                    "Server-computed totals (estimated/remaining/spent hours, story points) over "
+                    "the full filtered set; never add up pages yourself."
                 )
             ),
         ] = False,
@@ -1136,29 +1113,28 @@ def register(mcp: FastMCP) -> None:
             bool,
             Field(
                 description=(
-                    "Aggregate every page into one result instead of returning page 1. "
-                    f"Capped at {_shared.FETCH_ALL_CAP} items with a note when the cap "
-                    "bites; mutually exclusive with page."
+                    "Aggregate every page into one result instead of page 1. Capped at "
+                    f"{_shared.FETCH_ALL_CAP} items (noted when it bites); mutually exclusive "
+                    "with page."
                 )
             ),
         ] = False,
     ) -> ListEnvelope[WorkPackageRow]:
         """List work packages with structured filters — the workhorse read tool.
 
-        Use it for every "what is assigned to me", "what is overdue", "what is in this sprint"
-        question. Convenience queries are parameters here, not separate tools: overdue →
-        `due_before=<today>`; unassigned → `assignee=['none']`; nearly done →
+        Handles "assigned to me", "overdue", "in this sprint" via parameters, not separate
+        tools: overdue → `due_before=<today>`; unassigned → `assignee=['none']`; nearly done →
         `percentage_done_min=80`; subtasks of a ticket → `parent_id=<id>`.
 
-        Returns the standard list envelope: compact rows plus `pagination`, plus `groups` when
-        `group_by` was requested and `sums` when `show_sums` was requested. Groups and sums are
-        computed server-side over the whole filtered set, independent of paging — never re-add
-        them from the rows on one page.
+        Returns the standard list envelope: rows plus `pagination`, plus `groups` when
+        `group_by` is set and `sums` when `show_sums` is set — both computed server-side over
+        the whole filtered set, independent of paging; never re-add them from one page's rows.
 
-        Pitfalls: this returns **open work packages only** unless you pass `status_scope` or
-        `status_ids`, so say so when you report counts. `status_ids` overrides `status_scope`.
-        Status, type, priority and version ids differ per instance and must come from
-        `get_project_metadata`, never from memory.
+        Pitfalls: returns **open work packages only** unless `status_scope` or `status_ids` is
+        given (`status_ids` overrides `status_scope`), so say so when reporting counts. Status,
+        type, priority and version ids come from `get_project_metadata`; user ids (assignee,
+        author, responsible, watcher) from `search_principals` — never guess either. Date
+        filters take YYYY-MM-DD.
 
         For text lookups use `search_work_packages`; for one work package's description, custom
         fields and children use `get_work_package`.
@@ -1388,71 +1364,55 @@ def register(mcp: FastMCP) -> None:
     async def create_work_package(
         project: Annotated[
             int | str,
-            Field(
-                description=(
-                    "Numeric project id or project identifier (URL slug). Both come from "
-                    "list_projects."
-                )
-            ),
+            Field(description="Numeric project id or identifier (URL slug); from list_projects."),
         ],
         type: Annotated[
             str,
             Field(
                 description=(
-                    "Work package type as a **name or numeric id** ('Task', 'Bug', 'Milestone', "
-                    "or 7). Names resolve against this instance's types; an unknown or ambiguous "
-                    "name fails with the valid values listed."
+                    "Type name or id ('Task', 'Bug', 'Milestone', or 7). Unknown or ambiguous "
+                    "names fail listing the valid values."
                 )
             ),
         ],
-        subject: Annotated[str, Field(description="The title. Required and must not be blank.")],
-        description: Annotated[
-            str | None, Field(description="Body text in markdown. Omit for an empty description.")
-        ] = None,
+        subject: Annotated[str, Field(description="The title; must not be blank.")],
+        description: Annotated[str | None, Field(description="Body text in markdown.")] = None,
         start_date: Annotated[
-            str | None, Field(description="ISO date (YYYY-MM-DD). Not valid on milestone types.")
+            str | None, Field(description="ISO date (YYYY-MM-DD); not valid on milestones.")
         ] = None,
         due_date: Annotated[
-            str | None, Field(description="ISO date (YYYY-MM-DD). Not valid on milestone types.")
+            str | None, Field(description="ISO date (YYYY-MM-DD); not valid on milestones.")
         ] = None,
         date: Annotated[
             str | None,
             Field(
                 description=(
-                    "The single ISO date of a **milestone**. Milestones carry `date` instead of "
-                    "start_date/due_date; passing both shapes is rejected locally."
+                    "ISO date for a **milestone** (used instead of start_date/due_date). "
+                    "Passing both is rejected locally."
                 )
             ),
         ] = None,
         status: Annotated[
             str | None,
             Field(
-                description=(
-                    "Status name or numeric id. Omit to take the type's default status — do not "
-                    "guess an id."
-                )
+                description="Status name or numeric id. Omit for the type's default; don't guess."
             ),
         ] = None,
         priority: Annotated[
             str | None,
-            Field(
-                description=(
-                    "Priority name or numeric id ('High', 'Normal', or 8). Omit for the instance "
-                    "default; priority ids differ per instance."
-                )
-            ),
+            Field(description="Priority name or id ('High', 'Normal', or 8). Omit for default."),
         ] = None,
         assignee: Annotated[
             str | None,
             Field(
                 description=(
-                    "Numeric user id to assign. 'me' is not accepted in writes — call "
-                    "get_instance_info for the current user's id."
+                    "Numeric user id ('me' isn't accepted in writes; get_instance_info gives "
+                    "the current user's id)."
                 )
             ),
         ] = None,
         responsible: Annotated[
-            str | None, Field(description="Numeric user id of the accountable person.")
+            str | None, Field(description="Numeric id of the accountable person.")
         ] = None,
         version: Annotated[
             str | None,
@@ -1461,23 +1421,23 @@ def register(mcp: FastMCP) -> None:
         target_versions: Annotated[
             list[int] | None,
             Field(
-                description="Target version ids. [] clears assignments; omit to use defaults. "
-                "Multiple values require instance support. Mutually exclusive with version."
+                description="Target version ids. [] clears; omit to keep defaults. Multiple "
+                "values need instance support. Mutually exclusive with version."
             ),
         ] = None,
         parent_id: Annotated[
             int | None,
-            Field(description="Create this as a child of an existing work package id."),
+            Field(description="Work package id to create this as a child of."),
         ] = None,
         estimated_hours: Annotated[
             float | None,
-            Field(ge=0, description="Estimate in hours as a decimal (7.5 = seven and a half)."),
+            Field(ge=0, description="Estimate in hours, decimal (e.g. 7.5)."),
         ] = None,
         story_points: Annotated[
             int | None, Field(ge=0, description="Story points as a non-negative integer.")
         ] = None,
         remaining_hours: Annotated[
-            float | None, Field(ge=0, description="Remaining work in hours as a decimal.")
+            float | None, Field(ge=0, description="Remaining work in hours, decimal.")
         ] = None,
         custom_fields: Annotated[
             dict[str, Any] | None,
@@ -1485,9 +1445,8 @@ def register(mcp: FastMCP) -> None:
                 description=(
                     "Custom field writes keyed by wire key or display name: "
                     "{'customField12': 'High'} or {'Severity': 'High'}. List/user/version fields "
-                    "accept option ids or option names. Unknown or ambiguous keys fail with the "
-                    "valid keys listed — nothing is ever silently dropped. "
-                    "get_work_package_schema shows what this project and type accept."
+                    "take ids or names. Unknown keys fail listing the valid ones. "
+                    "get_work_package_schema shows what this project/type accepts."
                 )
             ),
         ] = None,
@@ -1495,31 +1454,25 @@ def register(mcp: FastMCP) -> None:
             list[str] | None,
             Field(
                 description=(
-                    "Local file paths to attach. Files upload uncontainered first and are claimed "
-                    "by the new work package, which is the flow that works even when the author "
-                    "lacks edit permission. Only usable when the server shares a filesystem with "
-                    "you (stdio transport)."
+                    "Local file paths to attach (stdio transport only — the server must share "
+                    "your filesystem)."
                 )
             ),
         ] = None,
-        notify: Annotated[
-            bool, Field(description="Send OpenProject notification emails for this creation.")
-        ] = True,
+        notify: Annotated[bool, Field(description="Email notifications for this creation.")] = True,
     ) -> WorkPackageFull:
         """Create a work package, validated through OpenProject's own form endpoint first.
 
         Use it for new tasks, bugs, subtasks (`parent_id`) and milestones (`date`). The form
-        pre-flight is what makes failures useful: an invalid status, a missing required custom
-        field or a type the project does not enable comes back as structured violations *with the
-        allowed values*, before anything is written.
+        pre-flight surfaces an invalid status, a missing required custom field or a disallowed
+        type as structured violations *with the allowed values*, before anything is written.
 
         Returns the created work package in full detail, including its new `id`, `lock_version`
         and resolved custom fields.
 
-        Pitfalls: `type`, `status` and `priority` take names or ids, but versions, assignees and
-        parents need numeric ids. Milestone types reject `start_date`/`due_date` — use `date`.
-        Custom fields must exist on the project/type schema; check `get_work_package_schema` when
-        unsure.
+        Pitfalls: `type`, `status` and `priority` take names or ids; versions, assignees and
+        parents need numeric ids. Custom fields must exist on the schema — check
+        `get_work_package_schema` when unsure.
 
         To change it afterwards use `update_work_package`; to attach a file to an existing work
         package use `upload_attachment`.
@@ -1630,15 +1583,14 @@ def register(mcp: FastMCP) -> None:
     )
     @_shared.tool_errors
     async def update_work_package(
-        id: Annotated[int, Field(description="Work package id to change (the #1234 number).")],
+        id: Annotated[int, Field(description="Work package id to change (#1234).")],
         lock_version: Annotated[
             int | None,
             Field(
                 description=(
-                    "The `lock_version` you read from get_work_package. Pass it and the write "
-                    "fails loudly (409) if somebody else edited the work package in the meantime. "
-                    "Omit it and the current version is fetched and echoed — still safe, just one "
-                    "more round trip and a slightly wider conflict window."
+                    "The `lock_version` from get_work_package. Passing it makes a concurrent "
+                    "edit fail loudly (409); omitting it fetches and echoes the current version "
+                    "— safe, but a wider conflict window."
                 )
             ),
         ] = None,
@@ -1649,9 +1601,8 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(
                 description=(
-                    "New markdown body. Omit to leave unchanged; pass null to empty it. Replaces "
-                    "the whole description — read it with get_work_package first if you mean to "
-                    "append."
+                    "New markdown body; omit to leave unchanged, null to empty it. Replaces the "
+                    "whole text; read it first to append instead."
                 )
             ),
         ] = KEEP,
@@ -1663,9 +1614,7 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(
                 description=(
-                    "New status as a name or numeric id. Validated through the form endpoint, so "
-                    "an invalid workflow transition comes back listing the statuses that *are* "
-                    "reachable from the current one."
+                    "New status as a name or id; invalid transitions list the reachable statuses."
                 )
             ),
         ] = None,
@@ -1676,33 +1625,31 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(
                 description=(
-                    "Numeric user id to assign. Omit to leave unchanged; pass null (or 'none') to "
-                    "unassign — that sends a null href rather than a bogus user id."
+                    "Numeric user id; omit to leave unchanged, null (or 'none') to unassign."
                 )
             ),
         ] = KEEP,
         responsible: Annotated[
             str | None,
-            Field(description="Numeric user id of the accountable person; null clears it."),
+            Field(description="Numeric id of the accountable person; null clears it."),
         ] = KEEP,
         version: Annotated[
             str | None,
-            Field(description="Numeric version / sprint id; null removes it from the version."),
+            Field(description="Numeric version/sprint id; null removes it."),
         ] = KEEP,
         target_versions: Annotated[
             list[int] | None,
             Field(
-                description="Target version ids. [] clears assignments; omit to leave unchanged. "
-                "Multiple values require instance support. Mutually exclusive with version."
+                description="Target version ids; [] clears, omit leaves unchanged. Multiple "
+                "values need instance support. Mutually exclusive with version."
             ),
         ] = None,
         parent_id: Annotated[
             int | str | None,
             Field(
                 description=(
-                    "Re-parent this work package under another id; null detaches it and makes it "
-                    "top level. This is the only hierarchy tool — there is no separate "
-                    "set/remove-parent tool."
+                    "Re-parent under another id; null detaches to top level (the only "
+                    "hierarchy tool)."
                 )
             ),
         ] = KEEP,
@@ -1720,33 +1667,30 @@ def register(mcp: FastMCP) -> None:
             int | None, Field(ge=0, le=100, description="Progress 0-100.")
         ] = None,
         estimated_hours: Annotated[
-            float | None, Field(ge=0, description="Estimate in hours as a decimal.")
+            float | None, Field(ge=0, description="Estimate in hours, decimal.")
         ] = None,
         story_points: Annotated[
             int | None, Field(ge=0, description="Story points as a non-negative integer.")
         ] = None,
         remaining_hours: Annotated[
-            float | None, Field(ge=0, description="Remaining work in hours as a decimal.")
+            float | None, Field(ge=0, description="Remaining work in hours, decimal.")
         ] = None,
         custom_fields: Annotated[
             dict[str, Any] | None,
             Field(
                 description=(
                     "Custom field writes keyed by wire key or display name, e.g. "
-                    "{'Severity': 'High'}. Unknown or non-writable keys fail with the valid keys "
-                    "listed. Only the keys you pass are touched."
+                    "{'Severity': 'High'}. Unknown or non-writable keys fail listing the valid "
+                    "ones. Only passed keys are touched."
                 )
             ),
         ] = None,
-        notify: Annotated[
-            bool, Field(description="Send OpenProject notification emails for this change.")
-        ] = True,
+        notify: Annotated[bool, Field(description="Email notifications for this change.")] = True,
     ) -> WorkPackageFull:
         """Change any writable field of a work package, with optimistic locking done properly.
 
-        Use it to assign or unassign, move a status forward, re-schedule, re-parent, set progress
-        or write custom fields. Every convenience the old tooling spread across a dozen tools is a
-        parameter here.
+        Use it to assign or unassign, move a status forward, re-schedule, re-parent, set
+        progress, or write custom fields — one tool instead of many.
 
         Returns the updated work package in full detail, including the new `lock_version` to use
         for a follow-up edit.
@@ -1754,9 +1698,7 @@ def register(mcp: FastMCP) -> None:
         Pitfalls: omitted parameters are left alone, while passing null **clears** a field
         (assignee, responsible, version, parent, dates, description). A 409 error means somebody
         else changed the work package first — the error carries the fresh `lock_version` and the
-        conflicting fields, so re-read, decide, and retry deliberately rather than blindly.
-        Status changes are validated against the workflow, so an invalid transition lists the
-        allowed targets.
+        conflicting fields, so re-read and retry deliberately.
 
         Ids come from `get_work_package` / `list_work_packages`; status, priority, type and
         version values come from `get_project_metadata`.
