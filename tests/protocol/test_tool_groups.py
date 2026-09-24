@@ -189,6 +189,30 @@ async def test_disabled_sub_tag_stays_hidden_when_the_parent_is_enabled() -> Non
     assert structured["notes"] == ["meetings_recurring stays hidden (OPENPROJECT_MCP_DISABLE)."]
 
 
+async def test_enabling_the_parent_after_its_sub_tag_reveals_the_rest() -> None:
+    async with Client(build_server(_settings(profile="core"))) as client:
+        first = await client.call_tool("enable_tool_group", {"group": "meetings_recurring"})
+        second = await client.call_tool("enable_tool_group", {"group": "meetings"})
+        listed = await _names(client)
+    first_structured = first.structured_content
+    second_structured = second.structured_content
+    assert first_structured is not None and second_structured is not None
+    assert set(first_structured["tools_enabled"]) == MEETINGS_RECURRING_GROUP_TOOLS
+    assert second_structured["status"] == "enabled"
+    assert set(second_structured["tools_enabled"]) == (
+        MEETINGS_GROUP_TOOLS - MEETINGS_RECURRING_GROUP_TOOLS
+    )
+    assert listed >= MEETINGS_GROUP_TOOLS
+
+
+async def test_enable_tool_group_is_annotated_as_a_local_read() -> None:
+    async with Client(build_server(_settings())) as client:
+        tool = {t.name: t for t in await client.list_tools()}["enable_tool_group"]
+    assert tool.annotations is not None
+    assert tool.annotations.readOnlyHint is True
+    assert tool.annotations.openWorldHint is False
+
+
 async def test_unknown_disable_names_warn_and_the_server_still_lists(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

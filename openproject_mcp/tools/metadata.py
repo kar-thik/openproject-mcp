@@ -1100,7 +1100,7 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool(
         name="enable_tool_group",
         tags=tool_tags(GROUP_METADATA, READ),
-        annotations=read_annotations(title="Enable tool group"),
+        annotations=read_annotations(title="Enable tool group", open_world=False),
     )
     @tool_errors
     async def enable_tool_group(
@@ -1158,7 +1158,11 @@ def register(mcp: FastMCP) -> None:
             ) from exc
 
         before = await ctx.fastmcp.list_tools()
-        if any(group in tool.tags for tool in before):
+        # A sub-tag's tools also carry the parent tag, so judge the parent by the tools that
+        # carry none of its sub-tags — otherwise enabling meetings_recurring first would make
+        # meetings look "already visible" while its own eleven tools stay hidden.
+        subgroups = {child for child, parent in PARENT_GROUP.items() if parent == group}
+        if any(group in tool.tags and not (subgroups & tool.tags) for tool in before):
             return ToolGroupStatus(
                 group=group,
                 title=GROUP_TITLES[group],
