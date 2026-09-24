@@ -134,8 +134,10 @@ __all__ = [
     "READ",
     "WRITE",
     "ToolContext",
+    "VisibilityRule",
     "build_envelope",
     "collect_all",
+    "deployment_rules",
     "destructive_annotations",
     "envelope_from_collection",
     "envelope_json",
@@ -145,6 +147,7 @@ __all__ = [
     "get_tool_context",
     "normalize_groups",
     "normalize_sums",
+    "profile_rules",
     "read_annotations",
     "report_progress",
     "require_confirmation",
@@ -189,6 +192,43 @@ def tool_tags(group: str, *kinds: str) -> set[str]:
     if not kinds:
         raise ValueError("A tool needs at least one kind tag: READ, WRITE, DESTRUCTIVE or ADMIN")
     return {group, *kinds}
+
+
+# --- visibility rules (SPEC §3.2) -----------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class VisibilityRule:
+    """Tags whose components are disabled; rules apply in order, last match wins."""
+
+    tags: frozenset[str]
+
+
+def deployment_rules(settings: Settings) -> list[VisibilityRule]:
+    """The operator's hard limits: ``READ_ONLY``, the admin gate and ``DISABLE``.
+
+    Applied globally at startup, and re-asserted on a session after
+    ``enable_tool_group`` so that re-enabling a group can never reveal a write,
+    admin or operator-removed tool.
+    """
+    rules: list[VisibilityRule] = []
+    if settings.read_only:
+        rules.append(VisibilityRule(frozenset({WRITE, DESTRUCTIVE, ADMIN})))
+    elif not settings.admin_tools:
+        rules.append(VisibilityRule(frozenset({ADMIN})))
+    if settings.disabled_groups:
+        rules.append(VisibilityRule(settings.disabled_groups))
+    return rules
+
+
+def profile_rules(settings: Settings) -> list[VisibilityRule]:
+    """The soft limit: groups ``OPENPROJECT_MCP_PROFILE=core`` hides at startup.
+
+    Unlike :func:`deployment_rules`, a session may lift these with
+    ``enable_tool_group``.
+    """
+    hidden = settings.profile_hidden_groups
+    return [VisibilityRule(hidden)] if hidden else []
 
 
 # --- annotations (SPEC §5.4) ----------------------------------------------
