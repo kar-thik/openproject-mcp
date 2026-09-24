@@ -221,7 +221,7 @@ downtime: create the new token, switch your clients over, then revoke the old on
 ## Configuration
 
 Configuration is entirely environment-driven. The table below is the authoritative reference:
-the server binds **exactly these 25 names and no others**. Bare, unprefixed names such as
+the server binds **exactly these 26 names and no others**. Bare, unprefixed names such as
 `READ_TIMEOUT` or `API_KEY` are deliberately ignored (a stray variable in your shell cannot
 change or break the server), as is any other unknown variable. A `.env` file in the server's
 working directory is read with the same names; real environment variables take precedence.
@@ -238,6 +238,7 @@ From-source users can start from
 | `OPENPROJECT_MCP_READ_ONLY` | `false` | Serve read tools only: every write, destructive and admin tool is removed at startup. |
 | `OPENPROJECT_MCP_ADMIN_TOOLS` | `false` | Expose the three admin-gated membership write tools (hidden by default). |
 | `OPENPROJECT_MCP_DISABLE` | empty | Comma-separated group tags to remove whole tool groups at startup (see below). |
+| `OPENPROJECT_MCP_PROFILE` | `full` | `core` hides the module-backed groups at startup; a session can bring one back with `enable_tool_group` (see below). |
 | `OPENPROJECT_MCP_INSECURE` | `false` | Allow `--transport http` to start without auth tokens. Local development only. |
 | `OPENPROJECT_MCP_DOWNLOAD_DIR` | `./openproject-downloads` | Directory where `download_attachment` writes files (created if missing; default is relative to the server's working directory). |
 | `OPENPROJECT_MCP_MAX_DOWNLOAD_MB` | `100` | Size cap for attachment downloads, in MiB. |

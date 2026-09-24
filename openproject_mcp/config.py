@@ -23,9 +23,12 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from openproject_mcp.groups import ALL_GROUPS, CORE_PROFILE_HIDDEN_GROUPS
+
 LogFormat = Literal["text", "json"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 TransportName = Literal["stdio", "http"]
+Profile = Literal["full", "core"]
 
 DEFAULT_CACHE_TTL = 300.0
 PROBE_CACHE_TTL = 3600.0
@@ -100,6 +103,7 @@ class Settings(BaseSettings):
     read_only: bool = Field(default=False, validation_alias="OPENPROJECT_MCP_READ_ONLY")
     admin_tools: bool = Field(default=False, validation_alias="OPENPROJECT_MCP_ADMIN_TOOLS")
     disable: str = Field(default="", validation_alias="OPENPROJECT_MCP_DISABLE")
+    profile: Profile = Field(default="full", validation_alias="OPENPROJECT_MCP_PROFILE")
     insecure: bool = Field(default=False, validation_alias="OPENPROJECT_MCP_INSECURE")
 
     # --- files ----------------------------------------------------------
@@ -189,6 +193,11 @@ class Settings(BaseSettings):
     def _lower_log_format(cls, value: object) -> object:
         return value.lower() if isinstance(value, str) else value
 
+    @field_validator("profile", mode="before")
+    @classmethod
+    def _lower_profile(cls, value: object) -> object:
+        return value.lower() if isinstance(value, str) else value
+
     @property
     def api_base_url(self) -> str:
         """Base URL for every API call, e.g. ``https://op.example.com/api/v3``."""
@@ -200,6 +209,20 @@ class Settings(BaseSettings):
     def disabled_groups(self) -> frozenset[str]:
         """Group tags dropped at startup (``OPENPROJECT_MCP_DISABLE=meetings,news``)."""
         return frozenset(part.strip() for part in self.disable.split(",") if part.strip())
+
+    @property
+    def profile_hidden_groups(self) -> frozenset[str]:
+        """Group tags hidden at startup by ``OPENPROJECT_MCP_PROFILE=core``.
+
+        Unlike :attr:`disabled_groups`, a session can bring these back with the
+        ``enable_tool_group`` tool.
+        """
+        return CORE_PROFILE_HIDDEN_GROUPS if self.profile == "core" else frozenset()
+
+    @property
+    def unknown_disabled_groups(self) -> frozenset[str]:
+        """``OPENPROJECT_MCP_DISABLE`` entries that name no group (likely typos)."""
+        return self.disabled_groups - ALL_GROUPS
 
     @property
     def has_credential(self) -> bool:
