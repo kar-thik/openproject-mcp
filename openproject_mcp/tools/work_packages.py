@@ -1582,15 +1582,14 @@ def register(mcp: FastMCP) -> None:
     )
     @_shared.tool_errors
     async def update_work_package(
-        id: Annotated[int, Field(description="Work package id to change (the #1234 number).")],
+        id: Annotated[int, Field(description="Work package id to change (#1234).")],
         lock_version: Annotated[
             int | None,
             Field(
                 description=(
-                    "The `lock_version` you read from get_work_package. Pass it and the write "
-                    "fails loudly (409) if somebody else edited the work package in the meantime. "
-                    "Omit it and the current version is fetched and echoed — still safe, just one "
-                    "more round trip and a slightly wider conflict window."
+                    "The `lock_version` from get_work_package. Passing it makes a concurrent "
+                    "edit fail loudly (409); omitting it fetches and echoes the current version "
+                    "— safe, but a wider conflict window."
                 )
             ),
         ] = None,
@@ -1601,9 +1600,8 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(
                 description=(
-                    "New markdown body. Omit to leave unchanged; pass null to empty it. Replaces "
-                    "the whole description — read it with get_work_package first if you mean to "
-                    "append."
+                    "New markdown body; omit to leave unchanged, null to empty it. Replaces the "
+                    "whole text; read it first to append instead."
                 )
             ),
         ] = KEEP,
@@ -1615,9 +1613,7 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(
                 description=(
-                    "New status as a name or numeric id. Validated through the form endpoint, so "
-                    "an invalid workflow transition comes back listing the statuses that *are* "
-                    "reachable from the current one."
+                    "New status as a name or id; invalid transitions list the reachable statuses."
                 )
             ),
         ] = None,
@@ -1628,33 +1624,31 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(
                 description=(
-                    "Numeric user id to assign. Omit to leave unchanged; pass null (or 'none') to "
-                    "unassign — that sends a null href rather than a bogus user id."
+                    "Numeric user id; omit to leave unchanged, null (or 'none') to unassign."
                 )
             ),
         ] = KEEP,
         responsible: Annotated[
             str | None,
-            Field(description="Numeric user id of the accountable person; null clears it."),
+            Field(description="Numeric id of the accountable person; null clears it."),
         ] = KEEP,
         version: Annotated[
             str | None,
-            Field(description="Numeric version / sprint id; null removes it from the version."),
+            Field(description="Numeric version/sprint id; null removes it."),
         ] = KEEP,
         target_versions: Annotated[
             list[int] | None,
             Field(
-                description="Target version ids. [] clears assignments; omit to leave unchanged. "
-                "Multiple values require instance support. Mutually exclusive with version."
+                description="Target version ids; [] clears, omit leaves unchanged. Multiple "
+                "values need instance support. Mutually exclusive with version."
             ),
         ] = None,
         parent_id: Annotated[
             int | str | None,
             Field(
                 description=(
-                    "Re-parent this work package under another id; null detaches it and makes it "
-                    "top level. This is the only hierarchy tool — there is no separate "
-                    "set/remove-parent tool."
+                    "Re-parent under another id; null detaches to top level (the only "
+                    "hierarchy tool)."
                 )
             ),
         ] = KEEP,
@@ -1672,33 +1666,30 @@ def register(mcp: FastMCP) -> None:
             int | None, Field(ge=0, le=100, description="Progress 0-100.")
         ] = None,
         estimated_hours: Annotated[
-            float | None, Field(ge=0, description="Estimate in hours as a decimal.")
+            float | None, Field(ge=0, description="Estimate in hours, decimal.")
         ] = None,
         story_points: Annotated[
             int | None, Field(ge=0, description="Story points as a non-negative integer.")
         ] = None,
         remaining_hours: Annotated[
-            float | None, Field(ge=0, description="Remaining work in hours as a decimal.")
+            float | None, Field(ge=0, description="Remaining work in hours, decimal.")
         ] = None,
         custom_fields: Annotated[
             dict[str, Any] | None,
             Field(
                 description=(
                     "Custom field writes keyed by wire key or display name, e.g. "
-                    "{'Severity': 'High'}. Unknown or non-writable keys fail with the valid keys "
-                    "listed. Only the keys you pass are touched."
+                    "{'Severity': 'High'}. Unknown or non-writable keys fail listing the valid "
+                    "ones. Only passed keys are touched."
                 )
             ),
         ] = None,
-        notify: Annotated[
-            bool, Field(description="Send OpenProject notification emails for this change.")
-        ] = True,
+        notify: Annotated[bool, Field(description="Email notifications for this change.")] = True,
     ) -> WorkPackageFull:
         """Change any writable field of a work package, with optimistic locking done properly.
 
-        Use it to assign or unassign, move a status forward, re-schedule, re-parent, set progress
-        or write custom fields. Every convenience the old tooling spread across a dozen tools is a
-        parameter here.
+        Use it to assign or unassign, move a status forward, re-schedule, re-parent, set
+        progress, or write custom fields — one tool instead of many.
 
         Returns the updated work package in full detail, including the new `lock_version` to use
         for a follow-up edit.
@@ -1706,9 +1697,7 @@ def register(mcp: FastMCP) -> None:
         Pitfalls: omitted parameters are left alone, while passing null **clears** a field
         (assignee, responsible, version, parent, dates, description). A 409 error means somebody
         else changed the work package first — the error carries the fresh `lock_version` and the
-        conflicting fields, so re-read, decide, and retry deliberately rather than blindly.
-        Status changes are validated against the workflow, so an invalid transition lists the
-        allowed targets.
+        conflicting fields, so re-read and retry deliberately.
 
         Ids come from `get_work_package` / `list_work_packages`; status, priority, type and
         version values come from `get_project_metadata`.
