@@ -30,6 +30,12 @@ PATCH releases are fixes and strictly additive changes only.
 - The server now emits `tools/list_changed`, but only after
   `enable_tool_group` changes a session's tool list, and only to that session.
   Under the default `full` profile the tool list stays fixed.
+- Tighter, less repetitive descriptions on the seven largest tools —
+  `list_work_packages`, `save_query`, `create_recurring_meeting`,
+  `list_time_entries`, `create_work_package`, `update_work_package` and
+  `update_meeting` — plus a size-budget test (`test_description_budget.py`)
+  that fails the build if a tool's or the whole surface's description text
+  regrows past its current size.
 
 ### Fixed
 
