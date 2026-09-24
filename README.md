@@ -8,7 +8,7 @@
 
 An MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) server for the
 [OpenProject](https://www.openproject.org/) API v3. It gives Claude and any other MCP client
-88 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
+89 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
 saved queries, notifications, time tracking, versions, people and memberships, meetings, news,
 documents, budgets and reporting — plus 4 report/workflow prompts and 3 resource templates.
 Built on FastMCP 3.x and httpx (HTTP/2).
@@ -263,10 +263,11 @@ held in memory as Pydantic `SecretStr` values and are never written to logs; the
 
 ### Limiting what the model can do
 
-Three settings shrink the tool surface at startup (the tool list is fixed for the lifetime of
-the process):
+Four settings shrink the tool surface at startup. The tool list is then fixed for the lifetime
+of the process, with one exception: `enable_tool_group` can bring back a group hidden by the
+`core` profile, for the calling session only.
 
-- `OPENPROJECT_MCP_READ_ONLY=1` serves only the 39 read tools.
+- `OPENPROJECT_MCP_READ_ONLY=1` serves only the 40 read tools.
 - `OPENPROJECT_MCP_ADMIN_TOOLS=1` reveals the three membership write tools
   (`create_membership`, `update_membership`, `delete_membership`); they are hidden by default.
 - `OPENPROJECT_MCP_DISABLE` drops whole groups to cut prompt cost, e.g.
@@ -274,9 +275,19 @@ the process):
   `work_packages`, `wp_collaboration`, `attachments`, `git_activity`, `projects`, `queries`,
   `notifications`, `time_entries`, `versions`, `people`, `metadata`, `meetings`, `wiki`,
   `documents`, `budgets`, `news`, `reporting` — the same tags that head each section of the
-  tool catalog below.
+  tool catalog below — plus `meetings_recurring`, a sub-tag of `meetings` that drops only the
+  six recurring-meeting tools (`meetings` drops them too).
+- `OPENPROJECT_MCP_PROFILE=core` hides the module-backed groups — `meetings`, `news`,
+  `documents`, `wiki`, `budgets`, `git_activity` and `reporting`, plus the two reporting
+  prompts — so a work-package session starts with a smaller tool list. When the model needs
+  one of them it calls `enable_tool_group`, which restores that group for the calling session
+  only; the server then emits `tools/list_changed` to that session, so the client must honour
+  that notification and re-read its tool list (if yours does not, use `full`). Session rules
+  expire after 24 hours idle. `enable_tool_group` never lifts `READ_ONLY`, the admin gate or
+  `OPENPROJECT_MCP_DISABLE`; it lives in the `metadata` group, so disabling that group removes
+  it.
 
-Independent of all three, every destructive tool (the 13 permanent deletes) requires an
+Independent of all four, every destructive tool (the 13 permanent deletes) requires an
 explicit `confirm=true` argument before it acts.
 
 ## Transports
@@ -306,7 +317,7 @@ explicit `confirm=true` argument before it acts.
 
 ## Tools
 
-88 tools: 39 read, 46 write and 3 admin-gated writes. The admin tools stay hidden unless
+89 tools: 40 read, 46 write and 3 admin-gated writes. The admin tools stay hidden unless
 `OPENPROJECT_MCP_ADMIN_TOOLS=1`; the 13 destructive tools additionally require `confirm=true`
 on every call. Each section heading names the group tag accepted by
 `OPENPROJECT_MCP_DISABLE`.
@@ -436,8 +447,12 @@ account with the Manage members permission).
 | `get_project_metadata` | Read | List the ids and names (types, statuses, priorities, ...) that are actually valid on this instance. |
 | `get_work_package_schema` | Read | Show which fields a work package of this type accepts in this project. |
 | `list_permissions` | Read | List what the authenticated user is allowed to do, globally or in one project. |
+| `enable_tool_group` | Read | Re-enable a tool group hidden by `OPENPROJECT_MCP_PROFILE=core` for this session; never calls OpenProject. |
 
 ### Meetings (`meetings`)
+
+The six recurring-meeting tools also carry the `meetings_recurring` tag, so
+`OPENPROJECT_MCP_DISABLE=meetings_recurring` drops just them (they need OpenProject 17.4+).
 
 | Tool | Kind | What it does |
 |---|---|---|

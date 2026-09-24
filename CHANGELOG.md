@@ -10,6 +10,27 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+### Added
+
+- `OPENPROJECT_MCP_PROFILE=core` hides the module-backed tool groups
+  (meetings, news, documents, wiki, budgets, git activity, reporting) and the
+  two reporting prompts at startup, for a smaller tool list in work-package
+  sessions. The default, `full`, changes nothing.
+- `enable_tool_group` brings a group hidden by the `core` profile back for the
+  calling session only. It never calls OpenProject and cannot lift
+  `OPENPROJECT_MCP_READ_ONLY`, the admin gate or `OPENPROJECT_MCP_DISABLE`.
+- The six recurring-meeting tools also carry a `meetings_recurring` tag, so
+  `OPENPROJECT_MCP_DISABLE=meetings_recurring` drops just them (useful before
+  OpenProject 17.4); `meetings` still drops the whole family.
+- A startup warning when `OPENPROJECT_MCP_DISABLE` names a group that does not
+  exist, instead of ignoring the typo silently.
+
+### Changed
+
+- The server now emits `tools/list_changed`, but only after
+  `enable_tool_group` changes a session's tool list, and only to that session.
+  Under the default `full` profile the tool list stays fixed.
+
 ### Fixed
 
 - Descriptions that name the admin-gated membership tools now say they are
