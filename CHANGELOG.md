@@ -10,6 +10,13 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+### Fixed
+
+- `server.json` description within the MCP registry's 100-character limit;
+  the 0.3.2 registry publish failed on it after PyPI and the GitHub release
+  had gone out. A test now pins the limit, and `release.yml` can be dispatched
+  by hand with a version to re-publish just the registry entry.
+
 ## [0.3.2] - 2026-09-24
 
 ### Added
