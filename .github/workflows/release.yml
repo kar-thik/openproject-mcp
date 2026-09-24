@@ -5,6 +5,15 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Re-publish only the MCP registry entry for a version that is already on
+  # PyPI (e.g. after a server.json metadata fix). The registry leg is the last
+  # one, so a failure there leaves PyPI and the GitHub release in place.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version already released on PyPI to re-publish to the MCP registry, e.g. 0.3.2"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -12,6 +21,7 @@ permissions:
 jobs:
   build:
     name: Build sdist + wheel
+    if: github.event_name == 'push'  # a dispatch skips the whole PyPI chain
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -82,7 +92,9 @@ jobs:
     name: Publish to MCP Registry
     # Runs after the PyPI publish because the registry verifies ownership by
     # reading the mcp-name marker out of the version's README on pypi.org.
+    # On workflow_dispatch it runs alone, against the version given as input.
     needs: publish-pypi
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.publish-pypi.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # OIDC login to the MCP registry — no secrets
@@ -92,9 +104,11 @@ jobs:
       - name: Install mcp-publisher
         run: |
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
-      - name: Stamp server.json version from the tag
+      - name: Stamp server.json version from the tag (or the dispatch input)
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
           jq --arg v "$version" '.version = $v | .packages[].version = $v' \
             server.json > server.json.tmp
           mv server.json.tmp server.json
