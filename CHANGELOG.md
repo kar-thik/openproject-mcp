@@ -10,6 +10,14 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+### Fixed
+
+- Descriptions that name the admin-gated membership tools now say they are
+  hidden unless `OPENPROJECT_MCP_ADMIN_TOOLS=1`, and the server instructions
+  tell the model what to do when a named tool is absent; a test pins it.
+- `server.json` lists `OPENPROJECT_OAUTH_TOKEN` and describes the surface
+  switches.
+
 ## [0.3.1] - 2026-09-23
 
 ### Added
