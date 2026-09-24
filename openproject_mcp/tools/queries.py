@@ -532,89 +532,80 @@ def register(mcp: FastMCP) -> None:
         name: Annotated[
             str,
             Field(
-                description="Name the view is saved under, e.g. 'Overdue in Platform'. Names are "
-                "not unique upstream, so a second save with the same name creates a second view."
+                description="Name the view is saved under, e.g. 'Overdue in Platform'. Not "
+                "unique upstream — a repeat name creates a second view."
             ),
         ],
         filters: Annotated[
             list[RawFilter],
             Field(
-                description="The filters to store, in the same shape run_query's "
-                "override_filters and list_work_packages' raw_filters take — e.g. "
-                "[{'name': 'status', 'operator': 'o', 'values': []}, {'name': 'assignee', "
-                "'operator': '=', 'values': ['12']}]. Values are ids (or 'me'), not display "
-                "names. Pass [] deliberately for a view that filters nothing: unlike a listing, "
-                "a stored query with no filters shows every status.",
+                description="The filters to store, same shape as run_query's override_filters / "
+                "list_work_packages' raw_filters, e.g. [{'name': 'status', 'operator': 'o', "
+                "'values': []}, {'name': 'assignee', 'operator': '=', 'values': ['12']}]. Values "
+                "are ids (or 'me'), not names. Pass [] for a view with no filters — unlike a "
+                "listing, it then shows every status.",
             ),
         ],
         project_id: Annotated[
             int | str | None,
             Field(
-                description="Numeric project id the view belongs to, from list_projects. Omit "
-                "for a global (cross-project) view — but project-scoped filters such as "
-                "version, category or subprojectId are then rejected."
+                description="Numeric project id the view belongs to; from list_projects. Omit "
+                "for a global view — project-scoped filters (version, category, subprojectId) "
+                "are then rejected."
             ),
         ] = None,
         public: Annotated[
             bool,
             Field(
                 description="true shares the view with everyone who can see the project; false "
-                "(default) keeps it private to the authenticated user. Sharing usually needs the "
-                "'manage public queries' permission."
+                "(default) keeps it private. Sharing usually needs 'manage public queries'."
             ),
         ] = False,
         star: Annotated[
             bool,
             Field(
-                description="Also star (favorite) the view for the authenticated user, so it "
-                "appears in their sidebar. Done as a second call after the query exists; if it "
-                "fails the query is still saved and 'notes' says so."
+                description="Also star (favorite) the view, so it appears in the sidebar. A "
+                "second call after the query exists; a failure still leaves it saved, noted "
+                "in 'notes'."
             ),
         ] = False,
         sort_by: Annotated[
             list[list[str]] | None,
             Field(
-                description="Stored sort order, e.g. [['due_date', 'asc'], ['id', 'desc']]. Keys "
-                "are the snake_case work-package columns list_work_packages sorts by; unknown "
-                "keys are rejected locally with the allowed set listed. Omit for the default."
+                description="Stored sort order, e.g. [['due_date', 'asc'], ['id', 'desc']]. "
+                "Unknown keys are rejected locally, listing the allowed set. Omit for the "
+                "default."
             ),
         ] = None,
         group_by: Annotated[
             str | None,
             Field(
-                description="Column to group the results by, e.g. 'status', 'assignee', 'type' "
-                "or 'version'. Grouping is what makes run_query return 'groups' with per-group "
-                "counts. Omit for a flat list."
+                description="Column to group results by, e.g. 'status', 'assignee'. Makes "
+                "run_query return 'groups' with per-group counts. Omit for a flat list."
             ),
         ] = None,
     ) -> SavedQuery:
-        """Save a filter set as a reusable OpenProject view the whole team can open.
+        """Save a filter set as a reusable OpenProject view.
 
-        Use it when a filter combination is worth keeping — "Overdue in Platform", "My open
-        bugs" — instead of rebuilding it every session: the saved view shows up in the
-        OpenProject UI as well, and `run_query` reproduces it exactly. Prove the filters with
-        `list_work_packages` first; whatever works there works here.
+        Use it to keep a filter combination — "Overdue in Platform", "My open bugs" — instead
+        of rebuilding it each session: the view shows up in the OpenProject UI too, and
+        `run_query` reproduces it exactly. Prove filters with `list_work_packages` first.
 
-        The call runs `POST /queries/form` before committing, so an invalid filter name, an
-        operator the filter does not support, or a project-scoped filter on a global view comes
-        back as `violations` naming the attribute — nothing is saved. Returns the stored
-        definition: `{id, name, project, public, starred, filters (as readable sentences),
-        group_by, sort_by, display_sums, updated_at, notes}`. Keep the `id`: it is what
-        `run_query` takes.
+        Validated via `POST /queries/form` first, so an invalid filter name, unsupported
+        operator, or project-scoped filter on a global view comes back as `violations` naming
+        the attribute — nothing is saved. Returns the stored definition: `{id, name, project,
+        public, starred, filters (as readable sentences), group_by, sort_by, display_sums,
+        updated_at, notes}`. Keep the `id` — `run_query` takes it.
 
-        Pitfalls. Filter values are ids, not names — 'Grace Hopper' is not a value, `12` is.
-        `star=true` is a second request after the query exists; if it fails the query is still
-        saved and `notes` says so, so never re-save on a starring failure. If OpenProject keeps
-        fewer filters than were sent, `notes` says that too — read `filters` rather than
-        assuming the view matches the request. Custom-field filters (`customField12`) are sent
-        as plain values because a list-typed one cannot be told apart from a text one without
-        asking the instance; if such a filter makes the call fail, nothing was saved — save that
-        view in the UI. Editing and deleting saved views is deliberately not offered here:
-        change or remove them in the OpenProject UI.
+        Pitfalls. If OpenProject keeps fewer filters than were sent, `notes` says so — read
+        `filters` rather than assuming a match. Custom-field filters (`customField12`) are sent
+        as plain values, since a list-typed one can't be told apart from a text one without
+        asking the instance; a failing one means nothing was saved — save that view in the UI
+        instead. Editing and deleting saved views isn't offered here: use the OpenProject UI.
 
-        Cross-references: `list_queries` lists what already exists (and gives ids);
-        `run_query(query_id=...)` runs this view; `list_work_packages` is the ad-hoc equivalent
-        and the place to validate filters first; `list_projects` supplies `project_id`.
+        Cross-references: `list_queries` lists what exists (with ids); `run_query(query_id=...)`
+        runs this view; `list_work_packages` validates filters first; `list_projects` supplies
+        `project_id`.
         """
         context = _shared.get_tool_context()
         if not name or not name.strip():
