@@ -1363,71 +1363,55 @@ def register(mcp: FastMCP) -> None:
     async def create_work_package(
         project: Annotated[
             int | str,
-            Field(
-                description=(
-                    "Numeric project id or project identifier (URL slug). Both come from "
-                    "list_projects."
-                )
-            ),
+            Field(description="Numeric project id or identifier (URL slug); from list_projects."),
         ],
         type: Annotated[
             str,
             Field(
                 description=(
-                    "Work package type as a **name or numeric id** ('Task', 'Bug', 'Milestone', "
-                    "or 7). Names resolve against this instance's types; an unknown or ambiguous "
-                    "name fails with the valid values listed."
+                    "Type name or id ('Task', 'Bug', 'Milestone', or 7). Unknown or ambiguous "
+                    "names fail listing the valid values."
                 )
             ),
         ],
-        subject: Annotated[str, Field(description="The title. Required and must not be blank.")],
-        description: Annotated[
-            str | None, Field(description="Body text in markdown. Omit for an empty description.")
-        ] = None,
+        subject: Annotated[str, Field(description="The title; must not be blank.")],
+        description: Annotated[str | None, Field(description="Body text in markdown.")] = None,
         start_date: Annotated[
-            str | None, Field(description="ISO date (YYYY-MM-DD). Not valid on milestone types.")
+            str | None, Field(description="ISO date (YYYY-MM-DD); not valid on milestones.")
         ] = None,
         due_date: Annotated[
-            str | None, Field(description="ISO date (YYYY-MM-DD). Not valid on milestone types.")
+            str | None, Field(description="ISO date (YYYY-MM-DD); not valid on milestones.")
         ] = None,
         date: Annotated[
             str | None,
             Field(
                 description=(
-                    "The single ISO date of a **milestone**. Milestones carry `date` instead of "
-                    "start_date/due_date; passing both shapes is rejected locally."
+                    "ISO date for a **milestone** (used instead of start_date/due_date). "
+                    "Passing both is rejected locally."
                 )
             ),
         ] = None,
         status: Annotated[
             str | None,
             Field(
-                description=(
-                    "Status name or numeric id. Omit to take the type's default status — do not "
-                    "guess an id."
-                )
+                description="Status name or numeric id. Omit for the type's default; don't guess."
             ),
         ] = None,
         priority: Annotated[
             str | None,
-            Field(
-                description=(
-                    "Priority name or numeric id ('High', 'Normal', or 8). Omit for the instance "
-                    "default; priority ids differ per instance."
-                )
-            ),
+            Field(description="Priority name or id ('High', 'Normal', or 8). Omit for default."),
         ] = None,
         assignee: Annotated[
             str | None,
             Field(
                 description=(
-                    "Numeric user id to assign. 'me' is not accepted in writes — call "
-                    "get_instance_info for the current user's id."
+                    "Numeric user id ('me' isn't accepted in writes; get_instance_info gives "
+                    "the current user's id)."
                 )
             ),
         ] = None,
         responsible: Annotated[
-            str | None, Field(description="Numeric user id of the accountable person.")
+            str | None, Field(description="Numeric id of the accountable person.")
         ] = None,
         version: Annotated[
             str | None,
@@ -1436,23 +1420,23 @@ def register(mcp: FastMCP) -> None:
         target_versions: Annotated[
             list[int] | None,
             Field(
-                description="Target version ids. [] clears assignments; omit to use defaults. "
-                "Multiple values require instance support. Mutually exclusive with version."
+                description="Target version ids. [] clears; omit to keep defaults. Multiple "
+                "values need instance support. Mutually exclusive with version."
             ),
         ] = None,
         parent_id: Annotated[
             int | None,
-            Field(description="Create this as a child of an existing work package id."),
+            Field(description="Work package id to create this as a child of."),
         ] = None,
         estimated_hours: Annotated[
             float | None,
-            Field(ge=0, description="Estimate in hours as a decimal (7.5 = seven and a half)."),
+            Field(ge=0, description="Estimate in hours, decimal (e.g. 7.5)."),
         ] = None,
         story_points: Annotated[
             int | None, Field(ge=0, description="Story points as a non-negative integer.")
         ] = None,
         remaining_hours: Annotated[
-            float | None, Field(ge=0, description="Remaining work in hours as a decimal.")
+            float | None, Field(ge=0, description="Remaining work in hours, decimal.")
         ] = None,
         custom_fields: Annotated[
             dict[str, Any] | None,
@@ -1460,9 +1444,8 @@ def register(mcp: FastMCP) -> None:
                 description=(
                     "Custom field writes keyed by wire key or display name: "
                     "{'customField12': 'High'} or {'Severity': 'High'}. List/user/version fields "
-                    "accept option ids or option names. Unknown or ambiguous keys fail with the "
-                    "valid keys listed — nothing is ever silently dropped. "
-                    "get_work_package_schema shows what this project and type accept."
+                    "take ids or names. Unknown keys fail listing the valid ones. "
+                    "get_work_package_schema shows what this project/type accepts."
                 )
             ),
         ] = None,
@@ -1470,31 +1453,25 @@ def register(mcp: FastMCP) -> None:
             list[str] | None,
             Field(
                 description=(
-                    "Local file paths to attach. Files upload uncontainered first and are claimed "
-                    "by the new work package, which is the flow that works even when the author "
-                    "lacks edit permission. Only usable when the server shares a filesystem with "
-                    "you (stdio transport)."
+                    "Local file paths to attach (stdio transport only — the server must share "
+                    "your filesystem)."
                 )
             ),
         ] = None,
-        notify: Annotated[
-            bool, Field(description="Send OpenProject notification emails for this creation.")
-        ] = True,
+        notify: Annotated[bool, Field(description="Email notifications for this creation.")] = True,
     ) -> WorkPackageFull:
         """Create a work package, validated through OpenProject's own form endpoint first.
 
         Use it for new tasks, bugs, subtasks (`parent_id`) and milestones (`date`). The form
-        pre-flight is what makes failures useful: an invalid status, a missing required custom
-        field or a type the project does not enable comes back as structured violations *with the
-        allowed values*, before anything is written.
+        pre-flight surfaces an invalid status, a missing required custom field or a disallowed
+        type as structured violations *with the allowed values*, before anything is written.
 
         Returns the created work package in full detail, including its new `id`, `lock_version`
         and resolved custom fields.
 
-        Pitfalls: `type`, `status` and `priority` take names or ids, but versions, assignees and
-        parents need numeric ids. Milestone types reject `start_date`/`due_date` — use `date`.
-        Custom fields must exist on the project/type schema; check `get_work_package_schema` when
-        unsure.
+        Pitfalls: `type`, `status` and `priority` take names or ids; versions, assignees and
+        parents need numeric ids. Custom fields must exist on the schema — check
+        `get_work_package_schema` when unsure.
 
         To change it afterwards use `update_work_package`; to attach a file to an existing work
         package use `upload_attachment`.
