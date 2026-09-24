@@ -1023,7 +1023,8 @@ def register(mcp: FastMCP) -> None:
         admin rights, so a 403 here is about the account, not the payload. The new project
         starts with the instance's default modules and types enabled — check
         ``get_project_metadata(project_id=...)`` before creating work packages in it.
-        Members are not copied from the parent; add them with ``create_membership``.
+        Members are not copied from the parent; add them with ``create_membership``
+        (admin-gated: hidden unless the server sets ``OPENPROJECT_MCP_ADMIN_TOOLS=1``).
 
         Cross-references: ``list_projects`` finds the parent id; ``update_project`` changes
         any of these fields afterwards; ``get_project_metadata`` lists the types, versions

@@ -544,9 +544,10 @@ def register(mcp: FastMCP) -> None:
 
         This is **the** id-producing tool for every principal parameter in this
         server: `assignee`/`responsible` on work packages, watcher ids, the
-        `user_id` of a time entry, and `principal_id` for `create_membership`.
-        Names are never accepted where an id is wanted — resolve here first,
-        and never guess a numeric id.
+        `user_id` of a time entry, and `principal_id` for `create_membership`
+        (admin-gated: hidden unless the server sets
+        `OPENPROJECT_MCP_ADMIN_TOOLS=1`). Names are never accepted where an id
+        is wanted — resolve here first, and never guess a numeric id.
 
         Use it to answer "who is Grace Hopper's account", "which groups exist",
         "who is a member of the demo project". Returns the standard list
@@ -723,7 +724,8 @@ def register(mcp: FastMCP) -> None:
 
         Cross-references: `list_roles` for role ids and their permissions;
         `create_membership` / `update_membership` / `delete_membership` to change
-        access (admin-gated); `search_principals` for principal ids;
+        access (admin-gated: hidden unless the server sets
+        `OPENPROJECT_MCP_ADMIN_TOOLS=1`); `search_principals` for principal ids;
         `list_permissions` for what the current user may do.
         """
         ctx = get_tool_context()
@@ -996,11 +998,12 @@ def register(mcp: FastMCP) -> None:
     ) -> ListEnvelope[RoleRow]:
         """List the roles this instance defines, with their ids.
 
-        This is the id-producing tool for `create_membership.role_ids` and
-        `update_membership.role_ids` — role names are never accepted there.
-        Roles are instance-wide definitions ('Member', 'Reader', 'Project
-        admin'); a membership binds one principal to one project with a set of
-        them.
+        This is the id-producing tool for `create_membership.role_ids`
+        (admin-gated: hidden unless the server sets
+        `OPENPROJECT_MCP_ADMIN_TOOLS=1`) and `update_membership.role_ids` —
+        role names are never accepted there. Roles are instance-wide
+        definitions ('Member', 'Reader', 'Project admin'); a membership binds
+        one principal to one project with a set of them.
 
         Returns the standard list envelope with `has_more: false`: the role list
         is small and fetched in full. Each item is `{id, name}`, plus
