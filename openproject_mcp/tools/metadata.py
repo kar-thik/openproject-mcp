@@ -9,6 +9,7 @@ Tool                             Phase   Endpoint(s)
 🔍 ``get_project_metadata``      1       types/statuses/priorities/versions/…
 🔍 ``get_work_package_schema``   1       ``GET /work_packages/schemas/{p}-{t}``
 🔍 ``list_permissions``          2       ``GET /capabilities?filters=…``
+🔍 ``enable_tool_group``         0.3.2   none — session tool visibility only
 ===============================  ======  ==========================================
 
 Non-negotiables for this module:
@@ -29,6 +30,11 @@ Non-negotiables for this module:
 * ``list_permissions`` resolves the **numeric** principal id via cached
   ``users/me`` (the capabilities API has no ``"me"``) and uses the probed
   ``p{id}``/``w{id}`` context prefix.
+* ``enable_tool_group`` is the server's only runtime change to the tool list:
+  it lifts a group hidden by ``OPENPROJECT_MCP_PROFILE=core`` for the calling
+  session only (FastMCP session visibility rules, which notify that session
+  with ``tools/list_changed``), then re-asserts the deployment rules so that
+  ``READ_ONLY``, the admin gate and ``DISABLE`` can never be bypassed.
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+from fastmcp.server.dependencies import get_context
 from pydantic import BaseModel, Field
 
 from openproject_mcp.client import hal
@@ -58,10 +65,14 @@ from openproject_mcp.client.payloads import build_write_payload, links_payload
 from openproject_mcp.config import PROBE_CACHE_TTL
 from openproject_mcp.projections import ListEnvelope, Ref, custom_field_type_name
 from openproject_mcp.tools._shared import (
+    ALL_GROUPS,
     GROUP_METADATA,
+    GROUP_TITLES,
+    PARENT_GROUP,
     READ,
     ToolContext,
     build_envelope,
+    deployment_rules,
     get_configuration,
     get_tool_context,
     read_annotations,
@@ -86,6 +97,7 @@ __all__ = [
     "InstanceInfo",
     "PermissionsResult",
     "ProjectMetadata",
+    "ToolGroupStatus",
     "WorkPackageSchema",
     "register",
 ]
@@ -569,6 +581,31 @@ class PermissionsResult(ListEnvelope[CapabilityGroup]):
     check: PermissionCheck | None = Field(
         default=None, description="Present only when the 'permission' parameter was given."
     )
+
+
+class ToolGroupStatus(BaseModel):
+    """What ``enable_tool_group`` changed in this session's tool list."""
+
+    group: str = Field(description="The group tag that was asked for, e.g. 'meetings'.")
+    title: str = Field(description="Human-readable group name, as the README heads its table.")
+    status: Literal["enabled", "already_visible"] = Field(
+        description="'enabled' when this call revealed tools; 'already_visible' when the group "
+        "was already in this session's tool list and nothing changed."
+    )
+    tools_enabled: list[str] = Field(
+        default_factory=list[str],
+        description="Tool names that became callable in this session, sorted. Re-read the tool "
+        "list to get their schemas.",
+    )
+    notes: list[str] = Field(
+        default_factory=list[str],
+        description="Why some tools of the group stay hidden (read-only mode, operator-disabled "
+        "sub-groups); empty when the whole group is now visible.",
+    )
+
+
+#: Valid ``group`` values, spelled out for the model in the parameter description.
+_GROUP_CHOICES = ", ".join(sorted(ALL_GROUPS))
 
 
 def _register_capability_filters() -> None:
@@ -1058,4 +1095,95 @@ def register(mcp: FastMCP) -> None:
             principal=principal,
             capability_count=len(elements),
             check=check,
+        )
+
+    @mcp.tool(
+        name="enable_tool_group",
+        tags=tool_tags(GROUP_METADATA, READ),
+        annotations=read_annotations(title="Enable tool group"),
+    )
+    @tool_errors
+    async def enable_tool_group(
+        group: Annotated[
+            str,
+            Field(
+                description=(
+                    f"The group tag to bring back, one of: {_GROUP_CHOICES}. Under "
+                    "OPENPROJECT_MCP_PROFILE=core the hidden ones are meetings, "
+                    "meetings_recurring, news, documents, wiki, budgets, git_activity and "
+                    "reporting; 'meetings' includes the recurring-meeting tools."
+                )
+            ),
+        ],
+    ) -> ToolGroupStatus:
+        """Re-enable a tool group hidden by OPENPROJECT_MCP_PROFILE=core, for this session.
+
+        Use it when the user needs meetings, wiki, news, documents, budgets, git activity or
+        reporting and those tools are not in your list. It never calls OpenProject.
+
+        Returns ``{group, title, status, tools_enabled, notes}``; ``status`` is 'enabled' or
+        'already_visible'. Afterwards the server sends tools/list_changed: re-read your tool
+        list before calling the new tools.
+
+        Pitfalls: it only lifts the core profile. It cannot override read-only mode (write
+        tools stay hidden, see ``notes``), the admin gate, or groups the operator removed with
+        OPENPROJECT_MCP_DISABLE, which fail with invalid_input. Other sessions are unaffected.
+
+        Cross-references: ``get_instance_info`` shows which modules this instance supports.
+        """
+        settings = get_tool_context().settings
+        if group not in ALL_GROUPS:
+            raise InputValidationError(
+                f"Unknown tool group {group!r}.",
+                hint=f"Pass one of: {_GROUP_CHOICES}.",
+            )
+        disabled = settings.disabled_groups
+        if group in disabled or PARENT_GROUP.get(group) in disabled:
+            raise InputValidationError(
+                f"Tool group {group!r} was removed by the operator.",
+                hint=(
+                    "It (or its parent group) is listed in OPENPROJECT_MCP_DISABLE and cannot "
+                    "be re-enabled from a session; only groups hidden by "
+                    "OPENPROJECT_MCP_PROFILE=core can be re-enabled."
+                ),
+            )
+
+        ctx = get_context()
+        try:
+            _ = ctx.session_id  # session rules are keyed by it
+        except RuntimeError as exc:  # pragma: no cover — every tool call has a session
+            raise UnexpectedResponseError(
+                "Per-session tool visibility is unavailable on this connection.",
+                hint="Start the server with OPENPROJECT_MCP_PROFILE=full to expose every group.",
+            ) from exc
+
+        before = await ctx.fastmcp.list_tools()
+        if any(group in tool.tags for tool in before):
+            return ToolGroupStatus(
+                group=group,
+                title=GROUP_TITLES[group],
+                status="already_visible",
+                notes=[f"{group} is already available in this session; nothing changed."],
+            )
+
+        await ctx.enable_components(tags={group})
+        # Session rules apply after the global ones, last match wins: re-assert the operator's
+        # hard limits so enabling a group can never reveal a write, admin or disabled tool.
+        for rule in deployment_rules(settings):
+            await ctx.disable_components(tags=set(rule.tags))
+        after = await ctx.fastmcp.list_tools()
+
+        notes: list[str] = []
+        if settings.read_only:
+            notes.append("Write and destructive tools stay hidden (OPENPROJECT_MCP_READ_ONLY=1).")
+        for child, parent in sorted(PARENT_GROUP.items()):
+            if parent == group and child in disabled:
+                notes.append(f"{child} stays hidden (OPENPROJECT_MCP_DISABLE).")
+
+        return ToolGroupStatus(
+            group=group,
+            title=GROUP_TITLES[group],
+            status="enabled",
+            tools_enabled=sorted({tool.name for tool in after} - {tool.name for tool in before}),
+            notes=notes,
         )
