@@ -75,13 +75,39 @@ from openproject_mcp.client.filters import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, to_
 from openproject_mcp.client.hal import HalCollection, as_object, collection, duration_hours
 from openproject_mcp.client.http import OpenProjectClient
 from openproject_mcp.config import Settings
+from openproject_mcp.groups import (
+    ALL_GROUPS,
+    CORE_PROFILE_HIDDEN_GROUPS,
+    GROUP_ATTACHMENTS,
+    GROUP_BUDGETS,
+    GROUP_DOCUMENTS,
+    GROUP_GIT,
+    GROUP_MEETINGS,
+    GROUP_MEETINGS_RECURRING,
+    GROUP_METADATA,
+    GROUP_NEWS,
+    GROUP_NOTIFICATIONS,
+    GROUP_PEOPLE,
+    GROUP_PROJECTS,
+    GROUP_QUERIES,
+    GROUP_REPORTING,
+    GROUP_TIME_ENTRIES,
+    GROUP_TITLES,
+    GROUP_VERSIONS,
+    GROUP_WIKI,
+    GROUP_WORK_PACKAGES,
+    GROUP_WP_COLLABORATION,
+    PARENT_GROUP,
+)
 from openproject_mcp.observability import correlation_scope, get_logger
 from openproject_mcp.projections import Group, ListEnvelope, Pagination
 from openproject_mcp.version_probe import InstanceProbe, get_probe
 
 __all__ = [
     "ADMIN",
+    "ALL_GROUPS",
     "CACHE_KEY_CONFIGURATION",
+    "CORE_PROFILE_HIDDEN_GROUPS",
     "DESTRUCTIVE",
     "FETCH_ALL_CAP",
     "GROUP_ATTACHMENTS",
@@ -89,6 +115,7 @@ __all__ = [
     "GROUP_DOCUMENTS",
     "GROUP_GIT",
     "GROUP_MEETINGS",
+    "GROUP_MEETINGS_RECURRING",
     "GROUP_METADATA",
     "GROUP_NEWS",
     "GROUP_NOTIFICATIONS",
@@ -97,16 +124,20 @@ __all__ = [
     "GROUP_QUERIES",
     "GROUP_REPORTING",
     "GROUP_TIME_ENTRIES",
+    "GROUP_TITLES",
     "GROUP_VERSIONS",
     "GROUP_WIKI",
     "GROUP_WORK_PACKAGES",
     "GROUP_WP_COLLABORATION",
     "LIFESPAN_KEY",
+    "PARENT_GROUP",
     "READ",
     "WRITE",
     "ToolContext",
+    "VisibilityRule",
     "build_envelope",
     "collect_all",
+    "deployment_rules",
     "destructive_annotations",
     "envelope_from_collection",
     "envelope_json",
@@ -116,6 +147,7 @@ __all__ = [
     "get_tool_context",
     "normalize_groups",
     "normalize_sums",
+    "profile_rules",
     "read_annotations",
     "report_progress",
     "require_confirmation",
@@ -143,38 +175,68 @@ WRITE = "write"
 DESTRUCTIVE = "destructive"
 ADMIN = "admin"
 
-GROUP_WORK_PACKAGES = "work_packages"
-GROUP_WP_COLLABORATION = "wp_collaboration"
-GROUP_ATTACHMENTS = "attachments"
-GROUP_PROJECTS = "projects"
-GROUP_METADATA = "metadata"
-GROUP_GIT = "git_activity"
-GROUP_QUERIES = "queries"
-GROUP_NOTIFICATIONS = "notifications"
-GROUP_TIME_ENTRIES = "time_entries"
-GROUP_VERSIONS = "versions"
-GROUP_PEOPLE = "people"
-GROUP_MEETINGS = "meetings"
-GROUP_NEWS = "news"
-GROUP_DOCUMENTS = "documents"
-GROUP_BUDGETS = "budgets"
-GROUP_WIKI = "wiki"
-GROUP_REPORTING = "reporting"
+# Group tags live in the leaf module ``openproject_mcp.groups`` so that
+# ``config`` can use them too; they are re-exported here for tool modules.
 
 
-def tool_tags(group: str, *kinds: str) -> set[str]:
-    """Tags for a tool: one group tag plus its kind tags.
+def tool_tags(group: str, *kinds: str, subgroup: str | None = None) -> set[str]:
+    """Tags for a tool: one group tag, an optional sub-tag, plus its kind tags.
 
     Deployment filtering keys off these (SPEC §3.2): ``READ_ONLY`` drops
     ``write``/``destructive``/``admin``, ``ADMIN_TOOLS=0`` drops ``admin``, and
-    ``OPENPROJECT_MCP_DISABLE=meetings,news`` drops whole groups.
+    ``OPENPROJECT_MCP_DISABLE=meetings,news`` drops whole groups. A
+    ``subgroup`` (see :data:`PARENT_GROUP`) names a slice of the group that can
+    be disabled on its own; disabling the parent group still drops it, because
+    the tool carries both tags.
 
     ``tool_tags(GROUP_WORK_PACKAGES, WRITE)`` → ``{"work_packages", "write"}``
     ``tool_tags(GROUP_PEOPLE, WRITE, ADMIN)`` → ``{"people", "write", "admin"}``
+    ``tool_tags(GROUP_MEETINGS, READ, subgroup=GROUP_MEETINGS_RECURRING)`` →
+    ``{"meetings", "meetings_recurring", "read"}``
     """
     if not kinds:
         raise ValueError("A tool needs at least one kind tag: READ, WRITE, DESTRUCTIVE or ADMIN")
-    return {group, *kinds}
+    tags = {group, *kinds}
+    if subgroup is not None:
+        tags.add(subgroup)
+    return tags
+
+
+# --- visibility rules (SPEC §3.2) -----------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class VisibilityRule:
+    """Tags whose components are disabled; rules apply in order, last match wins."""
+
+    tags: frozenset[str]
+
+
+def deployment_rules(settings: Settings) -> list[VisibilityRule]:
+    """The operator's hard limits: ``READ_ONLY``, the admin gate and ``DISABLE``.
+
+    Applied globally at startup, and re-asserted on a session after
+    ``enable_tool_group`` so that re-enabling a group can never reveal a write,
+    admin or operator-removed tool.
+    """
+    rules: list[VisibilityRule] = []
+    if settings.read_only:
+        rules.append(VisibilityRule(frozenset({WRITE, DESTRUCTIVE, ADMIN})))
+    elif not settings.admin_tools:
+        rules.append(VisibilityRule(frozenset({ADMIN})))
+    if settings.disabled_groups:
+        rules.append(VisibilityRule(settings.disabled_groups))
+    return rules
+
+
+def profile_rules(settings: Settings) -> list[VisibilityRule]:
+    """The soft limit: groups ``OPENPROJECT_MCP_PROFILE=core`` hides at startup.
+
+    Unlike :func:`deployment_rules`, a session may lift these with
+    ``enable_tool_group``.
+    """
+    hidden = settings.profile_hidden_groups
+    return [VisibilityRule(hidden)] if hidden else []
 
 
 # --- annotations (SPEC §5.4) ----------------------------------------------
@@ -185,17 +247,20 @@ def read_annotations(
     title: str | None = None,
     idempotent: bool = True,
     max_result_chars: int | None = None,
+    open_world: bool = True,
 ) -> dict[str, Any]:
     """Annotations for a read tool.
 
     ``max_result_chars`` sets ``anthropic/maxResultSizeChars`` — use it on known
-    large reads (comment threads, report data, ``run_query``).
+    large reads (comment threads, report data, ``run_query``). ``open_world``
+    is False only for a tool that never talks to OpenProject
+    (``enable_tool_group``).
     """
     annotations: dict[str, Any] = {
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": idempotent,
-        "openWorldHint": True,
+        "openWorldHint": open_world,
     }
     if title:
         annotations["title"] = title

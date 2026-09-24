@@ -176,8 +176,13 @@ def test_tool_tags() -> None:
         "write",
         "admin",
     }
+    assert _shared.tool_tags(
+        _shared.GROUP_MEETINGS, _shared.READ, subgroup=_shared.GROUP_MEETINGS_RECURRING
+    ) == {"meetings", "meetings_recurring", "read"}
     with pytest.raises(ValueError, match="kind tag"):
         _shared.tool_tags(_shared.GROUP_PROJECTS)
+    with pytest.raises(ValueError, match="kind tag"):
+        _shared.tool_tags(_shared.GROUP_MEETINGS, subgroup=_shared.GROUP_MEETINGS_RECURRING)
 
 
 async def test_annotations_reach_the_wire() -> None:

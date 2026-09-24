@@ -16,10 +16,11 @@ Assembly order:
    the :class:`ToolContext` that tools reach via ``_shared.get_tool_context()``;
 4. every tool module's ``register(mcp)`` called;
 5. tag-based deployment filtering applied (``READ_ONLY``, ``ADMIN_TOOLS``,
-   ``DISABLE``).
+   ``DISABLE``), then the ``OPENPROJECT_MCP_PROFILE`` groups.
 
-The tool set is fixed at startup; the server never emits
-``tools/list_changed``.
+The tool set is fixed at startup. The one runtime change is
+``enable_tool_group``: it re-enables a group hidden by ``PROFILE=core`` for the
+calling session only, and emits ``tools/list_changed`` to that session only.
 """
 
 from __future__ import annotations
@@ -37,9 +38,15 @@ from openproject_mcp.client.http import OpenProjectClient
 from openproject_mcp.config import Settings
 from openproject_mcp.observability import configure_logging, get_logger
 from openproject_mcp.tools import register_all
-from openproject_mcp.tools._shared import ADMIN, DESTRUCTIVE, LIFESPAN_KEY, WRITE, ToolContext
+from openproject_mcp.tools._shared import (
+    CORE_PROFILE_HIDDEN_GROUPS,
+    LIFESPAN_KEY,
+    ToolContext,
+    deployment_rules,
+    profile_rules,
+)
 
-__all__ = ["SERVER_INSTRUCTIONS", "build_server"]
+__all__ = ["CORE_PROFILE_INSTRUCTIONS", "SERVER_INSTRUCTIONS", "build_server"]
 
 logger = get_logger("server")
 
@@ -61,6 +68,14 @@ SERVER_INSTRUCTIONS = (
     "server instead of improvising."
 )
 
+#: Appended to :data:`SERVER_INSTRUCTIONS` only under ``OPENPROJECT_MCP_PROFILE=core``.
+CORE_PROFILE_INSTRUCTIONS = (
+    " This server runs the core profile: the "
+    + ", ".join(sorted(CORE_PROFILE_HIDDEN_GROUPS))
+    + " tool groups are hidden; to use one, call enable_tool_group with the group tag, "
+    "then re-read the tool list."
+)
+
 
 def build_lifespan(settings: Settings) -> Any:
     """Create the lifespan that owns the HTTP client and metadata cache.
@@ -80,6 +95,7 @@ def build_lifespan(settings: Settings) -> Any:
                 "read_only": settings.read_only,
                 "admin_tools": settings.admin_tools,
                 "disabled_groups": sorted(settings.disabled_groups) or None,
+                "profile": settings.profile,
             },
         )
         try:
@@ -100,14 +116,21 @@ def apply_tag_filters(mcp: FastMCP, settings: Settings) -> None:
     * ``admin`` tools stay hidden unless ``OPENPROJECT_MCP_ADMIN_TOOLS=1``.
     * ``OPENPROJECT_MCP_DISABLE=meetings,news`` drops whole group tags to cut
       prompt cost.
+    * ``OPENPROJECT_MCP_PROFILE=core`` hides the module-backed groups.
+
+    These are global and fixed at startup. The one runtime change is
+    ``enable_tool_group``, which lifts a ``core``-hidden group for the calling
+    session only (re-asserting the first three rules) and emits
+    ``tools/list_changed`` to that session only.
     """
-    if settings.read_only:
-        mcp.disable(tags={WRITE, DESTRUCTIVE, ADMIN})
-    elif not settings.admin_tools:
-        mcp.disable(tags={ADMIN})
-    groups = settings.disabled_groups
-    if groups:
-        mcp.disable(tags=set(groups))
+    unknown = settings.unknown_disabled_groups
+    if unknown:
+        logger.warning(
+            "OPENPROJECT_MCP_DISABLE names unknown groups; they are ignored",
+            extra={"unknown": sorted(unknown)},
+        )
+    for rule in [*deployment_rules(settings), *profile_rules(settings)]:
+        mcp.disable(tags=set(rule.tags))
 
 
 def build_server(settings: Settings | None = None) -> FastMCP:
@@ -133,7 +156,8 @@ def build_server(settings: Settings | None = None) -> FastMCP:
 
     mcp: FastMCP = FastMCP(
         name=SERVER_NAME,
-        instructions=SERVER_INSTRUCTIONS,
+        instructions=SERVER_INSTRUCTIONS
+        + (CORE_PROFILE_INSTRUCTIONS if resolved.profile == "core" else ""),
         version=__version__,
         lifespan=build_lifespan(resolved),
         auth=auth,
