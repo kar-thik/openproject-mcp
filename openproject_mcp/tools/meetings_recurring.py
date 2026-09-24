@@ -14,6 +14,12 @@ Tool                                        Phase   Endpoint(s)
 🗑Ⓜ ``cancel_recurring_meeting_occurrence``  3       ``DELETE …/occurrences/{start_time}``
 ==========================================  ======  ==========================================
 
+Every tool here carries two group tags: ``meetings`` and the sub-tag
+``meetings_recurring``. ``OPENPROJECT_MCP_DISABLE=meetings`` drops them along
+with the rest of the meetings family; ``OPENPROJECT_MCP_DISABLE=meetings_recurring``
+drops only these six, leaving the one-off meeting tools in place (useful on
+instances older than 17.4, where every route here 404s).
+
 Non-negotiables for this module:
 
 * **Everything here is 17.4+.** The entire ``/recurring_meetings`` subtree only
@@ -517,7 +523,11 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="list_recurring_meetings",
-        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.READ),
+        tags=_shared.tool_tags(
+            _shared.GROUP_MEETINGS,
+            _shared.READ,
+            subgroup=_shared.GROUP_MEETINGS_RECURRING,
+        ),
         annotations=_shared.read_annotations(title="List recurring meetings"),
     )
     @_shared.tool_errors
@@ -567,7 +577,11 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="get_recurring_meeting",
-        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.READ),
+        tags=_shared.tool_tags(
+            _shared.GROUP_MEETINGS,
+            _shared.READ,
+            subgroup=_shared.GROUP_MEETINGS_RECURRING,
+        ),
         annotations=_shared.read_annotations(title="Get recurring meeting"),
     )
     @_shared.tool_errors
@@ -617,7 +631,11 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="create_recurring_meeting",
-        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.WRITE),
+        tags=_shared.tool_tags(
+            _shared.GROUP_MEETINGS,
+            _shared.WRITE,
+            subgroup=_shared.GROUP_MEETINGS_RECURRING,
+        ),
         annotations=_shared.write_annotations(title="Create recurring meeting"),
     )
     @_shared.tool_errors
@@ -851,7 +869,12 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="delete_recurring_meeting",
-        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.WRITE, _shared.DESTRUCTIVE),
+        tags=_shared.tool_tags(
+            _shared.GROUP_MEETINGS,
+            _shared.WRITE,
+            _shared.DESTRUCTIVE,
+            subgroup=_shared.GROUP_MEETINGS_RECURRING,
+        ),
         annotations=_shared.destructive_annotations(title="Delete recurring meeting"),
     )
     @_shared.tool_errors
@@ -919,7 +942,11 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="init_recurring_meeting_occurrence",
-        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.WRITE),
+        tags=_shared.tool_tags(
+            _shared.GROUP_MEETINGS,
+            _shared.WRITE,
+            subgroup=_shared.GROUP_MEETINGS_RECURRING,
+        ),
         annotations=_shared.write_annotations(
             title="Init recurring meeting occurrence", idempotent=True
         ),
@@ -1005,7 +1032,12 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="cancel_recurring_meeting_occurrence",
-        tags=_shared.tool_tags(_shared.GROUP_MEETINGS, _shared.WRITE, _shared.DESTRUCTIVE),
+        tags=_shared.tool_tags(
+            _shared.GROUP_MEETINGS,
+            _shared.WRITE,
+            _shared.DESTRUCTIVE,
+            subgroup=_shared.GROUP_MEETINGS_RECURRING,
+        ),
         annotations=_shared.destructive_annotations(
             title="Cancel recurring meeting occurrence", idempotent=True
         ),

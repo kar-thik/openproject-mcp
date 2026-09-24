@@ -179,19 +179,27 @@ ADMIN = "admin"
 # ``config`` can use them too; they are re-exported here for tool modules.
 
 
-def tool_tags(group: str, *kinds: str) -> set[str]:
-    """Tags for a tool: one group tag plus its kind tags.
+def tool_tags(group: str, *kinds: str, subgroup: str | None = None) -> set[str]:
+    """Tags for a tool: one group tag, an optional sub-tag, plus its kind tags.
 
     Deployment filtering keys off these (SPEC §3.2): ``READ_ONLY`` drops
     ``write``/``destructive``/``admin``, ``ADMIN_TOOLS=0`` drops ``admin``, and
-    ``OPENPROJECT_MCP_DISABLE=meetings,news`` drops whole groups.
+    ``OPENPROJECT_MCP_DISABLE=meetings,news`` drops whole groups. A
+    ``subgroup`` (see :data:`PARENT_GROUP`) names a slice of the group that can
+    be disabled on its own; disabling the parent group still drops it, because
+    the tool carries both tags.
 
     ``tool_tags(GROUP_WORK_PACKAGES, WRITE)`` → ``{"work_packages", "write"}``
     ``tool_tags(GROUP_PEOPLE, WRITE, ADMIN)`` → ``{"people", "write", "admin"}``
+    ``tool_tags(GROUP_MEETINGS, READ, subgroup=GROUP_MEETINGS_RECURRING)`` →
+    ``{"meetings", "meetings_recurring", "read"}``
     """
     if not kinds:
         raise ValueError("A tool needs at least one kind tag: READ, WRITE, DESTRUCTIVE or ADMIN")
-    return {group, *kinds}
+    tags = {group, *kinds}
+    if subgroup is not None:
+        tags.add(subgroup)
+    return tags
 
 
 # --- visibility rules (SPEC §3.2) -----------------------------------------
