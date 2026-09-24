@@ -964,8 +964,8 @@ def register(mcp: FastMCP) -> None:
             int | str | None,
             Field(
                 description=(
-                    "Numeric project id or project identifier (URL slug) to scope the query. "
-                    "Both come from list_projects. Omit for a cross-project view."
+                    "Numeric project id or identifier (URL slug); from list_projects. Omit "
+                    "for a cross-project view."
                 )
             ),
         ] = None,
@@ -973,8 +973,8 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(
                 description=(
-                    "Optional free text, AND-combined with every other filter. Matches subject, "
-                    "description and comments. For text-only lookups prefer search_work_packages."
+                    "Free text, AND-combined with other filters; matches subject, description "
+                    "and comments."
                 )
             ),
         ] = None,
@@ -982,122 +982,99 @@ def register(mcp: FastMCP) -> None:
             StatusScope,
             Field(
                 description=(
-                    "Status bucket: 'open' (default), 'closed' or 'all'. An explicit status "
-                    "filter is always sent, so the server's implicit open-only default never "
-                    "silently applies. Ignored when status_ids is given."
+                    "Status bucket: 'open' (default), 'closed' or 'all'. Ignored when status_ids "
+                    "is given."
                 )
             ),
         ] = "open",
         status_ids: Annotated[
             list[int] | None,
-            Field(
-                description=(
-                    "Exact status ids. **Overrides status_scope** — the two never fight. Ids come "
-                    "from get_project_metadata."
-                )
-            ),
+            Field(description="Exact status ids. **Overrides status_scope**."),
         ] = None,
         type_ids: Annotated[
             list[int] | None,
-            Field(description="Work package type ids (Task, Bug…); from get_project_metadata."),
+            Field(description="Type ids (Task, Bug…)."),
         ] = None,
         priority_ids: Annotated[
             list[int] | None,
-            Field(
-                description=(
-                    "Priority ids; from get_project_metadata. Never guess these — priority ids "
-                    "differ per instance."
-                )
-            ),
+            Field(description="Priority ids."),
         ] = None,
         assignee: Annotated[
             list[str] | None,
             Field(
                 description=(
-                    "Assignee filter: numeric user ids, the single value 'me', or the single "
-                    "value 'none' for unassigned work. Ids come from search_principals; "
+                    "Assignee filter: numeric user ids, 'me', or 'none' for unassigned work. "
                     "get_instance_info gives the current user."
                 )
             ),
         ] = None,
         author: Annotated[
             list[str] | None,
-            Field(description="Author (creator) user ids, or 'me'. 'none' is not valid here."),
+            Field(description="Author (creator) user ids, or 'me' ('none' not valid)."),
         ] = None,
         responsible: Annotated[
             list[str] | None,
-            Field(description="Accountable user ids, 'me', or 'none' for no accountable user."),
+            Field(description="Accountable user ids, 'me', or 'none' (no accountable user)."),
         ] = None,
         version_ids: Annotated[
             list[int] | None,
-            Field(description="Version / sprint ids; from get_project_metadata."),
+            Field(description="Version / sprint ids."),
         ] = None,
         parent_id: Annotated[
             int | None,
             Field(
                 description=(
-                    "Direct children of this work package only. Mutually exclusive with "
-                    "top_level_only; use ancestor_id for the whole subtree."
+                    "Direct children only. Mutually exclusive with top_level_only; use "
+                    "ancestor_id for the whole subtree."
                 )
             ),
         ] = None,
         top_level_only: Annotated[
             bool,
-            Field(description="Only work packages that have no parent. Excludes every subtask."),
+            Field(description="Work packages with no parent (excludes every subtask)."),
         ] = False,
         ancestor_id: Annotated[
             int | None,
-            Field(
-                description=(
-                    "Everything in this work package's subtree at any depth, unlike parent_id "
-                    "which is one level only."
-                )
-            ),
+            Field(description="Whole subtree, any depth (parent_id is one level only)."),
         ] = None,
         milestones_only: Annotated[
             bool,
             Field(
                 description=(
-                    "Only milestone-type work packages. Resolved against this instance's own "
-                    "types (no hardcoded ids) and intersected with type_ids when both are given."
+                    "Only milestone-type work packages; intersected with type_ids when both "
+                    "are given."
                 )
             ),
         ] = False,
-        due_before: Annotated[
-            str | None, Field(description="Due on or before this ISO date (YYYY-MM-DD).")
-        ] = None,
-        due_after: Annotated[
-            str | None, Field(description="Due on or after this ISO date (YYYY-MM-DD).")
-        ] = None,
+        due_before: Annotated[str | None, Field(description="Due on/before, ISO date.")] = None,
+        due_after: Annotated[str | None, Field(description="Due on/after, ISO date.")] = None,
         start_before: Annotated[
-            str | None, Field(description="Starts on or before this ISO date (YYYY-MM-DD).")
+            str | None, Field(description="Starts on/before, ISO date.")
         ] = None,
-        start_after: Annotated[
-            str | None, Field(description="Starts on or after this ISO date (YYYY-MM-DD).")
-        ] = None,
+        start_after: Annotated[str | None, Field(description="Starts on/after, ISO date.")] = None,
         created_since: Annotated[
-            str | None, Field(description="Created on or after this ISO date (YYYY-MM-DD).")
+            str | None, Field(description="Created on/after, ISO date.")
         ] = None,
         updated_since: Annotated[
-            str | None, Field(description="Last changed on or after this ISO date (YYYY-MM-DD).")
+            str | None, Field(description="Changed on/after, ISO date.")
         ] = None,
         percentage_done_min: Annotated[
-            int | None, Field(ge=0, le=100, description="Minimum progress percentage, 0-100.")
+            int | None, Field(ge=0, le=100, description="Minimum progress percent.")
         ] = None,
         percentage_done_max: Annotated[
-            int | None, Field(ge=0, le=100, description="Maximum progress percentage, 0-100.")
+            int | None, Field(ge=0, le=100, description="Maximum progress percent.")
         ] = None,
         watcher: Annotated[
             list[str] | None,
-            Field(description="Work packages watched by these user ids, or 'me'."),
+            Field(description="Watched by these user ids, or 'me'."),
         ] = None,
         raw_filters: Annotated[
             list[RawFilter] | None,
             Field(
                 description=(
-                    "Escape hatch for filters this tool does not type, most importantly custom "
-                    "fields: [{'name': 'customField12', 'operator': '=', 'values': ['4']}]. "
-                    "Custom field names and option ids come from get_work_package_schema."
+                    "Escape hatch for untyped filters, e.g. custom fields: [{'name': "
+                    "'customField12', 'operator': '=', 'values': ['4']}]. Field names and "
+                    "option ids come from get_work_package_schema."
                 )
             ),
         ] = None,
@@ -1105,8 +1082,8 @@ def register(mcp: FastMCP) -> None:
             list[list[str]] | None,
             Field(
                 description=(
-                    "Server-side sort as snake_case pairs, e.g. [['due_date','asc'],"
-                    "['priority','desc']]. An unknown key fails with the allowed set listed."
+                    "Sort as snake_case pairs, e.g. [['due_date','asc'],['priority','desc']]. "
+                    "An unknown key fails, listing the allowed set."
                 )
             ),
         ] = None,
@@ -1114,8 +1091,8 @@ def register(mcp: FastMCP) -> None:
             str | None,
             Field(
                 description=(
-                    "Group the full filtered set by one snake_case column (e.g. 'status', "
-                    "'assignee'). Counts in `groups` cover every page, not just this one."
+                    "Group the full filtered set by one snake_case column (e.g. 'status'). "
+                    "Counts in `groups` cover every page, not just this one."
                 )
             ),
         ] = None,
@@ -1123,8 +1100,8 @@ def register(mcp: FastMCP) -> None:
             bool,
             Field(
                 description=(
-                    "Ask the server for totals (estimated/remaining/spent hours, story points) "
-                    "over the full filtered set. Never add up pages yourself."
+                    "Server-computed totals (estimated/remaining/spent hours, story points) over "
+                    "the full filtered set; never add up pages yourself."
                 )
             ),
         ] = False,
@@ -1136,29 +1113,27 @@ def register(mcp: FastMCP) -> None:
             bool,
             Field(
                 description=(
-                    "Aggregate every page into one result instead of returning page 1. "
-                    f"Capped at {_shared.FETCH_ALL_CAP} items with a note when the cap "
-                    "bites; mutually exclusive with page."
+                    "Aggregate every page into one result instead of page 1. Capped at "
+                    f"{_shared.FETCH_ALL_CAP} items (noted when it bites); mutually exclusive "
+                    "with page."
                 )
             ),
         ] = False,
     ) -> ListEnvelope[WorkPackageRow]:
         """List work packages with structured filters — the workhorse read tool.
 
-        Use it for every "what is assigned to me", "what is overdue", "what is in this sprint"
-        question. Convenience queries are parameters here, not separate tools: overdue →
-        `due_before=<today>`; unassigned → `assignee=['none']`; nearly done →
+        Handles "assigned to me", "overdue", "in this sprint" via parameters, not separate
+        tools: overdue → `due_before=<today>`; unassigned → `assignee=['none']`; nearly done →
         `percentage_done_min=80`; subtasks of a ticket → `parent_id=<id>`.
 
-        Returns the standard list envelope: compact rows plus `pagination`, plus `groups` when
-        `group_by` was requested and `sums` when `show_sums` was requested. Groups and sums are
-        computed server-side over the whole filtered set, independent of paging — never re-add
-        them from the rows on one page.
+        Returns the standard list envelope: rows plus `pagination`, plus `groups` when
+        `group_by` is set and `sums` when `show_sums` is set — both computed server-side over
+        the whole filtered set, independent of paging; never re-add them from one page's rows.
 
-        Pitfalls: this returns **open work packages only** unless you pass `status_scope` or
-        `status_ids`, so say so when you report counts. `status_ids` overrides `status_scope`.
-        Status, type, priority and version ids differ per instance and must come from
-        `get_project_metadata`, never from memory.
+        Pitfalls: returns **open work packages only** unless `status_scope` or `status_ids` is
+        given (`status_ids` overrides `status_scope`), so say so when reporting counts. Status,
+        type, priority and version ids come from `get_project_metadata`; user ids (assignee,
+        author, responsible, watcher) from `search_principals` — never guess either.
 
         For text lookups use `search_work_packages`; for one work package's description, custom
         fields and children use `get_work_package`.
