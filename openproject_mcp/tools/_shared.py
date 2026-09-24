@@ -247,17 +247,20 @@ def read_annotations(
     title: str | None = None,
     idempotent: bool = True,
     max_result_chars: int | None = None,
+    open_world: bool = True,
 ) -> dict[str, Any]:
     """Annotations for a read tool.
 
     ``max_result_chars`` sets ``anthropic/maxResultSizeChars`` — use it on known
-    large reads (comment threads, report data, ``run_query``).
+    large reads (comment threads, report data, ``run_query``). ``open_world``
+    is False only for a tool that never talks to OpenProject
+    (``enable_tool_group``).
     """
     annotations: dict[str, Any] = {
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": idempotent,
-        "openWorldHint": True,
+        "openWorldHint": open_world,
     }
     if title:
         annotations["title"] = title
