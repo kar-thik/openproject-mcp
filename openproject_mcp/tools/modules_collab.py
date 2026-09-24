@@ -1214,87 +1214,81 @@ def register(mcp: FastMCP) -> None:
         meeting_id: Annotated[
             int,
             Field(
-                description="Numeric meeting id from list_meetings or get_meeting. Never a "
-                "project id or an agenda item id."
+                description="Numeric meeting id from list_meetings or get_meeting (never a "
+                "project or agenda item id)."
             ),
         ],
         title: Annotated[
             str | None,
-            Field(description="New meeting title. Omit to leave it alone; it cannot be cleared."),
+            Field(description="New title. Omit to leave alone; cannot be cleared."),
         ] = None,
         location: Annotated[
             str | None,
             Field(
-                description="New room name or meeting URL; REPLACES the stored one. Pass null "
-                "or an empty string to clear it. Omit the parameter entirely (the default) to "
-                "leave it untouched."
+                description="New room name or meeting URL; replaces the stored one. Null or "
+                "an empty string clears it; omit to leave it untouched."
             ),
         ] = KEEP,
         start_time: Annotated[
             str | None,
             Field(
-                description="New start as ISO 8601 WITH a timezone: '2026-08-03T14:00:00Z' or "
-                "'2026-08-03T16:00:00+02:00'. A time without an offset is rejected locally "
-                "rather than booked in the wrong hour. Omit to keep the current time."
+                description="New start as ISO 8601 with a timezone: '2026-08-03T14:00:00Z' or "
+                "'...+02:00'. Offset-less times are rejected locally. Omit to keep the "
+                "current time."
             ),
         ] = None,
         duration_minutes: Annotated[
             int | None,
             Field(
                 ge=1,
-                description="New length in minutes (90 = one and a half hours); the end time "
-                "is derived from it. Omit to keep the current duration.",
+                description="New length in minutes (90 = 1.5 hours); the end time is derived "
+                "from it. Omit to keep the current duration.",
             ),
         ] = None,
         state: Annotated[
             MeetingState | None,
             Field(
-                description="New lifecycle state: 'open' publishes a draft to its participants "
-                "(exactly what the UI's publish does), 'in_progress' starts it (required before "
-                "outcomes can be recorded), 'closed' freezes it, 'cancelled' calls it off. "
-                "There is no dedicated state endpoint upstream — this plain field is it."
+                description="New lifecycle state: 'open' publishes a draft to participants, "
+                "'in_progress' starts it (required before outcomes can be recorded), "
+                "'closed' freezes it, 'cancelled' calls it off."
             ),
         ] = None,
         participants: Annotated[
             list[int] | None,
             Field(
-                description="User ids of the FULL new invite list, from search_principals or a "
-                "project's memberships. This REPLACES the whole set — anyone not listed is "
-                "uninvited — so read the current list with get_meeting first and send it "
-                "complete. Omit to leave the participants untouched."
+                description="Full new invite list (user ids), from search_principals or a "
+                "project's memberships. Replaces the whole set — read the current list with "
+                "get_meeting first and send it complete. Omit to leave untouched."
             ),
         ] = None,
         lock_version: Annotated[
             int | None,
             Field(
-                description="The lock_version you read from get_meeting. Pass it and the write "
-                "fails loudly (409) if somebody else edited the meeting in the meantime. Omit "
-                "it and the current version is fetched and echoed — still safe, just one more "
-                "round trip and a slightly wider conflict window."
+                description="The lock_version from get_meeting. Passing it makes a concurrent "
+                "edit fail loudly (409); omitting it fetches and echoes the current version "
+                "— safe, but a wider conflict window."
             ),
         ] = None,
     ) -> MeetingDetail:
         """Change a meeting's title, time, place or invite list — or move its lifecycle state.
 
-        Use it to reschedule ("move Thursday's review to 15:00"), to publish a draft
-        (`state='open'`), to start or wrap up a running one (`state='in_progress'` /
-        `'closed'` — outcomes can only be recorded while it is in progress), or to fix the
-        participants. Only the parameters you pass are sent; omitted fields stay as they are.
+        Reschedule ("move Thursday's review to 15:00"), publish a draft (`state='open'`),
+        start/wrap up a running one (`state='in_progress'`/`'closed'`), or fix participants.
+        Only passed parameters are sent; omitted fields stay as they are.
 
         Returns the updated meeting in the same shape as `get_meeting`, including the fresh
         `lock_version` for a follow-up edit.
 
-        Pitfalls. `participants` replaces the entire set — a partial list silently uninvites
-        everyone else. A closed meeting accepts a state-only patch (reopening it) and nothing
+        Pitfalls. A closed meeting accepts a state-only patch (reopening it) and nothing
         else; any other change is rejected with a validation error until it is reopened. A
         `conflict` error (409) means somebody edited the meeting since you read it — the error
-        carries the fresh `lock_version` and the differing fields, so re-read, decide, retry
-        deliberately. This needs the 'edit meetings' permission, and moving a meeting to
-        another project is deliberately not offered.
+        carries the fresh `lock_version` and the differing fields, so re-read and retry
+        deliberately. Needs 'edit meetings' permission; moving a meeting to another project
+        isn't offered.
 
-        Cross-references: `get_meeting` for the current values and the `lock_version`;
-        `create_meeting` to schedule a new one; `delete_meeting` to remove one;
-        `add_meeting_outcome` for what an 'in_progress' state unlocks.
+        Cross-references: `get_meeting` for current values/`lock_version`; `create_meeting`
+        to schedule a new one; `delete_meeting` to remove one; `add_meeting_outcome` for what
+        'in_progress' unlocks.
         """
         attributes: dict[str, Any] = {}
         if title is not None:
