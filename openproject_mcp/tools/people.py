@@ -998,12 +998,12 @@ def register(mcp: FastMCP) -> None:
     ) -> ListEnvelope[RoleRow]:
         """List the roles this instance defines, with their ids.
 
-        This is the id-producing tool for `create_membership.role_ids`
-        (admin-gated: hidden unless the server sets
-        `OPENPROJECT_MCP_ADMIN_TOOLS=1`) and `update_membership.role_ids` —
-        role names are never accepted there. Roles are instance-wide
-        definitions ('Member', 'Reader', 'Project admin'); a membership binds
-        one principal to one project with a set of them.
+        This is the id-producing tool for `create_membership.role_ids` and
+        `update_membership.role_ids` (both admin-gated: hidden unless the server
+        sets `OPENPROJECT_MCP_ADMIN_TOOLS=1`) — role names are never accepted
+        there. Roles are instance-wide definitions ('Member', 'Reader', 'Project
+        admin'); a membership binds one principal to one project with a set of
+        them.
 
         Returns the standard list envelope with `has_more: false`: the role list
         is small and fetched in full. Each item is `{id, name}`, plus
