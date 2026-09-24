@@ -10,6 +10,8 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-24
+
 ### Added
 
 - `OPENPROJECT_MCP_PROFILE=core` hides the module-backed tool groups
