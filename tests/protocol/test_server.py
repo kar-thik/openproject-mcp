@@ -95,6 +95,8 @@ READ_TOOLS = {
     # 0.2.0
     "list_project_phase_definitions",
     "get_project_phase",
+    # 0.3.2
+    "enable_tool_group",
 }
 WRITE_TOOLS = {
     "bulk_update_work_packages",
