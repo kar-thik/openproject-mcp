@@ -1414,7 +1414,7 @@ def register(mcp: FastMCP) -> None:
             Field(description="Numeric project id or identifier (URL slug); from list_projects."),
         ],
         type: Annotated[
-            str,
+            int | str,
             Field(
                 description=(
                     "Type name or id ('Task', 'Bug', 'Milestone', or 7). Unknown or ambiguous "
@@ -1440,17 +1440,17 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = None,
         status: Annotated[
-            str | None,
+            int | str | None,
             Field(
                 description="Status name or numeric id. Omit for the type's default; don't guess."
             ),
         ] = None,
         priority: Annotated[
-            str | None,
+            int | str | None,
             Field(description="Priority name or id ('High', 'Normal', or 8). Omit for default."),
         ] = None,
         assignee: Annotated[
-            str | None,
+            int | str | None,
             Field(
                 description=(
                     "Numeric user id ('me' isn't accepted in writes; get_instance_info gives "
@@ -1459,10 +1459,10 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = None,
         responsible: Annotated[
-            str | None, Field(description="Numeric id of the accountable person.")
+            int | str | None, Field(description="Numeric id of the accountable person.")
         ] = None,
         version: Annotated[
-            str | None,
+            int | str | None,
             Field(description="Numeric version id; from get_project_metadata."),
         ] = None,
         target_versions: Annotated[
@@ -1473,11 +1473,11 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = None,
         sprint: Annotated[
-            str | None,
+            int | str | None,
             Field(description="Numeric sprint id; from list_sprints. Omit to leave unset."),
         ] = None,
         parent_id: Annotated[
-            int | None,
+            int | str | None,
             Field(description="Work package id to create this as a child of."),
         ] = None,
         estimated_hours: Annotated[
@@ -1661,11 +1661,11 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = KEEP,
         type: Annotated[
-            str | None,
+            int | str | None,
             Field(description="New type as a name or numeric id. Cannot be cleared."),
         ] = None,
         status: Annotated[
-            str | None,
+            int | str | None,
             Field(
                 description=(
                     "New status as a name or id; invalid transitions list the reachable statuses."
@@ -1673,10 +1673,10 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = None,
         priority: Annotated[
-            str | None, Field(description="New priority as a name or numeric id.")
+            int | str | None, Field(description="New priority as a name or numeric id.")
         ] = None,
         assignee: Annotated[
-            str | None,
+            int | str | None,
             Field(
                 description=(
                     "Numeric user id; omit to leave unchanged, null (or 'none') to unassign."
@@ -1684,11 +1684,11 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = KEEP,
         responsible: Annotated[
-            str | None,
+            int | str | None,
             Field(description="Numeric id of the accountable person; null clears it."),
         ] = KEEP,
         version: Annotated[
-            str | None,
+            int | str | None,
             Field(description="Numeric version id; null removes it."),
         ] = KEEP,
         target_versions: Annotated[
@@ -1699,7 +1699,7 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = None,
         sprint: Annotated[
-            str | None,
+            int | str | None,
             Field(description="Numeric sprint id from list_sprints; null removes it."),
         ] = KEEP,
         parent_id: Annotated[
