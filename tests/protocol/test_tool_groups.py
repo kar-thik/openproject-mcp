@@ -245,7 +245,7 @@ async def test_core_profile_appends_the_instructions_hint() -> None:
 async def test_every_registered_tool_carries_a_known_group_tag() -> None:
     server: FastMCP = build_server(_settings(admin_tools=True))
     tools = await server.list_tools()
-    assert len(tools) == 89
+    assert len(tools) == 91
     for tool in tools:
         assert tool.tags & ALL_GROUPS, f"{tool.name} has no group tag: {sorted(tool.tags)}"
     assert CORE_PROFILE_HIDDEN_GROUPS <= ALL_GROUPS

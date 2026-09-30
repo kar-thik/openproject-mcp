@@ -91,3 +91,82 @@ async def test_omitted_versions_are_untouched(
     patch = mock_api.patch("work_packages/1234").respond(200, json=WORK_PACKAGE_DETAIL)
     await mcp_client.call_tool("update_work_package", {"id": 1234, "subject": "Renamed"})
     assert "_links" not in json.loads(patch.calls[0].request.content)
+
+
+# --- sprint assignment ------------------------------------------------------
+
+
+async def test_update_assigns_and_clears_a_sprint(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    current = deepcopy(WORK_PACKAGE_DETAIL)
+    schema = {**deepcopy(WORK_PACKAGE_SCHEMA_5_1), "sprint": {"type": "Sprint", "writable": True}}
+    current["_links"]["sprint"] = {"href": "/api/v3/sprints/101", "title": "Sprint 11"}
+    mock_api.get("work_packages/1234").respond(200, json=current)
+    mock_api.get("work_packages/schemas/5-1").respond(200, json=schema)
+    mock_api.post("work_packages/1234/form").respond(200, json=UPDATE_FORM_OK)
+    patch = mock_api.patch("work_packages/1234").respond(200, json=current)
+
+    result = await mcp_client.call_tool("update_work_package", {"id": 1234, "sprint": "101"})
+    assert not result.is_error
+    assert result.structured_content["sprint"] == {"id": 101, "name": "Sprint 11"}
+    links = json.loads(patch.calls[0].request.content)["_links"]
+    assert links == {"sprint": {"href": "/api/v3/sprints/101"}}
+
+    result = await mcp_client.call_tool("update_work_package", {"id": 1234, "sprint": None})
+    links = json.loads(patch.calls[1].request.content)["_links"]
+    assert links == {"sprint": {"href": None}}
+    assert result.structured_content["sprint"] == {"id": 101, "name": "Sprint 11"}
+
+
+async def test_update_sprint_without_schema_support_fails_before_writing(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    mock_api.get("work_packages/1234").respond(200, json=WORK_PACKAGE_DETAIL)
+    mock_api.get("work_packages/schemas/5-1").respond(200, json=WORK_PACKAGE_SCHEMA_5_1)
+    result = await mcp_client.call_tool(
+        "update_work_package", {"id": 1234, "sprint": "101"}, raise_on_error=False
+    )
+    assert result.is_error
+    assert all(c.request.method == "GET" for c in mock_api.calls)
+
+
+async def test_create_assigns_a_sprint(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    schema = {**deepcopy(WORK_PACKAGE_SCHEMA_5_1), "sprint": {"type": "Sprint", "writable": True}}
+    mock_api.get("projects/5").respond(
+        200, json={"_type": "Project", "id": 5, "_links": {"self": {"href": "/api/v3/projects/5"}}}
+    )
+    mock_api.get("types").respond(
+        200,
+        json={
+            "_type": "Collection",
+            "total": 1,
+            "count": 1,
+            "_embedded": {
+                "elements": [
+                    {
+                        "_type": "Type",
+                        "id": 1,
+                        "name": "Task",
+                        "_links": {"self": {"href": "/api/v3/types/1"}},
+                    }
+                ]
+            },
+        },
+    )
+    mock_api.get("work_packages/schemas/5-1").respond(200, json=schema)
+    form = mock_api.post("work_packages/form").respond(200, json=CREATE_FORM_OK)
+    created = deepcopy(WORK_PACKAGE_DETAIL)
+    created["_links"]["sprint"] = {"href": "/api/v3/sprints/101", "title": "Sprint 11"}
+    create = mock_api.post("work_packages").respond(201, json=created)
+    result = await mcp_client.call_tool(
+        "create_work_package",
+        {"project": 5, "type": "1", "subject": "Planned", "sprint": "101"},
+    )
+    assert not result.is_error
+    assert result.structured_content["sprint"] == {"id": 101, "name": "Sprint 11"}
+    for route in (form, create):
+        links = json.loads(route.calls[0].request.content)["_links"]
+        assert links["sprint"] == {"href": "/api/v3/sprints/101"}

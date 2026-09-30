@@ -72,6 +72,8 @@ READ_TOOLS = {
     "list_notifications",
     "list_time_entries",
     "list_versions",
+    "list_sprints",
+    "get_sprint",
     "search_principals",
     "get_user",
     "list_memberships",

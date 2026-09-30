@@ -240,7 +240,7 @@ The probe runs lazily on first need, is cached 1 h, and its result is included i
 
 Legend: 🔍 read · ✏️ write · 🗑 destructive (confirm + `requiresUserInteraction`) · ⚙️ admin-gated · Ⓜ module/version-dependent (probed, G5). Ph → §15.
 
-**Count: 89 tools — Ph1: 17 · Ph2: 33 · Ph3: 39.** (Vs the old server's 62: strictly more *capability*; the count is honest, not the sales pitch. Deployments trim via tag filters, §3.2.) A CI check asserts this table always equals the registered tool set (§13.5).
+**Count: 91 tools — Ph1: 17 · Ph2: 35 · Ph3: 39.** (Vs the old server's 62: strictly more *capability*; the count is honest, not the sales pitch. Deployments trim via tag filters, §3.2.) A CI check asserts this table always equals the registered tool set (§13.5).
 
 ### 6.1 Instance & identity (Ph1: 1 · Ph2: 1)
 
@@ -265,7 +265,7 @@ Legend: 🔍 read · ✏️ write · 🗑 destructive (confirm + `requiresUserIn
 | 🗑 `delete_work_package` | `id, confirm` | `DELETE /work_packages/{id}` | 1 |
 | ✏️ `bulk_update_work_packages` | `updates[{id, changes, lock_version?}], dry_run=true, notify=true` | Per-item form → PATCH, maximum 50; preview first | 1 |
 
-Work-package details carry `target_versions: Ref[]`; legacy `version` is the sole assignment or null. Create/update accept `target_versions` (omitted/null leaves unchanged, `[]` clears), mutually exclusive with the legacy `version` argument. Schema presence of `targetVersions` selects the new wire dialect; legacy schemas accept at most one assignment. Form defaults must never cause both wire fields to be committed together.
+Work-package details carry `target_versions: Ref[]` plus `sprint: Ref | null`. Legacy `version` is the sole assignment or null. Create/update accept `target_versions` (omitted/null leaves unchanged, `[]` clears), mutually exclusive with the legacy `version` argument. Schema presence of `targetVersions` selects the new wire dialect; legacy schemas accept at most one assignment. Form defaults must never cause both wire fields to be committed together. Create/update also accept `sprint` (a KEEP-sentinel write like `version`: omitted leaves unchanged, null/`"none"` clears via a null href; requires `"sprint"` in the work-package schema, else a typed error); `list_work_packages` filters it via `sprint_ids` (wire filter `sprint`).
 
 `bulk_update_work_packages` defaults to a read-only preview of up to 50 distinct ids. Applying requires every item's reviewed `lock_version`. All forms are validated before any PATCH; any preflight error blocks the whole batch. Execution is sequential and non-atomic, returning per-item success, conflict, failure or unknown outcome. Never replay successful items; re-read unknown outcomes before retrying. The tool belongs to the work_packages write group and is hidden in read-only mode.
 
@@ -273,7 +273,7 @@ Work-package details carry `target_versions: Ref[]`; legacy `version` is the sol
 
 `search_work_packages` modes (verified filter compositions): `quick` → `typeahead **` (subject + project name + type/status name + id — what the UI header search runs); `fulltext` → `search **` (subject + description + **comments** + searchable CFs, plus attachment content/filename when the instance's Postgres has TSV). When TSV is unavailable the result carries `notes: ["attachment content not searched on this instance"]` (G5) — comment search is core and always included.
 
-`list_work_packages` typed filters: `project` (id | identifier), `query?` (text, `search` filter AND-combined with the rest), `status_scope`, `status_ids`, `type_ids`, `priority_ids`, `assignee` (ids, `"me"`, or `"none"` → `!*`), `author`, `responsible`, `version_ids`, `parent_id`, `top_level_only` (→ `parent !*`), `ancestor_id` (subtree), `milestones_only`, `due_before/after`, `start_before/after`, `created_since`, `updated_since`, `percentage_done_min/max`, `watcher`, plus `raw_filters?` (typed escape hatch, §9.2), `sort_by` (snake_case pairs, server-side), `group_by?`, `show_sums=false`, `page`, `page_size`. Open-ended date ranges use `<>d` with an empty bound — no sentinel dates.
+`list_work_packages` typed filters: `project` (id | identifier), `query?` (text, `search` filter AND-combined with the rest), `status_scope`, `status_ids`, `type_ids`, `priority_ids`, `assignee` (ids, `"me"`, or `"none"` → `!*`), `author`, `responsible`, `version_ids`, `sprint_ids`, `parent_id`, `top_level_only` (→ `parent !*`), `ancestor_id` (subtree), `milestones_only`, `due_before/after`, `start_before/after`, `created_since`, `updated_since`, `percentage_done_min/max`, `watcher`, plus `raw_filters?` (typed escape hatch, §9.2), `sort_by` (snake_case pairs, server-side), `group_by?`, `show_sums=false`, `page`, `page_size`. Open-ended date ranges use `<>d` with an empty bound — no sentinel dates.
 
 `get_work_package` returns full detail: description (markdown raw), all core fields, custom fields (§6.2.1), parent Ref, availability flags for dev-links/meetings/files, and requested includes. **Every include is capped at 20 items** with a G1 marker (`{"truncated": true, "total": 500}`) and a pointer to the full-listing tool (`list_work_packages(parent_id=…)` for children; relations via the relations filter). `custom_actions` include lists the instance-defined one-click actions available on this WP (feeds `execute_custom_action`).
 
@@ -377,16 +377,20 @@ Two tools instead of one union-shaped footgun: `mark_notifications` requires exp
 
 `sum_hours=true` pages through all matches (cap 2,000 entries; cap-hit reported per G1) and returns an accurate total. `activity` accepts name or id; omitted → instance default from the form; allowed activities appear in validation errors and `get_project_metadata`. Project-level entries (no WP) are supported — `work_package_id` is optional with `project_id`.
 
-### 6.10 Versions / sprints (Ph2: 4)
+### 6.10 Versions / sprints (Ph2: 6)
 
 | Tool | Sig (abridged) | Endpoint(s) | Ph |
 |---|---|---|---|
-| 🔍 `list_versions` | `project_id?, include_sprintsⓂ=false` | `GET /versions` or `/projects/{id}/versions` (+ `/projects/{id}/sprints` Ⓜ) | 2 |
+| 🔍 `list_versions` | `project_id?, include_sprintsⓂ=false` | `GET /versions` or `/projects/{id}/versions` (+ `/projects/{id}/sprints` Ⓜ, legacy shapes only) | 2 |
+| 🔍 `list_sprints` | `project_id?, page, page_size` | `GET /sprints` or `/projects/{id}/sprints` | 2 |
+| 🔍 `get_sprint` | `sprint_id` | `GET /sprints/{id}` | 2 |
 | ✏️ `create_version` | `project_id, name, start_date?, end_date?, description?, status?, sharing?` | form → `POST /versions` | 2 |
 | ✏️ `update_version` | `id, …` | `PATCH /versions/{id}` | 2 |
 | 🗑 `delete_version` | `id, confirm` | `DELETE /versions/{id}` | 2 |
 
 `end_date` maps to API `endDate` (the old server's tool/client disagreed and the value vanished).
+
+Since OpenProject 17.3 sprints are standalone `Sprint` objects, no longer versions: `finishDate` (not `endDate`), `definingWorkspace` (not `definingProject`), and `status` as a URN (`…:sprints:status:in_planning|active|completed`). `list_versions(include_sprints=…)` merges legacy backlogs versions only and notes (never fails) when the endpoint serves new-shape objects — `list_sprints`/`get_sprint` serve those. Sprint writes are deferred: the public API documents no `POST`/`PATCH`/`DELETE /sprints` and no `/sprints/form`. Work packages link to sprints via `_links.sprint` (READ/WRITE, needs `view sprints`): detail carries `sprint: Ref`, create/update accept `sprint` (null clears, via the `sprint_ids` filter on `list_work_packages`).
 
 ### 6.11 People & access (Ph2: 7)
 

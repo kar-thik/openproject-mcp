@@ -284,6 +284,10 @@ class WorkPackageDetail(WorkPackageRow):
         default_factory=list[Ref],
         description="All target versions; legacy instances yield zero or one.",
     )
+    sprint: Ref | None = Field(
+        default=None,
+        description="The sprint the work package is planned in; null when unassigned.",
+    )
     category: Ref | None = Field(default=None, description="Category.")
     parent: Ref | None = Field(default=None, description="Parent work package.")
     project_phase: Ref | None = Field(

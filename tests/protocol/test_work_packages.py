@@ -193,6 +193,18 @@ async def test_list_composes_the_typed_filter_set_with_groups_and_sums(
     assert request.url.params["showSums"] == "true"
 
 
+async def test_list_sends_the_sprint_filter(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    route = mock_api.get("work_packages").mock(return_value=httpx.Response(200, json=GROUPED_LIST))
+
+    await mcp_client.call_tool("list_work_packages", {"sprint_ids": [101]})
+
+    assert _filters(route.calls[0].request)[1:] == [
+        {"sprint": {"operator": "=", "values": ["101"]}}
+    ]
+
+
 async def test_list_defaults_to_open_and_status_ids_override_the_scope(
     mock_api: respx.MockRouter, mcp_client: Client[Any]
 ) -> None:

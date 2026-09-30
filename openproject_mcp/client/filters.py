@@ -166,6 +166,7 @@ FILTER_TYPES: dict[str, FilterType] = {
     "subprojectId": FilterType.RELATION,
     "onlySubproject": FilterType.RELATION,
     "version": FilterType.LIST_OPTIONAL,
+    "sprint": FilterType.LIST_OPTIONAL,
     "category": FilterType.LIST_OPTIONAL,
     "parent": FilterType.RELATION,
     "ancestor": FilterType.RELATION,
