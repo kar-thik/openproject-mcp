@@ -334,7 +334,7 @@ def _legacy_version(payload: Mapping[str, Any]) -> Ref | None:
     return versions[0] if len(versions) == 1 else None
 
 
-def _sprint_link(schema: Mapping[str, Any], sprint: str | None) -> dict[str, Any]:
+def _sprint_link(schema: Mapping[str, Any], sprint: int | str | None) -> dict[str, Any]:
     """Build the ``sprint`` write link, or nothing when the parameter was omitted."""
     if _is_keep(sprint):
         return {}
@@ -355,7 +355,7 @@ def _sprint_link(schema: Mapping[str, Any], sprint: str | None) -> dict[str, Any
 
 
 def _version_links(
-    schema: Mapping[str, Any], version: str | None, target_versions: list[int] | None
+    schema: Mapping[str, Any], version: int | str | None, target_versions: list[int] | None
 ) -> dict[str, Any]:
     if target_versions is not None and not _is_keep(version):
         raise InputValidationError(
@@ -673,18 +673,18 @@ class WorkPackageChanges(BaseModel):
     model_config = ConfigDict(extra="forbid")
     subject: str | None = None
     description: str | None = KEEP
-    type: str | None = None
-    status: str | None = None
-    priority: str | None = None
-    assignee: str | None = Field(default=KEEP, description="Numeric user id; null unassigns.")
-    responsible: str | None = KEEP
-    version: str | None = Field(
+    type: int | str | None = None
+    status: int | str | None = None
+    priority: int | str | None = None
+    assignee: int | str | None = Field(default=KEEP, description="Numeric user id; null unassigns.")
+    responsible: int | str | None = KEEP
+    version: int | str | None = Field(
         default=KEEP, description="Legacy single-version alias; null clears."
     )
     target_versions: list[Annotated[int, Field(gt=0, strict=True)]] | None = Field(
         default=None, description="Target version ids; [] clears. Do not combine with version."
     )
-    sprint: str | None = Field(
+    sprint: int | str | None = Field(
         default=KEEP,
         description="Numeric sprint id from list_sprints; null (or 'none') clears it.",
     )
@@ -1754,9 +1754,9 @@ def register(mcp: FastMCP) -> None:
         for a follow-up edit.
 
         Pitfalls: omitted parameters are left alone, while passing null **clears** a field
-        (assignee, responsible, version, sprint, parent, dates, description). A 409 error means somebody
-        else changed the work package first — the error carries the fresh `lock_version` and the
-        conflicting fields, so re-read and retry deliberately.
+        (assignee, responsible, version, sprint, parent, dates, description). A 409 error means
+        somebody else changed the work package first — the error carries the fresh `lock_version`
+        and the conflicting fields, so re-read and retry deliberately.
 
         Ids come from `get_work_package` / `list_work_packages`; status, priority, type and
         version values come from `get_project_metadata`; sprint ids come from `list_sprints`.
