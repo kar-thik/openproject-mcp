@@ -119,6 +119,7 @@ def _work_package_detail(payload: dict[str, Any]) -> WorkPackageDetail:
         author=Ref.from_hal(payload, "author"),
         responsible=Ref.from_hal(payload, "responsible"),
         version=Ref.from_hal(payload, "version"),
+        sprint=Ref.from_hal(payload, "sprint"),
         category=Ref.from_hal(payload, "category"),
         parent=Ref.from_hal(payload, "parent"),
         estimated_hours=hal.duration_hours(payload.get("estimatedTime")),

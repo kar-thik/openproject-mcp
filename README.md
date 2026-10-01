@@ -8,7 +8,7 @@
 
 An MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) server for the
 [OpenProject](https://www.openproject.org/) API v3. It gives Claude and any other MCP client
-89 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
+91 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
 saved queries, notifications, time tracking, versions, people and memberships, meetings, news,
 documents, budgets and reporting — plus 4 report/workflow prompts and 3 resource templates.
 Built on FastMCP 3.x and httpx (HTTP/2).
@@ -317,7 +317,7 @@ explicit `confirm=true` argument before it acts.
 
 ## Tools
 
-89 tools: 40 read, 46 write and 3 admin-gated writes. The admin tools stay hidden unless
+91 tools: 42 read, 46 write and 3 admin-gated writes. The admin tools stay hidden unless
 `OPENPROJECT_MCP_ADMIN_TOOLS=1`; the 13 destructive tools additionally require `confirm=true`
 on every call. Each section heading names the group tag accepted by
 `OPENPROJECT_MCP_DISABLE`.
@@ -420,6 +420,8 @@ updates. `unknown` means the write may have committed before the response was lo
 | Tool | Kind | What it does |
 |---|---|---|
 | `list_versions` | Read | List versions (releases, milestones, sprints) you can assign work packages to. |
+| `list_sprints` | Read | List sprints (Scrum timeboxes) you can plan work packages into. |
+| `get_sprint` | Read | Read one sprint in full: dates, workspace and lifecycle status. |
 | `create_version` | Write | Create a version (release, milestone or sprint) inside a project. |
 | `update_version` | Write | Change a version's name, dates, description, status or sharing. |
 | `delete_version` | Write (destructive) | Permanently delete a version. |

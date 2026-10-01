@@ -361,3 +361,55 @@ VERSION_IN_USE_ERROR: dict[str, Any] = {
     "message": "Version cannot be deleted because it is in use by work packages.",
     "_embedded": {"details": {"attribute": "base"}},
 }
+
+
+# --- sprints (standalone Sprint objects, 17.3+) -----------------------------
+
+SPRINT_ID = 101
+
+SPRINT: dict[str, Any] = {
+    "_type": "Sprint",
+    "id": SPRINT_ID,
+    "name": "Sprint 11",
+    "description": {
+        "format": "markdown",
+        "raw": "Payments hardening.",
+        "html": "<p>Payments hardening.</p>",
+    },
+    "startDate": "2026-02-02",
+    "finishDate": "2026-02-09",
+    "createdAt": "2026-02-06T09:30:49.157Z",
+    "updatedAt": "2026-02-10T09:53:21.620Z",
+    "_links": {
+        "self": {"href": f"/api/v3/sprints/{SPRINT_ID}", "title": "Sprint 11"},
+        "definingWorkspace": {"href": "/api/v3/projects/7", "title": "Demo project"},
+        "status": {
+            "href": "urn:openproject-org:api:v3:sprints:status:active",
+            "title": "Active",
+        },
+    },
+}
+
+SPRINT_IN_PLANNING: dict[str, Any] = {
+    "_type": "Sprint",
+    "id": 102,
+    "name": "Sprint 12",
+    "startDate": "2026-02-16",
+    "finishDate": "2026-02-23",
+    "createdAt": "2026-02-06T09:30:49.157Z",
+    "updatedAt": "2026-02-06T09:30:49.157Z",
+    "_links": {
+        "self": {"href": "/api/v3/sprints/102", "title": "Sprint 12"},
+        "definingWorkspace": {"href": "/api/v3/projects/7", "title": "Demo project"},
+        "status": {
+            "href": "urn:openproject-org:api:v3:sprints:status:in_planning",
+            "title": "In planning",
+        },
+    },
+}
+
+SPRINT_NOT_FOUND: dict[str, Any] = {
+    "_type": "Error",
+    "errorIdentifier": "urn:openproject-org:api:v3:errors:NotFound",
+    "message": "The requested resource could not be found.",
+}

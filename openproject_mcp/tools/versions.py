@@ -91,6 +91,10 @@ BACKLOGS_MISSING_NOTE = (
 BACKLOGS_FORBIDDEN_NOTE = (
     "sprints not included: no permission to read the backlogs sprints of this project"
 )
+NEW_SPRINT_OBJECTS_NOTE = (
+    "new Sprint objects (17.3+) are not merged here: use list_sprints/get_sprint — "
+    "their finishDate/definingWorkspace/status shape differs from VersionRow"
+)
 
 
 class VersionRow(BaseModel):
@@ -255,9 +259,16 @@ async def _sprint_rows(
         return [], BACKLOGS_MISSING_NOTE
     except PermissionDeniedError:
         return [], BACKLOGS_FORBIDDEN_NOTE
-    return [
-        _version_row(element, source="sprint") for element in hal.collection(payload).elements
-    ], None
+    rows: list[VersionRow] = []
+    skipped_new_shape = False
+    for element in hal.collection(payload).elements:
+        if element.get("_type") == "Sprint":
+            # 17.3+ standalone Sprint objects — a different shape (finishDate,
+            # definingWorkspace, URN status); list_sprints/get_sprint serve those.
+            skipped_new_shape = True
+            continue
+        rows.append(_version_row(element, source="sprint"))
+    return rows, NEW_SPRINT_OBJECTS_NOTE if skipped_new_shape else None
 
 
 def _merge_sprints(rows: Sequence[VersionRow], sprints: Sequence[VersionRow]) -> list[VersionRow]:
@@ -302,7 +313,9 @@ def register(mcp: FastMCP) -> None:
                     "Also read /projects/{id}/sprints from the backlogs module and merge the "
                     "rows in with source='sprint'. Requires project_id. If backlogs is not "
                     "installed the versions are still returned and 'notes' says why sprints "
-                    "are missing — the call does not fail."
+                    "are missing — the call does not fail. Legacy backlogs versions only: "
+                    "on 17.3+ the endpoint serves standalone Sprint objects, which are "
+                    "skipped here (noted) — use list_sprints/get_sprint for those."
                 )
             ),
         ] = False,
@@ -330,7 +343,8 @@ def register(mcp: FastMCP) -> None:
         Cross-references: ``create_version`` adds one, ``update_version`` moves its dates or
         closes it, ``delete_version`` removes it; ``get_project_metadata(project_id=...)``
         returns the same versions alongside types and categories; to see what is IN a version
-        use ``list_work_packages`` with a version filter.
+        use ``list_work_packages`` with a version filter. For standalone sprints (17.3+)
+        use ``list_sprints``/``get_sprint``.
         """
         ctx = get_tool_context()
         notes: list[str] = []

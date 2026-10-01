@@ -334,8 +334,28 @@ def _legacy_version(payload: Mapping[str, Any]) -> Ref | None:
     return versions[0] if len(versions) == 1 else None
 
 
+def _sprint_link(schema: Mapping[str, Any], sprint: int | str | None) -> dict[str, Any]:
+    """Build the ``sprint`` write link, or nothing when the parameter was omitted."""
+    if _is_keep(sprint):
+        return {}
+    if "sprint" not in schema:
+        raise InputValidationError(
+            "The work-package schema does not expose sprint assignments.",
+            hint="The Scrum/Backlogs module may be off, or this type takes no sprint — "
+            "refresh get_work_package_schema and check the enabled project modules.",
+        )
+    return {
+        "sprint": link(
+            "sprints",
+            None
+            if _is_clear(sprint)
+            else _numeric_id(sprint, field="sprint", produced_by="list_sprints"),
+        )
+    }
+
+
 def _version_links(
-    schema: Mapping[str, Any], version: str | None, target_versions: list[int] | None
+    schema: Mapping[str, Any], version: int | str | None, target_versions: list[int] | None
 ) -> dict[str, Any]:
     if target_versions is not None and not _is_keep(version):
         raise InputValidationError(
@@ -404,6 +424,7 @@ def _detail_fields(
         "responsible": Ref.from_hal(payload, "responsible"),
         "version": _legacy_version(payload),
         "target_versions": _target_versions(payload),
+        "sprint": Ref.from_hal(payload, "sprint"),
         "category": Ref.from_hal(payload, "category"),
         "parent": Ref.from_hal(payload, "parent"),
         "project_phase": Ref.from_hal(payload, "projectPhase"),
@@ -652,16 +673,20 @@ class WorkPackageChanges(BaseModel):
     model_config = ConfigDict(extra="forbid")
     subject: str | None = None
     description: str | None = KEEP
-    type: str | None = None
-    status: str | None = None
-    priority: str | None = None
-    assignee: str | None = Field(default=KEEP, description="Numeric user id; null unassigns.")
-    responsible: str | None = KEEP
-    version: str | None = Field(
+    type: int | str | None = None
+    status: int | str | None = None
+    priority: int | str | None = None
+    assignee: int | str | None = Field(default=KEEP, description="Numeric user id; null unassigns.")
+    responsible: int | str | None = KEEP
+    version: int | str | None = Field(
         default=KEEP, description="Legacy single-version alias; null clears."
     )
     target_versions: list[Annotated[int, Field(gt=0, strict=True)]] | None = Field(
         default=None, description="Target version ids; [] clears. Do not combine with version."
+    )
+    sprint: int | str | None = Field(
+        default=KEEP,
+        description="Numeric sprint id from list_sprints; null (or 'none') clears it.",
     )
     parent_id: int | str | None = KEEP
     start_date: str | None = KEEP
@@ -701,6 +726,7 @@ async def prepare_work_package_update(
     responsible = changes.responsible
     version = changes.version
     target_versions = changes.target_versions
+    sprint = changes.sprint
     parent_id = changes.parent_id
     start_date = changes.start_date
     due_date = changes.due_date
@@ -774,6 +800,7 @@ async def prepare_work_package_update(
         and not custom_fields
         and _is_keep(version)
         and target_versions is None
+        and _is_keep(sprint)
     ):
         raise InputValidationError(
             "update_work_package was called with nothing to change.",
@@ -783,9 +810,14 @@ async def prepare_work_package_update(
     # One read serves both the custom-field schema link and the lock version, so the two can
     # never come from different snapshots of the work package.
     versions_requested = not _is_keep(version) or target_versions is not None
+    sprint_requested = not _is_keep(sprint)
     current = (
         await ctx.client.get_json(path)
-        if include_current or custom_fields or lock_version is None or versions_requested
+        if include_current
+        or custom_fields
+        or lock_version is None
+        or versions_requested
+        or sprint_requested
         else None
     )
     if include_current and lock_version is not None:
@@ -807,6 +839,14 @@ async def prepare_work_package_update(
                 hint="Read get_work_package_schema before retrying.",
             )
         links.update(_version_links(version_schema, version, target_versions))
+    if sprint_requested:
+        version_schema, version_note = await _schema_for(ctx, current or {})
+        if version_schema is None:
+            raise InputValidationError(
+                f"Cannot write sprint: {version_note}.",
+                hint="Read get_work_package_schema before retrying.",
+            )
+        links.update(_sprint_link(version_schema, sprint))
 
     if custom_fields:
         cf_schema, cf_note = await _schema_for(ctx, current or {})
@@ -1018,7 +1058,11 @@ def register(mcp: FastMCP) -> None:
         ] = None,
         version_ids: Annotated[
             list[int] | None,
-            Field(description="Version / sprint ids."),
+            Field(description="Version ids."),
+        ] = None,
+        sprint_ids: Annotated[
+            list[int] | None,
+            Field(description="Sprint ids; from list_sprints."),
         ] = None,
         parent_id: Annotated[
             int | None,
@@ -1122,7 +1166,7 @@ def register(mcp: FastMCP) -> None:
     ) -> ListEnvelope[WorkPackageRow]:
         """List work packages with structured filters — the workhorse read tool.
 
-        Handles "assigned to me", "overdue", "in this sprint" via parameters, not separate
+        Handles "assigned to me", "overdue" via parameters, not separate
         tools: overdue → `due_before=<today>`; unassigned → `assignee=['none']`; nearly done →
         `percentage_done_min=80`; subtasks of a ticket → `parent_id=<id>`.
 
@@ -1175,6 +1219,8 @@ def register(mcp: FastMCP) -> None:
             filters.append(make_filter("priority", Op.EQ, list(priority_ids)))
         if version_ids:
             filters.append(make_filter("version", Op.EQ, list(version_ids)))
+        if sprint_ids:
+            filters.append(make_filter("sprint", Op.EQ, list(sprint_ids)))
         if assignee:
             filters.append(principal_filter("assignee", list(assignee)))
         if author:
@@ -1367,7 +1413,7 @@ def register(mcp: FastMCP) -> None:
             Field(description="Numeric project id or identifier (URL slug); from list_projects."),
         ],
         type: Annotated[
-            str,
+            int | str,
             Field(
                 description=(
                     "Type name or id ('Task', 'Bug', 'Milestone', or 7). Unknown or ambiguous "
@@ -1393,17 +1439,17 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = None,
         status: Annotated[
-            str | None,
+            int | str | None,
             Field(
                 description="Status name or numeric id. Omit for the type's default; don't guess."
             ),
         ] = None,
         priority: Annotated[
-            str | None,
+            int | str | None,
             Field(description="Priority name or id ('High', 'Normal', or 8). Omit for default."),
         ] = None,
         assignee: Annotated[
-            str | None,
+            int | str | None,
             Field(
                 description=(
                     "Numeric user id ('me' isn't accepted in writes; get_instance_info gives "
@@ -1412,11 +1458,11 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = None,
         responsible: Annotated[
-            str | None, Field(description="Numeric id of the accountable person.")
+            int | str | None, Field(description="Numeric id of the accountable person.")
         ] = None,
         version: Annotated[
-            str | None,
-            Field(description="Numeric version / sprint id; from get_project_metadata."),
+            int | str | None,
+            Field(description="Numeric version id; from get_project_metadata."),
         ] = None,
         target_versions: Annotated[
             list[int] | None,
@@ -1425,8 +1471,12 @@ def register(mcp: FastMCP) -> None:
                 "values need instance support. Mutually exclusive with version."
             ),
         ] = None,
+        sprint: Annotated[
+            int | str | None,
+            Field(description="Numeric sprint id; from list_sprints. Omit to leave unset."),
+        ] = None,
         parent_id: Annotated[
-            int | None,
+            int | str | None,
             Field(description="Work package id to create this as a child of."),
         ] = None,
         estimated_hours: Annotated[
@@ -1532,6 +1582,9 @@ def register(mcp: FastMCP) -> None:
                     version_schema, KEEP if version is None else version, target_versions
                 )
             )
+        if sprint is not None:
+            sprint_schema = await _schema_for_project_type(ctx, project_id, type_id)
+            links.update(_sprint_link(sprint_schema, sprint))
         if parent_id is not None:
             links["parent"] = link("work_packages", parent_id)
 
@@ -1607,11 +1660,11 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = KEEP,
         type: Annotated[
-            str | None,
+            int | str | None,
             Field(description="New type as a name or numeric id. Cannot be cleared."),
         ] = None,
         status: Annotated[
-            str | None,
+            int | str | None,
             Field(
                 description=(
                     "New status as a name or id; invalid transitions list the reachable statuses."
@@ -1619,10 +1672,10 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = None,
         priority: Annotated[
-            str | None, Field(description="New priority as a name or numeric id.")
+            int | str | None, Field(description="New priority as a name or numeric id.")
         ] = None,
         assignee: Annotated[
-            str | None,
+            int | str | None,
             Field(
                 description=(
                     "Numeric user id; omit to leave unchanged, null (or 'none') to unassign."
@@ -1630,12 +1683,12 @@ def register(mcp: FastMCP) -> None:
             ),
         ] = KEEP,
         responsible: Annotated[
-            str | None,
+            int | str | None,
             Field(description="Numeric id of the accountable person; null clears it."),
         ] = KEEP,
         version: Annotated[
-            str | None,
-            Field(description="Numeric version/sprint id; null removes it."),
+            int | str | None,
+            Field(description="Numeric version id; null removes it."),
         ] = KEEP,
         target_versions: Annotated[
             list[int] | None,
@@ -1644,6 +1697,10 @@ def register(mcp: FastMCP) -> None:
                 "values need instance support. Mutually exclusive with version."
             ),
         ] = None,
+        sprint: Annotated[
+            int | str | None,
+            Field(description="Numeric sprint id from list_sprints; null removes it."),
+        ] = KEEP,
         parent_id: Annotated[
             int | str | None,
             Field(
@@ -1696,12 +1753,12 @@ def register(mcp: FastMCP) -> None:
         for a follow-up edit.
 
         Pitfalls: omitted parameters are left alone, while passing null **clears** a field
-        (assignee, responsible, version, parent, dates, description). A 409 error means somebody
-        else changed the work package first — the error carries the fresh `lock_version` and the
-        conflicting fields, so re-read and retry deliberately.
+        (assignee, responsible, version, sprint, parent, dates, description). A 409 error means
+        somebody else changed the work package first — the error carries the fresh `lock_version`
+        and the conflicting fields, so re-read and retry deliberately.
 
         Ids come from `get_work_package` / `list_work_packages`; status, priority, type and
-        version values come from `get_project_metadata`.
+        version values come from `get_project_metadata`; sprint ids come from `list_sprints`.
         """
         ctx = _shared.get_tool_context()
         changes = WorkPackageChanges(
@@ -1714,6 +1771,7 @@ def register(mcp: FastMCP) -> None:
             responsible=responsible,
             version=version,
             target_versions=target_versions,
+            sprint=sprint,
             parent_id=parent_id,
             start_date=start_date,
             due_date=due_date,
