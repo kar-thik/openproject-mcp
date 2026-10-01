@@ -10,6 +10,8 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-01
+
 ### Added
 
 - Sprint support for OpenProject 17.3+, where sprints are standalone `Sprint`
