@@ -33,12 +33,12 @@ from openproject_mcp.server import build_server
 from tests.conftest import TEST_URL
 
 #: Largest allowed model-facing text (docstring + Σ input-parameter descriptions) for any single
-#: tool, in characters. Post-trim maximum (list_work_packages, 2,964 chars with the sprint_ids
-#: filter added), rounded up to the next 100.
-PER_TOOL_BUDGET = 3000
+#: tool, in characters. Post-trim maximum (list_work_packages, 2,892 chars as of the sprint
+#: tools), rounded up to the next 100.
+PER_TOOL_BUDGET = 2900
 
 #: Largest allowed total model-facing text across every tool, in characters. Post-addition total
-#: (151,910 chars with list_sprints/get_sprint plus the work-package sprint parameters),
+#: (151,657 chars with list_sprints/get_sprint plus the work-package sprint parameters),
 #: rounded up to the next 1,000, plus 2,000 characters of documented headroom for one new tool
 #: landing in the same release.
 TOTAL_BUDGET = 154000

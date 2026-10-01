@@ -1166,10 +1166,9 @@ def register(mcp: FastMCP) -> None:
     ) -> ListEnvelope[WorkPackageRow]:
         """List work packages with structured filters — the workhorse read tool.
 
-        Handles "assigned to me", "overdue", "in this sprint" via parameters, not separate
+        Handles "assigned to me", "overdue" via parameters, not separate
         tools: overdue → `due_before=<today>`; unassigned → `assignee=['none']`; nearly done →
-        `percentage_done_min=80`; subtasks of a ticket → `parent_id=<id>`; in a sprint →
-        `sprint_ids` (ids from `list_sprints`).
+        `percentage_done_min=80`; subtasks of a ticket → `parent_id=<id>`.
 
         Returns the standard list envelope: rows plus `pagination`, plus `groups` when
         `group_by` is set and `sums` when `show_sums` is set — both computed server-side over

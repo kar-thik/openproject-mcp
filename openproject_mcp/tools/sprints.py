@@ -176,12 +176,9 @@ def register(mcp: FastMCP) -> None:
         ``pagination`` and ``notes``. A project-scoped listing is fetched in
         full, so ``has_more`` is false; the instance-wide listing is paginated.
 
-        Pitfalls: sprints are separate objects from versions since OpenProject
-        17.3 — ``finish_date`` is the wire ``finishDate`` (not a version's
-        ``endDate``), and ``status`` is the sprint lifecycle, not a version's
-        open/locked/closed. Assigning work to a sprint is a work-package write
-        (``update_work_package(sprint=...)``); there is no sprint write tool
-        because the API documents no sprint write endpoint.
+        Pitfalls: sprints are not versions (17.3+): ``finish_date`` is the wire ``finishDate``
+        and ``status`` is the sprint lifecycle. Assign work with
+        ``update_work_package(sprint=...)``; the API has no sprint write endpoint.
 
         Cross-references: ``get_sprint`` for one sprint in full;
         ``list_versions`` for releases and milestones; ``list_work_packages``
