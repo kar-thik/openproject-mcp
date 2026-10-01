@@ -131,9 +131,7 @@ async def test_update_sprint_without_schema_support_fails_before_writing(
     assert all(c.request.method == "GET" for c in mock_api.calls)
 
 
-async def test_create_assigns_a_sprint(
-    mock_api: respx.MockRouter, mcp_client: Client[Any]
-) -> None:
+async def test_create_assigns_a_sprint(mock_api: respx.MockRouter, mcp_client: Client[Any]) -> None:
     schema = {**deepcopy(WORK_PACKAGE_SCHEMA_5_1), "sprint": {"type": "Sprint", "writable": True}}
     mock_api.get("projects/5").respond(
         200, json={"_type": "Project", "id": 5, "_links": {"self": {"href": "/api/v3/projects/5"}}}

@@ -195,9 +195,7 @@ def register(mcp: FastMCP) -> None:
             )
             collection = hal.collection(payload)
             rows = [_sprint_row(element) for element in collection.elements]
-            return envelope_from_collection(
-                collection, rows, page=page, page_size=page_size
-            )
+            return envelope_from_collection(collection, rows, page=page, page_size=page_size)
 
         try:
             payload = await ctx.client.get_json(f"projects/{project_id}/sprints")

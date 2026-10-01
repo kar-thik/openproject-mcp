@@ -119,9 +119,7 @@ async def test_project_scoped_unknown_project_points_at_list_projects(
         return_value=httpx.Response(404, json=SPRINT_NOT_FOUND)
     )
 
-    result = await mcp_client.call_tool(
-        "list_sprints", {"project_id": 999}, raise_on_error=False
-    )
+    result = await mcp_client.call_tool("list_sprints", {"project_id": 999}, raise_on_error=False)
 
     error = _envelope(result)
     assert error["type"] == "not_found"
@@ -134,9 +132,7 @@ async def test_project_scoped_unknown_project_points_at_list_projects(
 async def test_get_sprint_returns_full_detail(
     mcp_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
-    mock_api.get(f"sprints/{SPRINT_ID}").mock(
-        return_value=httpx.Response(200, json=SPRINT)
-    )
+    mock_api.get(f"sprints/{SPRINT_ID}").mock(return_value=httpx.Response(200, json=SPRINT))
 
     structured = _structured(await mcp_client.call_tool("get_sprint", {"sprint_id": SPRINT_ID}))
 
@@ -153,9 +149,7 @@ async def test_get_unknown_sprint_points_at_list_sprints(
 ) -> None:
     mock_api.get("sprints/999").mock(return_value=httpx.Response(404, json=SPRINT_NOT_FOUND))
 
-    result = await mcp_client.call_tool(
-        "get_sprint", {"sprint_id": 999}, raise_on_error=False
-    )
+    result = await mcp_client.call_tool("get_sprint", {"sprint_id": 999}, raise_on_error=False)
 
     error = _envelope(result)
     assert error["type"] == "not_found"
@@ -175,15 +169,11 @@ async def test_new_shape_sprint_objects_are_skipped_by_list_versions(
         return_value=httpx.Response(200, json=version_collection([VERSION]))
     )
     mock_api.get("projects/7/sprints").mock(
-        return_value=httpx.Response(
-            200, json=version_collection([SPRINT_ONLY, SPRINT])
-        )
+        return_value=httpx.Response(200, json=version_collection([SPRINT_ONLY, SPRINT]))
     )
 
     structured = _structured(
-        await mcp_client.call_tool(
-            "list_versions", {"project_id": 7, "include_sprints": True}
-        )
+        await mcp_client.call_tool("list_versions", {"project_id": 7, "include_sprints": True})
     )
 
     by_id = {item["id"]: item for item in structured["items"]}
