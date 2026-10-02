@@ -10,6 +10,18 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-01
+
+### Added
+
+- Sprint support for OpenProject 17.3+, where sprints are standalone `Sprint`
+  objects rather than versions: read-only `list_sprints` and `get_sprint`
+  tools (`versions` group), a `sprint` parameter on `create_work_package`,
+  `update_work_package` and bulk updates (null clears it), a `sprint` field on
+  work-package details and a `sprint_ids` filter on `list_work_packages`.
+  `list_versions(include_sprints)` now skips new-shape sprint objects with a
+  note pointing at the new tools. Thanks to @sinasadeghi83 (#27).
+
 ### Fixed
 
 - `server.json` description within the MCP registry's 100-character limit;
