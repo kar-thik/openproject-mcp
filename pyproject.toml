@@ -30,7 +30,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "fastmcp>=3.4.5,<4",
+    "fastmcp>=3.4.5,<5",
     "httpx[http2]>=0.28.1",
     "pydantic>=2.12",
     "pydantic-settings>=2",
