@@ -325,10 +325,10 @@ explicit `confirm=true` argument before it acts.
 
   **File tools touch the server's disk.** `upload_attachment`, `create_work_package
   (attachment_paths)` and `download_attachment` read and write paths on the machine running
-  the server, so over HTTP set `OPENPROJECT_MCP_UPLOAD_ROOT` and
-  `OPENPROJECT_MCP_DOWNLOAD_ROOT` to confine them. The server prints a startup warning when
-  either is unset with `--transport http`; a future release will refuse to serve the file
-  tools over HTTP without them.
+  the server. Over HTTP they are off until you confine them: `upload_attachment` and
+  `attachment_paths` need `OPENPROJECT_MCP_UPLOAD_ROOT`, `download_attachment` needs
+  `OPENPROJECT_MCP_DOWNLOAD_ROOT`. Until then the tool is hidden (and `attachment_paths` is
+  refused), and the server names the missing variable in a startup warning.
 
 ## Tools
 

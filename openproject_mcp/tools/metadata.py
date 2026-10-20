@@ -1131,7 +1131,8 @@ def register(mcp: FastMCP) -> None:
 
         Cross-references: ``get_instance_info`` shows which modules this instance supports.
         """
-        settings = get_tool_context().settings
+        tool_context = get_tool_context()
+        settings = tool_context.settings
         if group not in ALL_GROUPS:
             raise InputValidationError(
                 f"Unknown tool group {group!r}.",
@@ -1173,7 +1174,7 @@ def register(mcp: FastMCP) -> None:
         await ctx.enable_components(tags={group})
         # Session rules apply after the global ones, last match wins: re-assert the operator's
         # hard limits so enabling a group can never reveal a write, admin or disabled tool.
-        for rule in deployment_rules(settings):
+        for rule in deployment_rules(settings, tool_context.transport):
             await ctx.disable_components(tags=set(rule.tags))
         after = await ctx.fastmcp.list_tools()
 

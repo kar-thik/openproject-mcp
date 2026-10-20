@@ -894,3 +894,41 @@ async def test_download_root_confines_save_dir_and_is_the_default(
     assert saved.structured_content is not None
     assert saved.structured_content["path"] == str(downloads.resolve() / "spec.pdf")
     assert list(outside.iterdir()) == []
+
+
+# --- HTTP without roots fails closed (SPEC §7.3) -----------------------------
+
+
+async def _tool_names(settings: Settings, transport: Any) -> set[str]:
+    async with Client(build_server(settings, transport=transport)) as client:
+        return {tool.name for tool in await client.list_tools()}
+
+
+async def test_http_hides_file_tools_whose_root_is_unset(tmp_path: Path) -> None:
+    uploads, downloads, _ = _rooted(tmp_path)
+    file_tools = {"upload_attachment", "download_attachment"}
+
+    assert file_tools <= await _tool_names(_settings(), "stdio")
+    assert not file_tools & await _tool_names(_settings(), "http")
+    assert "download_attachment" not in await _tool_names(_settings(upload_root=uploads), "http")
+    assert "upload_attachment" not in await _tool_names(_settings(download_root=downloads), "http")
+    assert file_tools <= await _tool_names(
+        _settings(upload_root=uploads, download_root=downloads), "http"
+    )
+    # The rest of the attachments group stays.
+    assert "list_attachments" in await _tool_names(_settings(), "http")
+
+
+async def test_http_without_upload_root_refuses_create_work_package_uploads(
+    op_client: OpenProjectClient, mock_api: respx.MockRouter, tmp_path: Path
+) -> None:
+    context = ToolContext(
+        client=op_client, cache=TTLCache(ttl=300.0), settings=_settings(), transport="http"
+    )
+    route = mock_api.post("attachments").mock(return_value=httpx.Response(201, json=ATTACHMENT))
+
+    with pytest.raises(InputValidationError, match="OPENPROJECT_MCP_UPLOAD_ROOT"):
+        await attachments.upload_uncontainered_attachment(
+            context, _local_file(tmp_path, "spec.pdf", PDF_BYTES)
+        )
+    assert not route.called

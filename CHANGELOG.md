@@ -10,6 +10,14 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking (HTTP):** over `--transport http` the file tools fail closed.
+  Without `OPENPROJECT_MCP_UPLOAD_ROOT`, `upload_attachment` is hidden and
+  `create_work_package(attachment_paths)` is refused; without
+  `OPENPROJECT_MCP_DOWNLOAD_ROOT`, `download_attachment` is hidden. Set the
+  roots to restore them. stdio is unchanged.
+
 ## [0.3.4] - 2026-10-20
 
 ### Added

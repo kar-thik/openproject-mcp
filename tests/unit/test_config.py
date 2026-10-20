@@ -324,5 +324,6 @@ def test_http_without_file_roots_warns(tmp_path: Path) -> None:
     warnings = runtime_warnings(_settings(), "http")
     assert len(warnings) == 1
     assert "OPENPROJECT_MCP_UPLOAD_ROOT and OPENPROJECT_MCP_DOWNLOAD_ROOT" in warnings[0]
+    assert "hidden" in warnings[0]
     confined = _settings(upload_root=tmp_path, download_root=tmp_path)
     assert runtime_warnings(confined, "http") == []

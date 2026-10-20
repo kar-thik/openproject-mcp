@@ -334,9 +334,8 @@ def runtime_warnings(settings: Settings, transport: TransportName) -> list[str]:
         ]
         if unset:
             warnings.append(
-                f"{' and '.join(unset)} not set: every HTTP client can make "
-                "upload_attachment read, and download_attachment write, any path the server "
-                "process can access. Set them to confine the file tools; a future release "
-                "will refuse to serve file tools over HTTP without them."
+                f"{' and '.join(unset)} not set: over HTTP the file tools that need them are "
+                "hidden (upload_attachment and create_work_package(attachment_paths) need the "
+                "upload root, download_attachment the download root)."
             )
     return warnings

@@ -35,7 +35,7 @@ from openproject_mcp import __version__, prompts, resources
 from openproject_mcp.auth import StaticBearerVerifier
 from openproject_mcp.client.cache import TTLCache
 from openproject_mcp.client.http import OpenProjectClient
-from openproject_mcp.config import Settings
+from openproject_mcp.config import Settings, TransportName
 from openproject_mcp.observability import configure_logging, get_logger
 from openproject_mcp.tools import register_all
 from openproject_mcp.tools._shared import (
@@ -77,7 +77,7 @@ CORE_PROFILE_INSTRUCTIONS = (
 )
 
 
-def build_lifespan(settings: Settings) -> Any:
+def build_lifespan(settings: Settings, transport: TransportName = "stdio") -> Any:
     """Create the lifespan that owns the HTTP client and metadata cache.
 
     The version probe is *not* run here: it is lazy and cached for an hour
@@ -99,7 +99,11 @@ def build_lifespan(settings: Settings) -> Any:
             },
         )
         try:
-            yield {LIFESPAN_KEY: ToolContext(client=client, cache=cache, settings=settings)}
+            yield {
+                LIFESPAN_KEY: ToolContext(
+                    client=client, cache=cache, settings=settings, transport=transport
+                )
+            }
         finally:
             await client.aclose()
             cache.clear()
@@ -108,7 +112,7 @@ def build_lifespan(settings: Settings) -> Any:
     return lifespan
 
 
-def apply_tag_filters(mcp: FastMCP, settings: Settings) -> None:
+def apply_tag_filters(mcp: FastMCP, settings: Settings, transport: TransportName = "stdio") -> None:
     """Apply deployment filtering by tag (SPEC §3.2, §11).
 
     * ``OPENPROJECT_MCP_READ_ONLY=1`` drops every ``write``/``destructive``/
@@ -116,11 +120,12 @@ def apply_tag_filters(mcp: FastMCP, settings: Settings) -> None:
     * ``admin`` tools stay hidden unless ``OPENPROJECT_MCP_ADMIN_TOOLS=1``.
     * ``OPENPROJECT_MCP_DISABLE=meetings,news`` drops whole group tags to cut
       prompt cost.
+    * Over HTTP, file tools whose ``OPENPROJECT_MCP_*_ROOT`` is unset are hidden.
     * ``OPENPROJECT_MCP_PROFILE=core`` hides the module-backed groups.
 
     These are global and fixed at startup. The one runtime change is
     ``enable_tool_group``, which lifts a ``core``-hidden group for the calling
-    session only (re-asserting the first three rules) and emits
+    session only (re-asserting the first four rules) and emits
     ``tools/list_changed`` to that session only.
     """
     unknown = settings.unknown_disabled_groups
@@ -129,15 +134,18 @@ def apply_tag_filters(mcp: FastMCP, settings: Settings) -> None:
             "OPENPROJECT_MCP_DISABLE names unknown groups; they are ignored",
             extra={"unknown": sorted(unknown)},
         )
-    for rule in [*deployment_rules(settings), *profile_rules(settings)]:
+    for rule in [*deployment_rules(settings, transport), *profile_rules(settings)]:
         mcp.disable(tags=set(rule.tags))
 
 
-def build_server(settings: Settings | None = None) -> FastMCP:
+def build_server(
+    settings: Settings | None = None, *, transport: TransportName = "stdio"
+) -> FastMCP:
     """Build the MCP server.
 
     Args:
         settings: configuration to use; ``Settings()`` (environment) by default.
+        transport: the transport it will serve; ``http`` hides unconfined file tools.
 
     Returns:
         A configured :class:`FastMCP` instance. Nothing has connected to
@@ -159,11 +167,11 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         instructions=SERVER_INSTRUCTIONS
         + (CORE_PROFILE_INSTRUCTIONS if resolved.profile == "core" else ""),
         version=__version__,
-        lifespan=build_lifespan(resolved),
+        lifespan=build_lifespan(resolved, transport),
         auth=auth,
     )
     register_all(mcp)
     prompts.register(mcp)
     resources.register(mcp)
-    apply_tag_filters(mcp, resolved)
+    apply_tag_filters(mcp, resolved, transport)
     return mcp

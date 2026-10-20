@@ -1504,8 +1504,8 @@ def register(mcp: FastMCP) -> None:
             list[str] | None,
             Field(
                 description=(
-                    "Local file paths to attach (stdio transport only — the server must share "
-                    "your filesystem)."
+                    "Paths on the server's machine to attach. Over HTTP they must lie inside "
+                    "OPENPROJECT_MCP_UPLOAD_ROOT, and are refused when it is unset."
                 )
             ),
         ] = None,

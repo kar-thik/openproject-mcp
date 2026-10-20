@@ -110,7 +110,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Imported here so `--help` and `--check` stay fast and dependency-light.
     from openproject_mcp.server import build_server
 
-    server = build_server(settings)
+    server = build_server(settings, transport=args.transport)
     try:
         if args.transport == "http":
             server.run(
