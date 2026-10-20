@@ -5,9 +5,9 @@ per-project types/versions/categories, WP schemas, time-entry activities,
 ``users/me``, and version-probe results (1 h). **Never cached:** lockVersions,
 work packages, or anything else a write can invalidate.
 
-Entries are scoped per credential so a multi-user HTTP deployment cannot serve
-one principal's metadata to another. The scope key is a hash of the credential,
-never the credential itself.
+Entries are scoped by a hash of the configured credential, never the credential
+itself. A running server holds one upstream credential, so every client of an
+HTTP deployment shares one scope — and one OpenProject identity (SECURITY.md).
 """
 
 from __future__ import annotations
@@ -39,12 +39,22 @@ class _Entry:
     expires_at: float
 
 
+@dataclass(slots=True)
+class _KeyLock:
+    """A per-key lock plus the number of callers currently holding or awaiting it."""
+
+    lock: asyncio.Lock
+    users: int = 0
+
+
 class TTLCache:
     """A small async-safe TTL cache with per-credential key scoping.
 
     Concurrent misses on the same key are collapsed: the first caller computes,
     the rest await the same result, so a burst of tool calls does not stampede
-    the metadata endpoints.
+    the metadata endpoints. A key's lock lives only while some caller holds or
+    awaits it, so lock bookkeeping is bounded by in-flight keys, not by every
+    key ever requested.
     """
 
     def __init__(
@@ -58,7 +68,7 @@ class TTLCache:
         self.max_entries = max_entries
         self._time = time_fn
         self._entries: dict[tuple[str, Hashable], _Entry] = {}
-        self._locks: dict[tuple[str, Hashable], asyncio.Lock] = {}
+        self._locks: dict[tuple[str, Hashable], _KeyLock] = {}
 
     # --- basic operations ------------------------------------------------
 
@@ -96,8 +106,9 @@ class TTLCache:
             self._entries.pop(full_key, None)
 
     def clear(self) -> None:
+        # Locks are left alone: in-flight callers still rely on them, and each
+        # is dropped when its last caller leaves.
         self._entries.clear()
-        self._locks.clear()
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -125,15 +136,23 @@ class TTLCache:
             if cached is not None:
                 return cached  # type: ignore[return-value]
 
-        lock = self._locks.setdefault(full_key, asyncio.Lock())
-        async with lock:
-            if not refresh:
-                cached = self.get(key, scope=scope)
-                if cached is not None:
-                    return cached  # type: ignore[return-value]
-            value = await factory()
-            self.set(key, value, scope=scope, ttl=ttl)
-            return value
+        slot = self._locks.get(full_key)
+        if slot is None:
+            slot = self._locks[full_key] = _KeyLock(asyncio.Lock())
+        slot.users += 1
+        try:
+            async with slot.lock:
+                if not refresh:
+                    cached = self.get(key, scope=scope)
+                    if cached is not None:
+                        return cached  # type: ignore[return-value]
+                value = await factory()
+                self.set(key, value, scope=scope, ttl=ttl)
+                return value
+        finally:
+            slot.users -= 1
+            if slot.users == 0 and self._locks.get(full_key) is slot:
+                del self._locks[full_key]
 
     # --- internals -------------------------------------------------------
 

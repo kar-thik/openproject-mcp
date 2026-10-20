@@ -143,3 +143,91 @@ def test_eviction_keeps_the_cache_bounded() -> None:
     for index in range(50):
         cache.set(f"key-{index}", index)
     assert len(cache) <= 8
+
+
+# --- lock bookkeeping ------------------------------------------------------
+
+
+async def test_distinct_key_churn_leaves_no_locks_behind() -> None:
+    cache = TTLCache(ttl=300.0, max_entries=4)
+
+    async def factory() -> str:
+        return "value"
+
+    for index in range(200):
+        await cache.get_or_set(f"key-{index}", factory)
+    assert len(cache) <= 4
+    assert cache._locks == {}  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_failing_and_cancelled_callers_release_their_lock() -> None:
+    cache = TTLCache(ttl=300.0)
+    started = asyncio.Event()
+
+    async def failing() -> str:
+        raise RuntimeError("upstream down")
+
+    async def hanging() -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return "never"
+
+    with contextlib.suppress(RuntimeError):
+        await cache.get_or_set("failing", failing)
+    task = asyncio.create_task(cache.get_or_set("hanging", hanging))
+    await started.wait()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert cache._locks == {}  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_cancelling_the_computing_caller_hands_off_to_a_waiter() -> None:
+    cache = TTLCache(ttl=300.0)
+    calls = 0
+    first_started = asyncio.Event()
+
+    async def factory() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_started.set()
+            await asyncio.Event().wait()
+        return "value"
+
+    first = asyncio.create_task(cache.get_or_set("k", factory))
+    await first_started.wait()
+    second = asyncio.create_task(cache.get_or_set("k", factory))
+    await asyncio.sleep(0)
+    first.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await first
+    assert await second == "value"
+    assert calls == 2
+    assert cache._locks == {}  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_clear_and_eviction_during_a_miss_keep_coalescing() -> None:
+    cache = TTLCache(ttl=300.0, max_entries=2)
+    calls = 0
+    release = asyncio.Event()
+
+    async def factory() -> str:
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return "value"
+
+    first = asyncio.create_task(cache.get_or_set("k", factory))
+    await asyncio.sleep(0)
+    cache.clear()
+    for index in range(5):
+        cache.set(f"other-{index}", index)
+    # A caller arriving after clear() and eviction must join the in-flight
+    # computation rather than start a second one.
+    second = asyncio.create_task(cache.get_or_set("k", factory))
+    await asyncio.sleep(0)
+    release.set()
+    assert await asyncio.gather(first, second) == ["value", "value"]
+    assert calls == 1
+    assert cache._locks == {}  # pyright: ignore[reportPrivateUsage]
