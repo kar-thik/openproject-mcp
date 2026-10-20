@@ -193,6 +193,26 @@ async def test_list_composes_the_typed_filter_set_with_groups_and_sums(
     assert request.url.params["showSums"] == "true"
 
 
+async def test_list_bounds_created_and_updated_windows_on_both_ends(
+    mock_api: respx.MockRouter, mcp_client: Client[Any]
+) -> None:
+    route = mock_api.get("work_packages").mock(return_value=httpx.Response(200, json=GROUPED_LIST))
+
+    await mcp_client.call_tool(
+        "list_work_packages",
+        {
+            "created_since": "2026-07-01",
+            "created_until": "2026-07-07",
+            "updated_until": "2026-07-14",
+        },
+    )
+
+    assert _filters(route.calls[0].request)[1:] == [
+        {"createdAt": {"operator": "<>d", "values": ["2026-07-01", "2026-07-07"]}},
+        {"updatedAt": {"operator": "<>d", "values": ["", "2026-07-14"]}},
+    ]
+
+
 async def test_list_sends_the_sprint_filter(
     mock_api: respx.MockRouter, mcp_client: Client[Any]
 ) -> None:

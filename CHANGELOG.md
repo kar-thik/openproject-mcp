@@ -34,6 +34,8 @@ PATCH releases are fixes and strictly additive changes only.
 
 ### Added
 
+- `list_work_packages(created_until, updated_until)`: upper bounds to match
+  `created_since`/`updated_since`, so a report window can be listed exactly.
 - `scripts/measure_surface.py`: offline, deterministic payload baselines
   (tools/list bytes per profile, report request count and result bytes).
 

@@ -1090,18 +1090,14 @@ def register(mcp: FastMCP) -> None:
                 )
             ),
         ] = False,
-        due_before: Annotated[str | None, Field(description="Due on/before, ISO date.")] = None,
-        due_after: Annotated[str | None, Field(description="Due on/after, ISO date.")] = None,
-        start_before: Annotated[
-            str | None, Field(description="Starts on/before, ISO date.")
-        ] = None,
-        start_after: Annotated[str | None, Field(description="Starts on/after, ISO date.")] = None,
-        created_since: Annotated[
-            str | None, Field(description="Created on/after, ISO date.")
-        ] = None,
-        updated_since: Annotated[
-            str | None, Field(description="Changed on/after, ISO date.")
-        ] = None,
+        due_before: Annotated[str | None, Field(description="Due on/before.")] = None,
+        due_after: Annotated[str | None, Field(description="Due on/after.")] = None,
+        start_before: Annotated[str | None, Field(description="Starts on/before.")] = None,
+        start_after: Annotated[str | None, Field(description="Starts on/after.")] = None,
+        created_since: Annotated[str | None, Field(description="Created on/after.")] = None,
+        created_until: Annotated[str | None, Field(description="Created on/before.")] = None,
+        updated_since: Annotated[str | None, Field(description="Changed on/after.")] = None,
+        updated_until: Annotated[str | None, Field(description="Changed on/before.")] = None,
         percentage_done_min: Annotated[
             int | None, Field(ge=0, le=100, description="Minimum progress percent.")
         ] = None,
@@ -1178,7 +1174,7 @@ def register(mcp: FastMCP) -> None:
         given (`status_ids` overrides `status_scope`), so say so when reporting counts. Status,
         type, priority and version ids come from `get_project_metadata`; user ids (assignee,
         author, responsible, watcher) from `search_principals` — never guess either. Date
-        filters take YYYY-MM-DD.
+        filters take YYYY-MM-DD, both bounds inclusive.
 
         For text lookups use `search_work_packages`; for one work package's description, custom
         fields and children use `get_work_package`.
@@ -1239,10 +1235,14 @@ def register(mcp: FastMCP) -> None:
             filters.append(date_range_filter("dueDate", after=due_after, before=due_before))
         if start_before or start_after:
             filters.append(date_range_filter("startDate", after=start_after, before=start_before))
-        if created_since:
-            filters.append(date_range_filter("createdAt", after=created_since))
-        if updated_since:
-            filters.append(date_range_filter("updatedAt", after=updated_since))
+        if created_since or created_until:
+            filters.append(
+                date_range_filter("createdAt", after=created_since, before=created_until)
+            )
+        if updated_since or updated_until:
+            filters.append(
+                date_range_filter("updatedAt", after=updated_since, before=updated_until)
+            )
         if percentage_done_min is not None:
             filters.append(make_filter("percentageDone", Op.GTE, [percentage_done_min]))
         if percentage_done_max is not None:
