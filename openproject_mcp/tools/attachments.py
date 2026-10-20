@@ -26,8 +26,9 @@ Non-negotiables for this module:
 * Quarantined attachments produce a structured error, not a download attempt.
 * Sanitize ``fileName`` before touching the filesystem, uniquify collisions, and
   honor ``OPENPROJECT_MCP_MAX_DOWNLOAD_MB``.
-* In HTTP (multi-user) mode these tools switch to resource/blob mode and uploads
-  are refused with an explanatory error — check ``ctx.settings``.
+* Local paths go through :mod:`openproject_mcp.file_access`: downloads are
+  created exclusively, and ``OPENPROJECT_MCP_UPLOAD_ROOT`` /
+  ``OPENPROJECT_MCP_DOWNLOAD_ROOT`` confine every path when set (SPEC §7.3).
 
 :func:`upload_uncontainered_attachment` is exported for
 ``create_work_package(attachment_paths=…)``: files are uploaded uncontainered
@@ -38,10 +39,11 @@ and claimed through ``_links.attachments`` on create, because posting to
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import os
 import re
-import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
@@ -64,6 +66,11 @@ from openproject_mcp.client.errors import (
     ValidationFailedError,
 )
 from openproject_mcp.config import Settings
+from openproject_mcp.file_access import (
+    DownloadFile,
+    open_download_directory,
+    open_upload_source,
+)
 from openproject_mcp.projections import ListEnvelope, Ref
 from openproject_mcp.tools._shared import (
     DESTRUCTIVE,
@@ -117,7 +124,8 @@ READABLE_STATUSES = frozenset({"uploaded", "scanned", "rescanned"})
 
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
 #: Wall-clock cap for one download (SPEC §7.1); streamed bodies have no read
-#: timeout, so this is what stops a stalled transfer from hanging the call.
+#: timeout, so this is what stops a stalled transfer from hanging the call. It
+#: is enforced with ``asyncio.timeout``, so it fires even when no chunk arrives.
 DOWNLOAD_DEADLINE_SECONDS = 900.0
 #: Largest image returned as an inline MCP image block (SPEC §7.1 step 4).
 IMAGE_INLINE_MAX_BYTES = 1024 * 1024
@@ -241,23 +249,8 @@ def _sanitize_file_name(raw: str | None, *, fallback: str) -> str:
     return candidate
 
 
-def _unique_path(directory: Path, file_name: str) -> Path:
-    """``report.pdf`` → ``report (2).pdf`` when the name is already taken."""
-    target = directory / file_name
-    if not target.exists():
-        return target
-    stem = target.stem
-    suffix = target.suffix
-    counter = 2
-    while True:
-        candidate = directory / f"{stem} ({counter}){suffix}"
-        if not candidate.exists():
-            return candidate
-        counter += 1
-
-
-def _resolve_download_dir(save_dir: str | None, settings: Settings) -> Path:
-    """Pick and create the target directory (SPEC §7.1 step 3)."""
+def _download_dir(save_dir: str | None, settings: Settings) -> Path:
+    """Pick the target directory (SPEC §7.1 step 3); opening it is file_access's job."""
     if save_dir:
         directory = Path(save_dir).expanduser()
         if not directory.is_absolute():
@@ -269,24 +262,12 @@ def _resolve_download_dir(save_dir: str | None, settings: Settings) -> Path:
                     "download directory."
                 ),
             )
-    elif settings.download_dir is not None:
-        directory = Path(settings.download_dir).expanduser()
-    else:
-        directory = Path.cwd() / DEFAULT_DOWNLOAD_DIRNAME
-
-    try:
-        directory.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise InputValidationError(
-            f"Could not create the download directory {directory}: {exc.strerror}.",
-            hint="Pass a save_dir the server process may write to.",
-        ) from exc
-    if not directory.is_dir():
-        raise InputValidationError(
-            f"The download target {directory} is not a directory.",
-            hint="Pass a save_dir that is a directory, not a file.",
-        )
-    return directory
+        return directory
+    if settings.download_dir is not None:
+        return Path(settings.download_dir).expanduser()
+    if settings.download_root is not None:
+        return Path(settings.download_root).expanduser()
+    return Path.cwd() / DEFAULT_DOWNLOAD_DIRNAME
 
 
 def _pending_scan_error(
@@ -324,22 +305,8 @@ def _maximum_attachment_bytes(configuration: Mapping[str, Any]) -> int | None:
     return raw
 
 
-def _resolve_upload_file(file_path: str) -> Path:
-    source = Path(file_path).expanduser()
-    if not source.exists():
-        raise InputValidationError(
-            f"No such file: {source}.",
-            hint=(
-                "Pass an absolute path to a file on the machine running this MCP server. "
-                "Nothing was uploaded."
-            ),
-        )
-    if not source.is_file():
-        raise InputValidationError(
-            f"{source} is not a regular file.",
-            hint="Attachments are single files; archive a directory before uploading it.",
-        )
-    return source
+def _expand(root: Path | None) -> Path | None:
+    return None if root is None else root.expanduser()
 
 
 def _allowlist_error(exc: ValidationFailedError, file_name: str) -> ValidationFailedError:
@@ -373,17 +340,20 @@ async def _post_attachment(
     ``maximumAttachmentFileSize`` and a materialized body keeps the request
     replay-free and inspectable.
     """
-    source = _resolve_upload_file(file_path)
-    size = source.stat().st_size
-    limit = _maximum_attachment_bytes(await get_configuration(ctx))
-    if limit is not None and size > limit:
-        raise AttachmentTooLargeError(
-            f"{source.name} is {size} bytes; this instance accepts at most {limit} bytes.",
-            hint=(
-                "Nothing was uploaded. Compress or split the file, or ask an administrator to "
-                "raise the maximum attachment size. get_instance_info reports the current limit."
-            ),
-        )
+    source, handle = open_upload_source(file_path, _expand(ctx.settings.upload_root))
+    with handle:
+        size = os.fstat(handle.fileno()).st_size
+        limit = _maximum_attachment_bytes(await get_configuration(ctx))
+        if limit is not None and size > limit:
+            raise AttachmentTooLargeError(
+                f"{source.name} is {size} bytes; this instance accepts at most {limit} bytes.",
+                hint=(
+                    "Nothing was uploaded. Compress or split the file, or ask an administrator "
+                    "to raise the maximum attachment size. get_instance_info reports the "
+                    "current limit."
+                ),
+            )
+        payload = handle.read()
 
     name = _sanitize_file_name(file_name or source.name, fallback="upload")
     metadata: dict[str, Any] = {"fileName": name}
@@ -392,7 +362,6 @@ async def _post_attachment(
         # only ``raw`` lets OpenProject keep its own default format.
         metadata["description"] = {"raw": description}
 
-    payload = source.read_bytes()
     files = {
         "metadata": (None, json.dumps(metadata).encode("utf-8"), "application/json"),
         "file": (name, payload, "application/octet-stream"),
@@ -732,55 +701,70 @@ def register(mcp: FastMCP) -> None:
                 extra={"attachment_id": attachment_id, "size_bytes": declared_size},
             )
 
-        directory = _resolve_download_dir(save_dir, ctx.settings)
-        target = _unique_path(directory, file_name)
+        directory = open_download_directory(
+            _download_dir(save_dir, ctx.settings), _expand(ctx.settings.download_root)
+        )
+        target: DownloadFile | None = None
+
+        def discard_partial() -> None:
+            if target is not None:
+                target.discard()
 
         digest = hashlib.sha256()
         written = 0
-        deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
+        deadline = asyncio.timeout(DOWNLOAD_DEADLINE_SECONDS)
         try:
-            async with ctx.client.stream("GET", f"attachments/{attachment_id}/content") as response:
-                with target.open("wb") as handle:
-                    async for chunk in response.aiter_bytes(DOWNLOAD_CHUNK_BYTES):
-                        written += len(chunk)
-                        if written > cap:
-                            raise AttachmentTooLargeError(
-                                f"Attachment {attachment_id} ({file_name}) exceeded the {cap} "
-                                "byte download limit while streaming.",
-                                hint=(
-                                    "The transfer was aborted and the partial file removed. The "
-                                    "attachment's reported size was smaller than what it actually "
-                                    "sent; raise OPENPROJECT_MCP_MAX_DOWNLOAD_MB to fetch it."
-                                ),
-                            )
-                        if time.monotonic() > deadline:
-                            raise NetworkError(
-                                f"Downloading attachment {attachment_id} ({file_name}) exceeded "
-                                f"the {DOWNLOAD_DEADLINE_SECONDS:.0f}s limit after {written} "
-                                "bytes.",
-                                hint=(
-                                    "The connection stalled; the partial file was removed. Retry, "
-                                    "or download the file from the OpenProject web UI."
-                                ),
-                            )
-                        handle.write(chunk)
-                        digest.update(chunk)
-                        await report_progress(
-                            written,
-                            declared_size if declared_size else None,
-                            f"{file_name}: {written} bytes",
+            async with (
+                deadline,
+                ctx.client.stream("GET", f"attachments/{attachment_id}/content") as response,
+            ):
+                target = directory.create(file_name)
+                async for chunk in response.aiter_bytes(DOWNLOAD_CHUNK_BYTES):
+                    written += len(chunk)
+                    if written > cap:
+                        raise AttachmentTooLargeError(
+                            f"Attachment {attachment_id} ({file_name}) exceeded the {cap} "
+                            "byte download limit while streaming.",
+                            hint=(
+                                "The transfer was aborted and the partial file removed. The "
+                                "attachment's reported size was smaller than what it actually "
+                                "sent; raise OPENPROJECT_MCP_MAX_DOWNLOAD_MB to fetch it."
+                            ),
                         )
+                    target.write(chunk)
+                    digest.update(chunk)
+                    await report_progress(
+                        written,
+                        declared_size if declared_size else None,
+                        f"{file_name}: {written} bytes",
+                    )
+                target.close()
         except AuthenticationError as exc:
-            target.unlink(missing_ok=True)
+            discard_partial()
             raise _pending_scan_error(attachment_id, file_name, status, exc) from exc
+        except TimeoutError as exc:
+            discard_partial()
+            if not deadline.expired():
+                raise
+            raise NetworkError(
+                f"Downloading attachment {attachment_id} ({file_name}) exceeded the "
+                f"{DOWNLOAD_DEADLINE_SECONDS:.0f}s limit after {written} bytes.",
+                hint=(
+                    "The connection stalled; the partial file was removed. Retry, or download "
+                    "the file from the OpenProject web UI."
+                ),
+            ) from exc
         except BaseException:
-            target.unlink(missing_ok=True)
+            discard_partial()
             raise
+        finally:
+            directory.close()
+        saved = target.path
 
         notes: list[str] = []
-        if target.name != file_name:
+        if saved.name != file_name:
             notes.append(
-                f"{file_name} already existed in {directory}; saved as {target.name} instead."
+                f"{file_name} already existed in {directory.path}; saved as {saved.name} instead."
             )
         inline_image = None
         if return_image:
@@ -792,16 +776,16 @@ def register(mcp: FastMCP) -> None:
             elif written > IMAGE_INLINE_MAX_BYTES:
                 notes.append(
                     f"return_image was ignored: {written} bytes exceeds the "
-                    f"{IMAGE_INLINE_MAX_BYTES} byte inline limit. The file is saved at {target}."
+                    f"{IMAGE_INLINE_MAX_BYTES} byte inline limit. The file is saved at {saved}."
                 )
             else:
-                inline_image = Image(data=target.read_bytes()).to_image_content(
+                inline_image = Image(data=saved.read_bytes()).to_image_content(
                     mime_type=content_type
                 )
 
         result = DownloadResult(
-            path=str(target),
-            file_name=target.name,
+            path=str(saved),
+            file_name=saved.name,
             size_bytes=written,
             content_type=content_type,
             sha256=digest.hexdigest(),

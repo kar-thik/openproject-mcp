@@ -39,7 +39,7 @@ Non-negotiables for this module:
 
 from __future__ import annotations
 
-import time
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from fastmcp.exceptions import ResourceError
@@ -299,29 +299,37 @@ async def _download(
     name = row.file_name or f"attachment-{attachment_id}"
     chunks: list[bytes] = []
     written = 0
-    deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
-    async with ctx.client.stream("GET", f"attachments/{attachment_id}/content") as response:
-        async for chunk in response.aiter_bytes(DOWNLOAD_CHUNK_BYTES):
-            written += len(chunk)
-            if written > cap:
-                raise AttachmentTooLargeError(
-                    f"Attachment {attachment_id} ({name}) exceeded the {cap} byte download "
-                    "limit while streaming.",
-                    hint=(
-                        "The transfer was aborted. The attachment's reported size was smaller "
-                        "than what it actually sent; raise OPENPROJECT_MCP_MAX_DOWNLOAD_MB or "
-                        "use download_attachment."
-                    ),
+    deadline = asyncio.timeout(DOWNLOAD_DEADLINE_SECONDS)
+    try:
+        async with (
+            deadline,
+            ctx.client.stream("GET", f"attachments/{attachment_id}/content") as response,
+        ):
+            async for chunk in response.aiter_bytes(DOWNLOAD_CHUNK_BYTES):
+                written += len(chunk)
+                if written > cap:
+                    raise AttachmentTooLargeError(
+                        f"Attachment {attachment_id} ({name}) exceeded the {cap} byte download "
+                        "limit while streaming.",
+                        hint=(
+                            "The transfer was aborted. The attachment's reported size was "
+                            "smaller than what it actually sent; raise "
+                            "OPENPROJECT_MCP_MAX_DOWNLOAD_MB or use download_attachment."
+                        ),
+                    )
+                chunks.append(chunk)
+                await _shared.report_progress(
+                    written, row.size_bytes or None, f"{name}: {written} B"
                 )
-            if time.monotonic() > deadline:
-                raise NetworkError(
-                    f"Reading attachment {attachment_id} ({name}) exceeded the "
-                    f"{DOWNLOAD_DEADLINE_SECONDS:.0f}s limit after {written} bytes.",
-                    hint=(
-                        "The connection stalled and nothing was returned. Retry, or fetch the "
-                        "file with download_attachment, which writes it to disk."
-                    ),
-                )
-            chunks.append(chunk)
-            await _shared.report_progress(written, row.size_bytes or None, f"{name}: {written} B")
+    except TimeoutError as exc:
+        if not deadline.expired():
+            raise
+        raise NetworkError(
+            f"Reading attachment {attachment_id} ({name}) exceeded the "
+            f"{DOWNLOAD_DEADLINE_SECONDS:.0f}s limit after {written} bytes.",
+            hint=(
+                "The connection stalled and nothing was returned. Retry, or fetch the "
+                "file with download_attachment, which writes it to disk."
+            ),
+        ) from exc
     return b"".join(chunks)

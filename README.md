@@ -241,6 +241,8 @@ From-source users can start from
 | `OPENPROJECT_MCP_PROFILE` | `full` | `core` hides the module-backed groups at startup; a session can bring one back with `enable_tool_group` (see below). |
 | `OPENPROJECT_MCP_INSECURE` | `false` | Allow `--transport http` to start without auth tokens. Local development only. |
 | `OPENPROJECT_MCP_DOWNLOAD_DIR` | `./openproject-downloads` | Directory where `download_attachment` writes files (created if missing; default is relative to the server's working directory). |
+| `OPENPROJECT_MCP_UPLOAD_ROOT` | unset | When set, `upload_attachment` and `create_work_package(attachment_paths)` read only files beneath this existing directory; paths and symlinks resolving outside it are refused. Recommended for `--transport http`. |
+| `OPENPROJECT_MCP_DOWNLOAD_ROOT` | unset | When set, `download_attachment` writes only beneath this existing directory and saves there by default; a `save_dir` outside it is refused. Recommended for `--transport http`. |
 | `OPENPROJECT_MCP_MAX_DOWNLOAD_MB` | `100` | Size cap for attachment downloads, in MiB. |
 | `OPENPROJECT_MCP_CACHE_TTL` | `300` | TTL in seconds for the metadata cache (statuses, types, priorities, schemas). |
 | `OPENPROJECT_MCP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` (case-insensitive). |
@@ -314,6 +316,19 @@ explicit `confirm=true` argument before it acts.
   plaintext: keep the default `127.0.0.1` bind, and if you must expose the HTTP transport
   beyond localhost, put it behind a TLS-terminating reverse proxy (for example nginx or
   Caddy).
+
+  **One upstream identity.** Bearer tokens decide who may reach the endpoint, not who they
+  are in OpenProject: the server holds a single `OPENPROJECT_API_KEY` (or OAuth token), and
+  every HTTP client acts as that OpenProject user and shares its metadata cache. Deploy it
+  for clients you would trust with that account, and issue a dedicated, least-privileged
+  OpenProject user for it.
+
+  **File tools touch the server's disk.** `upload_attachment`, `create_work_package
+  (attachment_paths)` and `download_attachment` read and write paths on the machine running
+  the server, so over HTTP set `OPENPROJECT_MCP_UPLOAD_ROOT` and
+  `OPENPROJECT_MCP_DOWNLOAD_ROOT` to confine them. The server prints a startup warning when
+  either is unset with `--transport http`; a future release will refuse to serve the file
+  tools over HTTP without them.
 
 ## Tools
 
@@ -585,6 +600,11 @@ detail tools return a structured error explaining both possible readings of the 
   are rejected with a 401, and token comparison is constant-time. The server does not
   terminate TLS: keep the default `127.0.0.1` bind, and put a TLS-terminating reverse proxy
   in front if the port must be reachable from anywhere else (see [Transports](#transports)).
+  All HTTP clients share the server's one OpenProject identity; confine the file tools with
+  `OPENPROJECT_MCP_UPLOAD_ROOT` / `OPENPROJECT_MCP_DOWNLOAD_ROOT`.
+- Downloads are created exclusively (never overwriting an existing file, even under
+  concurrent downloads of the same name), and a failed or cancelled transfer removes only
+  the file it created.
 
 ## Troubleshooting
 

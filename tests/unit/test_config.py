@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from openproject_mcp.config import Settings, check_runtime_config
+from openproject_mcp.config import Settings, check_runtime_config, runtime_warnings
 from openproject_mcp.groups import CORE_PROFILE_HIDDEN_GROUPS
 
 #: Every environment variable the server reads, frozen at the first release.
@@ -27,6 +28,8 @@ ENV_SURFACE = frozenset(
         "OPENPROJECT_MCP_PROFILE",
         "OPENPROJECT_MCP_INSECURE",
         "OPENPROJECT_MCP_DOWNLOAD_DIR",
+        "OPENPROJECT_MCP_UPLOAD_ROOT",
+        "OPENPROJECT_MCP_DOWNLOAD_ROOT",
         "OPENPROJECT_MCP_MAX_DOWNLOAD_MB",
         "OPENPROJECT_MCP_CACHE_TTL",
         "OPENPROJECT_MCP_LOG_LEVEL",
@@ -64,6 +67,8 @@ def test_every_documented_env_var_is_read(monkeypatch: pytest.MonkeyPatch) -> No
         "OPENPROJECT_MCP_DISABLE": "meetings, news",
         "OPENPROJECT_MCP_PROFILE": "CORE",
         "OPENPROJECT_MCP_DOWNLOAD_DIR": "/tmp/downloads",
+        "OPENPROJECT_MCP_UPLOAD_ROOT": "/srv/uploads",
+        "OPENPROJECT_MCP_DOWNLOAD_ROOT": "/srv/downloads",
         "OPENPROJECT_MCP_MAX_DOWNLOAD_MB": "42",
         "OPENPROJECT_MCP_CACHE_TTL": "60",
         "OPENPROJECT_MCP_CA_BUNDLE": "/etc/ssl/private.pem",
@@ -90,6 +95,8 @@ def test_every_documented_env_var_is_read(monkeypatch: pytest.MonkeyPatch) -> No
     assert settings.disabled_groups == {"meetings", "news"}
     assert settings.profile == "core"
     assert str(settings.download_dir) == "/tmp/downloads"
+    assert str(settings.upload_root) == "/srv/uploads"
+    assert str(settings.download_root) == "/srv/downloads"
     assert settings.max_download_mb == 42
     assert settings.max_download_bytes == 42 * 1024 * 1024
     assert settings.cache_ttl == 60
@@ -290,3 +297,32 @@ def test_missing_ca_bundle_is_reported() -> None:
     )
     problems = check_runtime_config(settings, "stdio")
     assert any("CA_BUNDLE" in problem for problem in problems)
+
+
+def _settings(**overrides: Any) -> Settings:
+    return Settings(_env_file=None, url="https://op", api_key="k", **overrides)  # type: ignore[call-arg]
+
+
+def test_file_roots_must_be_existing_directories(tmp_path: Path) -> None:
+    settings = _settings(upload_root=tmp_path / "missing", download_root=tmp_path)
+    problems = check_runtime_config(settings, "stdio")
+    assert len(problems) == 1
+    assert "OPENPROJECT_MCP_UPLOAD_ROOT" in problems[0]
+
+
+def test_download_dir_must_lie_inside_the_download_root(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    inside = _settings(download_root=root, download_dir=root / "sub")
+    assert check_runtime_config(inside, "stdio") == []
+    outside = _settings(download_root=root, download_dir=tmp_path / "elsewhere")
+    assert "OPENPROJECT_MCP_DOWNLOAD_DIR" in check_runtime_config(outside, "stdio")[0]
+
+
+def test_http_without_file_roots_warns(tmp_path: Path) -> None:
+    assert runtime_warnings(_settings(), "stdio") == []
+    warnings = runtime_warnings(_settings(), "http")
+    assert len(warnings) == 1
+    assert "OPENPROJECT_MCP_UPLOAD_ROOT and OPENPROJECT_MCP_DOWNLOAD_ROOT" in warnings[0]
+    confined = _settings(upload_root=tmp_path, download_root=tmp_path)
+    assert runtime_warnings(confined, "http") == []

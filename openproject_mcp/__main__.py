@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pydantic import ValidationError
 
 from openproject_mcp import __version__
-from openproject_mcp.config import Settings, check_runtime_config
+from openproject_mcp.config import Settings, check_runtime_config, runtime_warnings
 
 __all__ = ["main"]
 
@@ -99,6 +99,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     problems = check_runtime_config(settings, args.transport)
     if problems:
         return _fail("cannot start, configuration is incomplete", problems)
+
+    for warning in runtime_warnings(settings, args.transport):
+        print(f"openproject-mcp: warning: {warning}", file=sys.stderr)
 
     if args.check:
         print(f"openproject-mcp: configuration OK ({settings.url})", file=sys.stderr)

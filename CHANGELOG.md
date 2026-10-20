@@ -10,6 +10,46 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-20
+
+### Added
+
+- `OPENPROJECT_MCP_UPLOAD_ROOT` and `OPENPROJECT_MCP_DOWNLOAD_ROOT`: opt-in
+  directories that confine `upload_attachment`,
+  `create_work_package(attachment_paths)` and `download_attachment`. Paths and
+  symlinks resolving outside the root are refused, and the final open walks
+  the path with `O_NOFOLLOW`, so a symlink swapped in after the check cannot
+  escape it. With a download root and no `save_dir`, downloads go to the root
+  (or to `OPENPROJECT_MCP_DOWNLOAD_DIR`, which must then lie inside it).
+- A startup warning when `--transport http` runs without both roots.
+
+### Fixed
+
+- Attachment downloads (`download_attachment` and the
+  `openproject://attachment/{id}` resource) now hit their wall-clock deadline
+  even when the server stops sending. Previously the deadline was only checked
+  when a chunk arrived, so a silent connection hung the call forever.
+- `download_attachment` reserves its output file with exclusive creation.
+  Concurrent downloads of the same name could previously write the same file,
+  and a failed transfer could delete a file it had not written. A planted
+  symlink at the target name is no longer written through.
+- The metadata cache no longer keeps a lock for every key it has ever seen,
+  and `clear()` no longer drops locks that in-flight callers hold, which had
+  let a concurrent miss run its fetch twice.
+
+### Documentation
+
+- README, SECURITY.md and SPEC.md now state that HTTP deployments share one
+  OpenProject identity: bearer tokens authenticate clients to the endpoint,
+  but every client acts as the configured OpenProject user and shares its
+  cache scope. SPEC.md no longer describes the per-user key mapping and the
+  HTTP blob-only file mode as implemented.
+
+### Dependencies
+
+- Dev tooling: hypothesis 6.168.3, ruff 0.16.9, pyright 1.1.414 (from #30).
+  FastMCP stays on 3.x (`<4`); the FastMCP 4 upgrade from #30 is not included.
+
 ## [0.3.3] - 2026-10-01
 
 ### Added
