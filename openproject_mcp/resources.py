@@ -30,11 +30,12 @@ Non-negotiables for this module:
 * **The attachment path is the tool's path.** Bytes come from
   ``/attachments/{id}/content`` through ``client.stream`` (which strips
   ``Authorization`` on the cross-origin redirect to object storage), the
-  configured ``OPENPROJECT_MCP_MAX_DOWNLOAD_MB`` cap is enforced both from the
-  declared size and while streaming, the tool's wall-clock deadline is enforced
-  too (a streamed body has no read timeout, so a stalled transfer would
-  otherwise hang the session), and a quarantined attachment is refused before a
-  byte is fetched.
+  inline cap (``OPENPROJECT_MCP_MAX_INLINE_MB``, never above
+  ``OPENPROJECT_MCP_MAX_DOWNLOAD_MB``) is enforced both from the declared size
+  and while streaming (the bytes are buffered and base64-encoded), the tool's
+  wall-clock deadline is enforced too (a streamed body has no read timeout, so
+  a stalled transfer would otherwise hang the session), and a quarantined
+  attachment is refused before a byte is fetched.
 """
 
 from __future__ import annotations
@@ -64,6 +65,8 @@ from openproject_mcp.tools.projects import ProjectDetail
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+    from openproject_mcp.config import Settings
 
 __all__ = [
     "ATTACHMENT_URI",
@@ -223,7 +226,8 @@ def register(mcp: FastMCP) -> None:
             "The bytes of one attachment, served with the MIME type OpenProject detected. "
             "Attachment ids come from list_attachments or "
             "get_work_package(include=['attachments']). Quarantined files and files above "
-            "OPENPROJECT_MCP_MAX_DOWNLOAD_MB are refused with a structured error."
+            "OPENPROJECT_MCP_MAX_INLINE_MB (default 10) are refused with a structured error; "
+            "download_attachment handles larger ones."
         ),
         mime_type=FALLBACK_MIME_TYPE,
         tags={_shared.GROUP_ATTACHMENTS, _shared.READ},
@@ -234,8 +238,9 @@ def register(mcp: FastMCP) -> None:
         try:
             metadata = await ctx.client.get_json(f"attachments/{id}")
             row = _attachment_row(metadata)
-            _guard_attachment(row, ctx.settings.max_download_bytes)
-            payload = await _download(ctx, id, cap=ctx.settings.max_download_bytes, row=row)
+            cap = ctx.settings.max_inline_bytes
+            _guard_attachment(row, cap, _cap_setting(ctx.settings))
+            payload = await _download(ctx, id, cap=cap, row=row)
         except OpenProjectError as exc:
             raise _resource_error(exc) from exc
         return ResourceResult(
@@ -263,7 +268,14 @@ def _attachment_row(payload: dict[str, Any]) -> AttachmentRow:
     )
 
 
-def _guard_attachment(row: AttachmentRow, cap: int) -> None:
+def _cap_setting(settings: Settings) -> str:
+    """The variable that sets the binding inline cap, for error hints."""
+    if settings.max_inline_mb < settings.max_download_mb:
+        return "OPENPROJECT_MCP_MAX_INLINE_MB"
+    return "OPENPROJECT_MCP_MAX_DOWNLOAD_MB"
+
+
+def _guard_attachment(row: AttachmentRow, cap: int, setting: str) -> None:
     """Refuse a quarantined or oversized attachment before fetching bytes (SPEC §7.1)."""
     name = row.file_name or f"attachment-{row.id}"
     if row.status == QUARANTINED_STATUS:
@@ -278,10 +290,10 @@ def _guard_attachment(row: AttachmentRow, cap: int) -> None:
     if row.size_bytes is not None and row.size_bytes > cap:
         raise AttachmentTooLargeError(
             f"Attachment {row.id} ({name}) is {row.size_bytes} bytes, above the {cap} byte "
-            "download limit.",
+            "inline limit.",
             hint=(
-                "Nothing was downloaded. Raise OPENPROJECT_MCP_MAX_DOWNLOAD_MB, or fetch the "
-                "file with download_attachment, which writes it to disk instead of inlining it."
+                f"Nothing was downloaded. Raise {setting}, or fetch the file with "
+                "download_attachment, which writes it to disk instead of inlining it."
             ),
             extra={"attachment_id": row.id, "size_bytes": row.size_bytes},
         )
@@ -309,12 +321,11 @@ async def _download(
                 written += len(chunk)
                 if written > cap:
                     raise AttachmentTooLargeError(
-                        f"Attachment {attachment_id} ({name}) exceeded the {cap} byte download "
+                        f"Attachment {attachment_id} ({name}) exceeded the {cap} byte inline "
                         "limit while streaming.",
                         hint=(
                             "The transfer was aborted. The attachment's reported size was "
-                            "smaller than what it actually sent; raise "
-                            "OPENPROJECT_MCP_MAX_DOWNLOAD_MB or use download_attachment."
+                            "smaller than what it actually sent; use download_attachment."
                         ),
                     )
                 chunks.append(chunk)

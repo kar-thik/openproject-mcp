@@ -566,7 +566,7 @@ Typed params cover the 95% case. `raw_filters` covers the rest — **typed, not 
 **Resource templates** (Claude Code: `@openproject:` mentions):
 - `openproject://work_package/{id}` → WP detail projection (JSON)
 - `openproject://project/{identifier}` → project overview
-- `openproject://attachment/{id}` → attachment bytes as a blob resource (the HTTP-mode download path, and a no-tool option for resource-aware clients)
+- `openproject://attachment/{id}` → attachment bytes as a blob resource (the HTTP-mode download path, and a no-tool option for resource-aware clients). It follows the same deployment rules as the tools (its `attachments` tag is dropped by `OPENPROJECT_MCP_DISABLE`), the same quarantine check and deadline, and a separate inline cap, `OPENPROJECT_MCP_MAX_INLINE_MB` (default 10, never above `MAX_DOWNLOAD_MB`), because the bytes are buffered and base64-encoded in the response.
 
 **Prompts** (→ Claude Code slash commands):
 - `weekly_report(project, from_date?, to_date?, locale='en', team_name?)` — calls `get_project_report_data` and renders the 8-section Agile/Scrum report (Done/InProgress/Planned by `isClosed`, capacity from time entries, impediments from `blocks` relations). The Vietnamese template survives as `locale='vi'`.
@@ -614,7 +614,7 @@ Typed params cover the 95% case. `raw_filters` covers the rest — **typed, not 
 
 - `pyproject.toml` (uv-managed): `[project.scripts] openproject-mcp = "openproject_mcp.__main__:main"`. Pins: `fastmcp>=3.4,<4`, `httpx[http2]>=0.28`, `pydantic>=2.7`. PyPI → `claude mcp add openproject -- uvx openproject-mcp`; `server.json` for the MCP registry; `fastmcp.json` for declarative runs.
 - Docker: multi-stage uv image, non-root, `CMD ["openproject-mcp", "--transport", "http", "--host", "0.0.0.0"]` (a CMD that exists), healthcheck on the MCP endpoint.
-- Config surface (all env, documented in README + a shipped `.env.example`): `OPENPROJECT_URL`, `OPENPROJECT_API_KEY`, `OPENPROJECT_MCP_{READ_ONLY, ADMIN_TOOLS, DISABLE, PROFILE, DOWNLOAD_DIR, UPLOAD_ROOT, DOWNLOAD_ROOT, MAX_DOWNLOAD_MB, CACHE_TTL, CA_BUNDLE, INSECURE, LOG_LEVEL, LOG_FORMAT, LOG_BODIES, OTEL, ACCEPT_LANGUAGE}`, HTTP auth vars (provider-specific), plus standard `HTTPS_PROXY`/`ALL_PROXY`/`OTEL_*` passthrough.
+- Config surface (all env, documented in README + a shipped `.env.example`): `OPENPROJECT_URL`, `OPENPROJECT_API_KEY`, `OPENPROJECT_MCP_{READ_ONLY, ADMIN_TOOLS, DISABLE, PROFILE, DOWNLOAD_DIR, UPLOAD_ROOT, DOWNLOAD_ROOT, MAX_DOWNLOAD_MB, MAX_INLINE_MB, CACHE_TTL, CA_BUNDLE, INSECURE, LOG_LEVEL, LOG_FORMAT, LOG_BODIES, OTEL, ACCEPT_LANGUAGE}`, HTTP auth vars (provider-specific), plus standard `HTTPS_PROXY`/`ALL_PROXY`/`OTEL_*` passthrough.
 - Docs: README (EN) with setup matrix (Claude Code/Desktop, stdio/HTTP), per-tool permission-requirements matrix (carried from the old README — it was accurate), troubleshooting (401/403/404/SSL/proxy), cookbook adapted from the old Vietnamese guides (translated), magic-words guide for git linking, migration guide (§16).
 
 ---

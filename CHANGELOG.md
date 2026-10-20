@@ -17,6 +17,10 @@ PATCH releases are fixes and strictly additive changes only.
   `create_work_package(attachment_paths)` is refused; without
   `OPENPROJECT_MCP_DOWNLOAD_ROOT`, `download_attachment` is hidden. Set the
   roots to restore them. stdio is unchanged.
+- **Breaking:** the `openproject://attachment/{id}` resource now refuses files
+  above `OPENPROJECT_MCP_MAX_INLINE_MB` (new, default 10, never above
+  `OPENPROJECT_MCP_MAX_DOWNLOAD_MB`) instead of buffering up to the 100 MB
+  download cap in memory. `download_attachment` still handles large files.
 
 ## [0.3.4] - 2026-10-20
 

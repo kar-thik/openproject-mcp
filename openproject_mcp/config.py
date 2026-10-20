@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     max_download_mb: int = Field(
         default=100, ge=1, validation_alias="OPENPROJECT_MCP_MAX_DOWNLOAD_MB"
     )
+    #: Cap for bytes returned inline (the attachment resource), which are held in
+    #: memory and base64-encoded rather than streamed to disk.
+    max_inline_mb: int = Field(default=10, ge=1, validation_alias="OPENPROJECT_MCP_MAX_INLINE_MB")
 
     # --- caching --------------------------------------------------------
     cache_ttl: float = Field(
@@ -246,6 +249,11 @@ class Settings(BaseSettings):
     @property
     def max_download_bytes(self) -> int:
         return self.max_download_mb * 1024 * 1024
+
+    @property
+    def max_inline_bytes(self) -> int:
+        """The inline cap, never above the download cap."""
+        return min(self.max_inline_mb, self.max_download_mb) * 1024 * 1024
 
     @property
     def bearer_tokens(self) -> tuple[str, ...]:

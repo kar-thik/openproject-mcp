@@ -31,6 +31,7 @@ ENV_SURFACE = frozenset(
         "OPENPROJECT_MCP_UPLOAD_ROOT",
         "OPENPROJECT_MCP_DOWNLOAD_ROOT",
         "OPENPROJECT_MCP_MAX_DOWNLOAD_MB",
+        "OPENPROJECT_MCP_MAX_INLINE_MB",
         "OPENPROJECT_MCP_CACHE_TTL",
         "OPENPROJECT_MCP_LOG_LEVEL",
         "OPENPROJECT_MCP_LOG_FORMAT",
@@ -56,6 +57,7 @@ def test_settings_construct_with_zero_environment() -> None:
     assert settings.read_only is False
     assert settings.cache_ttl == 300.0
     assert settings.max_download_mb == 100
+    assert settings.max_inline_mb == 10
 
 
 def test_every_documented_env_var_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -70,6 +72,7 @@ def test_every_documented_env_var_is_read(monkeypatch: pytest.MonkeyPatch) -> No
         "OPENPROJECT_MCP_UPLOAD_ROOT": "/srv/uploads",
         "OPENPROJECT_MCP_DOWNLOAD_ROOT": "/srv/downloads",
         "OPENPROJECT_MCP_MAX_DOWNLOAD_MB": "42",
+        "OPENPROJECT_MCP_MAX_INLINE_MB": "7",
         "OPENPROJECT_MCP_CACHE_TTL": "60",
         "OPENPROJECT_MCP_CA_BUNDLE": "/etc/ssl/private.pem",
         "OPENPROJECT_MCP_INSECURE": "1",
@@ -98,6 +101,7 @@ def test_every_documented_env_var_is_read(monkeypatch: pytest.MonkeyPatch) -> No
     assert str(settings.upload_root) == "/srv/uploads"
     assert str(settings.download_root) == "/srv/downloads"
     assert settings.max_download_mb == 42
+    assert settings.max_inline_bytes == 7 * 1024 * 1024
     assert settings.max_download_bytes == 42 * 1024 * 1024
     assert settings.cache_ttl == 60
     assert str(settings.ca_bundle) == "/etc/ssl/private.pem"

@@ -523,6 +523,44 @@ async def test_an_attachment_that_outgrows_the_cap_mid_stream_is_aborted(
     assert "while streaming" in envelope["error"]["message"]
 
 
+async def test_the_inline_cap_binds_below_the_download_cap(
+    mock_api: respx.MockRouter,
+) -> None:
+    declared = 2 * 1024 * 1024
+    mock_api.get(f"attachments/{ATTACHMENT_ID}").mock(
+        return_value=httpx.Response(200, json={**ATTACHMENT_METADATA, "fileSize": declared})
+    )
+    content_route = mock_api.get(f"attachments/{ATTACHMENT_ID}/content").mock(
+        return_value=httpx.Response(200, content=ATTACHMENT_BYTES)
+    )
+
+    async with Client(build_server(_settings(max_inline_mb=1))) as client:
+        with pytest.raises(McpError) as raised:
+            await client.read_resource(ATTACHMENT_URI)
+
+    envelope = json.loads(str(raised.value))
+    assert envelope["error"]["type"] == "attachment_too_large"
+    assert "OPENPROJECT_MCP_MAX_INLINE_MB" in envelope["error"]["hint"]
+    assert "download_attachment" in envelope["error"]["hint"]
+    assert content_route.call_count == 0
+
+
+async def test_disabling_attachments_removes_the_attachment_resource(
+    mock_api: respx.MockRouter,
+) -> None:
+    metadata_route = mock_api.get(f"attachments/{ATTACHMENT_ID}").mock(
+        return_value=httpx.Response(200, json=ATTACHMENT_METADATA)
+    )
+
+    async with Client(build_server(_settings(disable="attachments"))) as client:
+        templates = {t.uriTemplate for t in await client.list_resource_templates()}
+        with pytest.raises(McpError):
+            await client.read_resource(ATTACHMENT_URI)
+
+    assert "openproject://attachment/{id}" not in templates
+    assert not metadata_route.called
+
+
 class _TrickleStream(httpx.AsyncByteStream):
     """A response body that sends one byte every 10 ms, forever."""
 

@@ -244,6 +244,7 @@ From-source users can start from
 | `OPENPROJECT_MCP_UPLOAD_ROOT` | unset | When set, `upload_attachment` and `create_work_package(attachment_paths)` read only files beneath this existing directory; paths and symlinks resolving outside it are refused. Recommended for `--transport http`. |
 | `OPENPROJECT_MCP_DOWNLOAD_ROOT` | unset | When set, `download_attachment` writes only beneath this existing directory and saves there by default; a `save_dir` outside it is refused. Recommended for `--transport http`. |
 | `OPENPROJECT_MCP_MAX_DOWNLOAD_MB` | `100` | Size cap for attachment downloads, in MiB. |
+| `OPENPROJECT_MCP_MAX_INLINE_MB` | `10` | Size cap for attachment bytes returned inline by the `openproject://attachment` resource, in MiB (never above the download cap). |
 | `OPENPROJECT_MCP_CACHE_TTL` | `300` | TTL in seconds for the metadata cache (statuses, types, priorities, schemas). |
 | `OPENPROJECT_MCP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` (case-insensitive). |
 | `OPENPROJECT_MCP_LOG_FORMAT` | `text` | `text` or `json`. Logs always go to stderr (stdout belongs to the stdio transport). |
@@ -546,7 +547,8 @@ Three resource templates expose OpenProject objects at stable URIs:
 
 - `openproject://work_package/{id}` — one work package as JSON.
 - `openproject://project/{identifier}` — one project as JSON (identifier slug or numeric id).
-- `openproject://attachment/{id}` — the attachment's bytes with the detected MIME type.
+- `openproject://attachment/{id}` — the attachment's bytes with the detected MIME type, up to
+  `OPENPROJECT_MCP_MAX_INLINE_MB`.
 
 ## Supported OpenProject versions
 
