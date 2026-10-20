@@ -21,6 +21,16 @@ PATCH releases are fixes and strictly additive changes only.
   above `OPENPROJECT_MCP_MAX_INLINE_MB` (new, default 10, never above
   `OPENPROJECT_MCP_MAX_DOWNLOAD_MB`) instead of buffering up to the 100 MB
   download cap in memory. `download_attachment` still handles large files.
+- Tool output schemas are compacted on the wire: field descriptions and
+  defaults are dropped and nullable unions fold into `type` arrays. Output
+  schemas shrink from 296 KB to 101 KB and `tools/list` from 521 KB to 326 KB
+  (full profile). Shapes and validation are unchanged; input schemas keep
+  their descriptions.
+
+### Added
+
+- `scripts/measure_surface.py`: offline, deterministic payload baselines
+  (tools/list bytes per profile, report request count and result bytes).
 
 ## [0.3.4] - 2026-10-20
 
