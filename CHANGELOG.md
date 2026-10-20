@@ -10,11 +10,13 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-20
+
 ### Changed
 
 - **Breaking:** `OPENPROJECT_MCP_PROFILE` defaults to `core`. Meetings, news,
   documents, wiki, budgets, git activity and reporting start hidden (62 of 91
-  tools listed, `tools/list` 223 KB instead of 326 KB); the model brings a
+  tools listed, `tools/list` 223 KB instead of 328 KB); the model brings a
   group back with `enable_tool_group`. Set `OPENPROJECT_MCP_PROFILE=full` for
   the previous behavior, or if your client ignores `tools/list_changed`.
 - **Breaking (HTTP):** over `--transport http` the file tools fail closed.
@@ -50,7 +52,7 @@ PATCH releases are fixes and strictly additive changes only.
   roster.
 - Tool output schemas are compacted on the wire: field descriptions and
   defaults are dropped and nullable unions fold into `type` arrays. Output
-  schemas shrink from 296 KB to 101 KB and `tools/list` from 521 KB to 326 KB
+  schemas shrink from 296 KB to 103 KB and `tools/list` from 521 KB to 328 KB
   (full profile). Shapes and validation are unchanged; input schemas keep
   their descriptions.
 
