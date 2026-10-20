@@ -38,10 +38,10 @@ and claimed through ``_links.attachments`` on create, because posting to
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
-import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
@@ -117,7 +117,8 @@ READABLE_STATUSES = frozenset({"uploaded", "scanned", "rescanned"})
 
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
 #: Wall-clock cap for one download (SPEC §7.1); streamed bodies have no read
-#: timeout, so this is what stops a stalled transfer from hanging the call.
+#: timeout, so this is what stops a stalled transfer from hanging the call. It
+#: is enforced with ``asyncio.timeout``, so it fires even when no chunk arrives.
 DOWNLOAD_DEADLINE_SECONDS = 900.0
 #: Largest image returned as an inline MCP image block (SPEC §7.1 step 4).
 IMAGE_INLINE_MAX_BYTES = 1024 * 1024
@@ -737,9 +738,12 @@ def register(mcp: FastMCP) -> None:
 
         digest = hashlib.sha256()
         written = 0
-        deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
+        deadline = asyncio.timeout(DOWNLOAD_DEADLINE_SECONDS)
         try:
-            async with ctx.client.stream("GET", f"attachments/{attachment_id}/content") as response:
+            async with (
+                deadline,
+                ctx.client.stream("GET", f"attachments/{attachment_id}/content") as response,
+            ):
                 with target.open("wb") as handle:
                     async for chunk in response.aiter_bytes(DOWNLOAD_CHUNK_BYTES):
                         written += len(chunk)
@@ -753,16 +757,6 @@ def register(mcp: FastMCP) -> None:
                                     "sent; raise OPENPROJECT_MCP_MAX_DOWNLOAD_MB to fetch it."
                                 ),
                             )
-                        if time.monotonic() > deadline:
-                            raise NetworkError(
-                                f"Downloading attachment {attachment_id} ({file_name}) exceeded "
-                                f"the {DOWNLOAD_DEADLINE_SECONDS:.0f}s limit after {written} "
-                                "bytes.",
-                                hint=(
-                                    "The connection stalled; the partial file was removed. Retry, "
-                                    "or download the file from the OpenProject web UI."
-                                ),
-                            )
                         handle.write(chunk)
                         digest.update(chunk)
                         await report_progress(
@@ -773,6 +767,18 @@ def register(mcp: FastMCP) -> None:
         except AuthenticationError as exc:
             target.unlink(missing_ok=True)
             raise _pending_scan_error(attachment_id, file_name, status, exc) from exc
+        except TimeoutError as exc:
+            target.unlink(missing_ok=True)
+            if not deadline.expired():
+                raise
+            raise NetworkError(
+                f"Downloading attachment {attachment_id} ({file_name}) exceeded the "
+                f"{DOWNLOAD_DEADLINE_SECONDS:.0f}s limit after {written} bytes.",
+                hint=(
+                    "The connection stalled; the partial file was removed. Retry, or download "
+                    "the file from the OpenProject web UI."
+                ),
+            ) from exc
         except BaseException:
             target.unlink(missing_ok=True)
             raise

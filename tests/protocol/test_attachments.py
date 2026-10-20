@@ -9,8 +9,10 @@ an MCP tool and is unit-tested directly at the bottom of this file.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -303,25 +305,83 @@ async def test_download_aborts_mid_stream_and_removes_the_partial_file(
     assert list(tmp_path.iterdir()) == []
 
 
+class _TrickleStream(httpx.AsyncByteStream):
+    """A response body that sends one byte every 10 ms, forever."""
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        while True:
+            await asyncio.sleep(0.01)
+            yield b"x"
+
+
+class _SilentStream(httpx.AsyncByteStream):
+    """A response body that sends ``head`` and then never yields again."""
+
+    def __init__(self, head: bytes = b"") -> None:
+        self.head = head
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        if self.head:
+            yield self.head
+        await asyncio.Event().wait()
+
+
 async def test_download_aborts_when_the_wall_clock_deadline_passes(
     mcp_server: Any,
     mock_api: respx.MockRouter,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(attachments, "DOWNLOAD_DEADLINE_SECONDS", 0.0)
+    monkeypatch.setattr(attachments, "DOWNLOAD_DEADLINE_SECONDS", 0.05)
     mock_api.get("attachments/42").mock(return_value=httpx.Response(200, json=ATTACHMENT))
-    mock_api.get("attachments/42/content").mock(return_value=httpx.Response(200, content=PDF_BYTES))
+    mock_api.get("attachments/42/content").mock(
+        return_value=httpx.Response(200, stream=_TrickleStream())
+    )
 
     async with Client(mcp_server) as client:
-        result = await client.call_tool(
-            "download_attachment",
-            {"attachment_id": 42, "save_dir": str(tmp_path)},
-            raise_on_error=False,
+        result = await asyncio.wait_for(
+            client.call_tool(
+                "download_attachment",
+                {"attachment_id": 42, "save_dir": str(tmp_path)},
+                raise_on_error=False,
+            ),
+            timeout=5,
         )
 
     error = _error(result)
     assert error["type"] == "network_error"
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("head", [b"", PDF_BYTES[:16]], ids=["no-bytes", "then-silent"])
+async def test_download_deadline_fires_when_the_body_goes_silent(
+    mcp_server: Any,
+    mock_api: respx.MockRouter,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    head: bytes,
+) -> None:
+    # The deadline used to be checked only when a chunk arrived, so a body that
+    # stopped sending hung the call forever.
+    monkeypatch.setattr(attachments, "DOWNLOAD_DEADLINE_SECONDS", 0.05)
+    mock_api.get("attachments/42").mock(return_value=httpx.Response(200, json=ATTACHMENT))
+    mock_api.get("attachments/42/content").mock(
+        return_value=httpx.Response(200, stream=_SilentStream(head))
+    )
+
+    async with Client(mcp_server) as client:
+        result = await asyncio.wait_for(
+            client.call_tool(
+                "download_attachment",
+                {"attachment_id": 42, "save_dir": str(tmp_path)},
+                raise_on_error=False,
+            ),
+            timeout=5,
+        )
+
+    error = _error(result)
+    assert error["type"] == "network_error"
+    assert "limit" in error["message"]
     assert list(tmp_path.iterdir()) == []
 
 

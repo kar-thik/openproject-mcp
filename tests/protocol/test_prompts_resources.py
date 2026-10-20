@@ -10,9 +10,11 @@ model to go and call tools. The rendered text is asserted against fixture values
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import datetime as dt
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -521,25 +523,61 @@ async def test_an_attachment_that_outgrows_the_cap_mid_stream_is_aborted(
     assert "while streaming" in envelope["error"]["message"]
 
 
+class _TrickleStream(httpx.AsyncByteStream):
+    """A response body that sends one byte every 10 ms, forever."""
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        while True:
+            await asyncio.sleep(0.01)
+            yield b"x"
+
+
+class _SilentStream(httpx.AsyncByteStream):
+    """A response body that never yields a chunk."""
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        await asyncio.Event().wait()
+        yield b""
+
+
 async def test_a_stalled_attachment_stream_hits_the_wall_clock_deadline(
     mcp_client: Client[Any], mock_api: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A streamed body has no read timeout, so this deadline is the only thing
     # that stops a trickling transfer from hanging the session.
-    monkeypatch.setattr(resources, "DOWNLOAD_DEADLINE_SECONDS", 0.0)
+    monkeypatch.setattr(resources, "DOWNLOAD_DEADLINE_SECONDS", 0.05)
     mock_api.get(f"attachments/{ATTACHMENT_ID}").mock(
         return_value=httpx.Response(200, json=ATTACHMENT_METADATA)
     )
     mock_api.get(f"attachments/{ATTACHMENT_ID}/content").mock(
-        return_value=httpx.Response(200, content=ATTACHMENT_BYTES)
+        return_value=httpx.Response(200, stream=_TrickleStream())
     )
 
     with pytest.raises(McpError) as raised:
-        await mcp_client.read_resource(ATTACHMENT_URI)
+        await asyncio.wait_for(mcp_client.read_resource(ATTACHMENT_URI), timeout=5)
 
     envelope = json.loads(str(raised.value))
     assert envelope["error"]["type"] == "network_error"
     assert "stalled" in envelope["error"]["hint"]
+
+
+async def test_a_silent_attachment_stream_still_hits_the_deadline(
+    mcp_client: Client[Any], mock_api: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The deadline must fire with no chunk arriving at all, not only between chunks.
+    monkeypatch.setattr(resources, "DOWNLOAD_DEADLINE_SECONDS", 0.05)
+    mock_api.get(f"attachments/{ATTACHMENT_ID}").mock(
+        return_value=httpx.Response(200, json=ATTACHMENT_METADATA)
+    )
+    mock_api.get(f"attachments/{ATTACHMENT_ID}/content").mock(
+        return_value=httpx.Response(200, stream=_SilentStream())
+    )
+
+    with pytest.raises(McpError) as raised:
+        await asyncio.wait_for(mcp_client.read_resource(ATTACHMENT_URI), timeout=5)
+
+    envelope = json.loads(str(raised.value))
+    assert envelope["error"]["type"] == "network_error"
 
 
 async def test_a_quarantined_attachment_is_refused_before_the_bytes(
