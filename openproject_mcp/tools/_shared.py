@@ -74,7 +74,7 @@ from openproject_mcp.client.errors import (
 from openproject_mcp.client.filters import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, to_snake_name
 from openproject_mcp.client.hal import HalCollection, as_object, collection, duration_hours
 from openproject_mcp.client.http import OpenProjectClient
-from openproject_mcp.config import Settings
+from openproject_mcp.config import Settings, TransportName
 from openproject_mcp.groups import (
     ALL_GROUPS,
     CORE_PROFILE_HIDDEN_GROUPS,
@@ -130,6 +130,8 @@ __all__ = [
     "GROUP_WORK_PACKAGES",
     "GROUP_WP_COLLABORATION",
     "LIFESPAN_KEY",
+    "LOCAL_READ",
+    "LOCAL_WRITE",
     "PARENT_GROUP",
     "READ",
     "WRITE",
@@ -174,6 +176,10 @@ READ = "read"
 WRITE = "write"
 DESTRUCTIVE = "destructive"
 ADMIN = "admin"
+#: Tools that read (``LOCAL_READ``) or write (``LOCAL_WRITE``) paths on the
+#: server's disk. Over HTTP each is hidden until its root is set (SPEC §7.3).
+LOCAL_READ = "local_read"
+LOCAL_WRITE = "local_write"
 
 # Group tags live in the leaf module ``openproject_mcp.groups`` so that
 # ``config`` can use them too; they are re-exported here for tool modules.
@@ -212,8 +218,11 @@ class VisibilityRule:
     tags: frozenset[str]
 
 
-def deployment_rules(settings: Settings) -> list[VisibilityRule]:
-    """The operator's hard limits: ``READ_ONLY``, the admin gate and ``DISABLE``.
+def deployment_rules(
+    settings: Settings, transport: TransportName = "stdio"
+) -> list[VisibilityRule]:
+    """The operator's hard limits: ``READ_ONLY``, the admin gate, ``DISABLE`` and,
+    over HTTP, the file tools whose root is unset.
 
     Applied globally at startup, and re-asserted on a session after
     ``enable_tool_group`` so that re-enabling a group can never reveal a write,
@@ -226,6 +235,11 @@ def deployment_rules(settings: Settings) -> list[VisibilityRule]:
         rules.append(VisibilityRule(frozenset({ADMIN})))
     if settings.disabled_groups:
         rules.append(VisibilityRule(settings.disabled_groups))
+    if transport == "http":
+        if settings.upload_root is None:
+            rules.append(VisibilityRule(frozenset({LOCAL_READ})))
+        if settings.download_root is None:
+            rules.append(VisibilityRule(frozenset({LOCAL_WRITE})))
     return rules
 
 
@@ -326,6 +340,7 @@ class ToolContext:
     client: OpenProjectClient
     cache: TTLCache
     settings: Settings
+    transport: TransportName = "stdio"
 
     async def probe(self, *, refresh: bool = False) -> InstanceProbe:
         """The instance feature probe (SPEC §4.7): lazy, cached one hour."""

@@ -10,6 +10,59 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-20
+
+### Changed
+
+- **Breaking:** `OPENPROJECT_MCP_PROFILE` defaults to `core`. Meetings, news,
+  documents, wiki, budgets, git activity and reporting start hidden (62 of 91
+  tools listed, `tools/list` 223 KB instead of 328 KB); the model brings a
+  group back with `enable_tool_group`. Set `OPENPROJECT_MCP_PROFILE=full` for
+  the previous behavior, or if your client ignores `tools/list_changed`.
+- **Breaking (HTTP):** over `--transport http` the file tools fail closed.
+  Without `OPENPROJECT_MCP_UPLOAD_ROOT`, `upload_attachment` is hidden and
+  `create_work_package(attachment_paths)` is refused; without
+  `OPENPROJECT_MCP_DOWNLOAD_ROOT`, `download_attachment` is hidden. Set the
+  roots to restore them. stdio is unchanged.
+- **Breaking:** the `openproject://attachment/{id}` resource now refuses files
+  above `OPENPROJECT_MCP_MAX_INLINE_MB` (new, default 10, never above
+  `OPENPROJECT_MCP_MAX_DOWNLOAD_MB`) instead of buffering up to the 100 MB
+  download cap in memory. `download_attachment` still handles large files.
+- **Breaking:** `get_project_report_data` returns samples with section states.
+  - New `sections` (default all) and `sample_size` (default 20, max 100)
+    parameters. Unrequested sections cost no requests and report
+    `not_requested`.
+  - `created`, `updated` and `closed_updated` are `{state, total, items,
+    truncated, more, reason}`: `total` is the server's exact count, `items` a
+    sample, and `more` a ready `list_work_packages` call for the rest, e.g.
+    `{"tool": "list_work_packages", "arguments": {"project": 5,
+    "status_scope": "all", "updated_since": "2026-07-01", "updated_until":
+    "2026-07-07", "sort_by": [["updated_at", "desc"], ["id", "desc"]],
+    "page": 2, "page_size": 20}}`. `more_via` strings are gone.
+  - `open_total`/`open_by_status` become `open: {state, total, by_status}`;
+    `roster` becomes `{state, total, members}`; `time` gains `state`, `more`
+    and `reason`.
+  - An unreadable time ledger or roster is `unavailable` with null numbers
+    instead of zeros.
+  - The JSON is trimmed to 120,000 characters (`maxResultSizeChars` is now
+    150,000). On a synthetic busy week the report went from 36 requests and
+    400 KB to 22 requests and 17 KB.
+- `weekly_report` and `daily_standup` render unavailable values as
+  "unavailable" and mark sampled lists; `daily_standup` no longer reads the
+  roster.
+- Tool output schemas are compacted on the wire: field descriptions and
+  defaults are dropped and nullable unions fold into `type` arrays. Output
+  schemas shrink from 296 KB to 103 KB and `tools/list` from 521 KB to 328 KB
+  (full profile). Shapes and validation are unchanged; input schemas keep
+  their descriptions.
+
+### Added
+
+- `list_work_packages(created_until, updated_until)`: upper bounds to match
+  `created_since`/`updated_since`, so a report window can be listed exactly.
+- `scripts/measure_surface.py`: offline, deterministic payload baselines
+  (tools/list bytes per profile, report request count and result bytes).
+
 ## [0.3.4] - 2026-10-20
 
 ### Added

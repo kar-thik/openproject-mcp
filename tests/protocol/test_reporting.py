@@ -31,6 +31,7 @@ from tests.fixtures.reporting_payloads import (
     TO_DATE,
     hal_collection,
     time_entry_element,
+    work_package_element,
     work_package_response,
 )
 
@@ -78,8 +79,14 @@ async def test_the_tool_is_registered_with_honest_annotations(mcp_client: Client
     assert tool.annotations.readOnlyHint is True
     assert tool.annotations.destructiveHint is False
     assert tool.annotations.model_extra is not None
-    assert tool.annotations.model_extra["anthropic/maxResultSizeChars"] == 300_000
-    assert set(tool.inputSchema["properties"]) == {"project_id", "from_date", "to_date"}
+    assert tool.annotations.model_extra["anthropic/maxResultSizeChars"] == 150_000
+    assert set(tool.inputSchema["properties"]) == {
+        "project_id",
+        "from_date",
+        "to_date",
+        "sections",
+        "sample_size",
+    }
     assert set(tool.inputSchema["required"]) == {"project_id", "from_date", "to_date"}
 
     description = tool.description or ""
@@ -105,6 +112,9 @@ async def test_report_data_aggregates_the_whole_window(
     assert payload["to_date"] == TO_DATE
 
     # Counts are the server's totals; rows are the compact projection.
+    assert payload["sample_size"] == 20
+    assert payload["created"]["state"] == "complete"
+    assert payload["created"]["more"] is None
     assert payload["created"]["total"] == 2
     assert payload["created"]["truncated"] is False
     assert [row["id"] for row in payload["created"]["items"]] == [1235, 1236]
@@ -135,12 +145,14 @@ async def test_report_data_aggregates_the_whole_window(
     assert closed_rows == [(1236, "Shipped", True), (1237, "Rejected", True)]
 
     # Open counts come from the server-side groupBy, not from summed pages.
-    assert payload["open_total"] == 13
-    assert payload["open_by_status"] == [
+    assert payload["open"]["state"] == "complete"
+    assert payload["open"]["total"] == 13
+    assert payload["open"]["by_status"] == [
         {"status": {"id": 7, "name": "In progress"}, "count": 4, "is_closed": False},
         {"status": {"id": None, "name": "New"}, "count": 9, "is_closed": False},
     ]
 
+    assert payload["time"]["state"] == "complete"
     assert payload["time"]["total_hours"] == 7.5
     assert payload["time"]["entry_count"] == 3
     assert payload["time"]["total_entries"] == 3
@@ -154,7 +166,9 @@ async def test_report_data_aggregates_the_whole_window(
         {"user": {"id": 1, "name": "Ada Lovelace"}, "hours": 3.5, "entries": 2},
     ]
 
-    assert payload["roster"] == [
+    assert payload["roster"]["state"] == "complete"
+    assert payload["roster"]["total"] == 2
+    assert payload["roster"]["members"] == [
         {"principal": {"id": 12, "name": "Grace Hopper"}, "roles": ["Member"]},
         {"principal": {"id": 1, "name": "Ada Lovelace"}, "roles": ["Project admin", "Member"]},
     ]
@@ -284,31 +298,151 @@ async def test_a_capped_time_scan_reports_the_cap_in_band(
     assert result.structured_content is not None
     summary = result.structured_content["time"]
 
+    assert summary["state"] == "partial"
     assert summary["truncated"] is True
     assert summary["entry_count"] == 2
     # The total the server reported survives the cap; only the rows are cut.
     assert summary["total_entries"] == 3
     assert summary["total_hours"] == 6.0
-    note = next(note for note in result.structured_content["notes"] if "time entries" in note)
+    assert summary["more"] == {
+        "tool": "list_time_entries",
+        "arguments": {
+            "project_id": PROJECT_ID,
+            "from_date": FROM_DATE,
+            "to_date": TO_DATE,
+            "sum_hours": True,
+        },
+    }
+    note = next(note for note in result.structured_content["notes"] if note.startswith("time"))
     assert "first 2 of 3" in note
     assert "internal cap 2" in note
 
 
-async def test_a_capped_work_package_window_reports_the_cap_in_band(
-    mcp_client: Client[Any], mock_api: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+async def test_a_sampled_bucket_is_partial_with_an_exact_total_and_a_drill_down(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
 ) -> None:
-    monkeypatch.setattr(reporting, "WORK_PACKAGE_CAP", 1)
-    mock_report_api(mock_api)
+    routes = mock_report_api(mock_api)
 
-    result = await mcp_client.call_tool("get_project_report_data", ARGS)
+    result = await mcp_client.call_tool("get_project_report_data", {**ARGS, "sample_size": 1})
     assert result.structured_content is not None
     payload = result.structured_content
 
-    assert payload["updated"]["truncated"] is True
-    assert payload["updated"]["total"] == 4
-    assert len(payload["updated"]["items"]) == 1
-    assert "list_work_packages" in payload["updated"]["more_via"]
-    assert any("changed-in-window work packages" in note for note in payload["notes"])
+    updated = payload["updated"]
+    assert updated["state"] == "partial"
+    assert updated["truncated"] is True
+    assert updated["total"] == 4
+    assert len(updated["items"]) == 1
+    assert updated["more"] == {
+        "tool": "list_work_packages",
+        "arguments": {
+            "project": PROJECT_ID,
+            "status_scope": "all",
+            "updated_since": FROM_DATE,
+            "updated_until": TO_DATE,
+            "sort_by": [["updated_at", "desc"], ["id", "desc"]],
+            "page": 2,
+            "page_size": 1,
+        },
+    }
+    assert any(note.startswith("updated (partial)") for note in payload["notes"])
+    # The sample is one request of sample_size rows in the drill-down's order.
+    sample_request = routes["work_packages"].calls[1].request
+    assert sample_request.url.params["pageSize"] == "1"
+    assert sample_request.url.params["sortBy"] == '[["updatedAt","desc"],["id","desc"]]'
+
+
+async def test_the_drill_down_is_a_valid_list_work_packages_call(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    routes = mock_report_api(mock_api)
+    result = await mcp_client.call_tool("get_project_report_data", {**ARGS, "sample_size": 1})
+    assert result.structured_content is not None
+    more = result.structured_content["created"]["more"]
+
+    listed = await mcp_client.call_tool(more["tool"], more["arguments"])
+
+    assert not listed.is_error
+    request = routes["work_packages"].calls.last.request
+    assert filters_of(request) == [
+        {"status": {"operator": "*", "values": []}},
+        {"createdAt": {"operator": "<>d", "values": [FROM_DATE, TO_DATE]}},
+    ]
+    assert request.url.params["offset"] == "2"
+    assert request.url.params["pageSize"] == "1"
+
+
+async def test_unrequested_sections_cost_no_requests(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    routes = mock_report_api(mock_api)
+
+    result = await mcp_client.call_tool("get_project_report_data", {**ARGS, "sections": ["time"]})
+    assert result.structured_content is not None
+    payload = result.structured_content
+
+    assert payload["time"]["state"] == "complete"
+    for name in ("created", "updated", "closed_updated", "open", "roster"):
+        assert payload[name]["state"] == "not_requested"
+        assert payload[name]["total"] is None
+    assert routes["work_packages"].call_count == 0
+    assert routes["statuses"].call_count == 0
+    assert routes["memberships"].call_count == 0
+    assert not any("isClosed" in note for note in payload["notes"])
+
+
+async def test_the_largest_sample_stays_inside_the_result_budget(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    long_rows = [
+        work_package_element(
+            n, "x" * 255, status=(7, "In progress"), assignee=(n, f"Person {n:04d}" * 4)
+        )
+        for n in range(1, 101)
+    ]
+    members = [
+        {
+            "_type": "Membership",
+            "id": n,
+            "_links": {
+                "principal": {"href": f"/api/v3/users/{n}", "title": f"Person {n:04d}" * 4},
+                "roles": [{"href": "/api/v3/roles/3", "title": "Member"}],
+            },
+        }
+        for n in range(1, 101)
+    ]
+    mock_report_api(mock_api)
+    mock_api.get(WP_PATH).mock(
+        side_effect=lambda request: (
+            work_package_response(request)
+            if "groupBy" in request.url.params
+            else httpx.Response(200, json=hal_collection(long_rows, total=5000))
+        )
+    )
+    mock_api.get("memberships").mock(
+        return_value=httpx.Response(200, json=hal_collection(members, total=400))
+    )
+
+    result = await mcp_client.call_tool(
+        "get_project_report_data", {**ARGS, "sample_size": reporting.MAX_SAMPLE_SIZE}
+    )
+    assert result.structured_content is not None
+
+    payload = result.structured_content
+    size = len(json.dumps(payload, separators=(",", ":")))
+    assert size <= reporting.RESULT_BUDGET_CHARS, size
+    assert payload["roster"]["state"] == "partial"
+    # A trimmed bucket keeps its exact total and a drill-down that lines up with it.
+    trimmed = [
+        payload[name]
+        for name in ("created", "updated", "closed_updated")
+        if len(payload[name]["items"]) < reporting.MAX_SAMPLE_SIZE
+    ]
+    assert trimmed
+    for bucket in trimmed:
+        assert bucket["total"] == 5000
+        assert bucket["more"]["arguments"]["page"] == 2
+        assert bucket["more"]["arguments"]["page_size"] == len(bucket["items"])
+        assert "result budget" in bucket["reason"]
 
 
 # --- degradation (G5) -----------------------------------------------------
@@ -324,8 +458,10 @@ async def test_an_unreadable_roster_degrades_to_a_note(
     assert result.structured_content is not None
     payload = result.structured_content
 
-    assert payload["roster"] == []
-    assert any("membership roster unavailable" in note for note in payload["notes"])
+    assert payload["roster"]["state"] == "unavailable"
+    assert payload["roster"]["total"] is None
+    assert payload["roster"]["members"] == []
+    assert any(note.startswith("roster (unavailable)") for note in payload["notes"])
     # Everything else still came back.
     assert payload["closed_updated"]["total"] == 2
     assert payload["time"]["total_hours"] == 7.5
@@ -343,15 +479,16 @@ async def test_unreadable_time_entries_degrade_to_a_note(
     assert result.structured_content is not None
     payload = result.structured_content
 
-    assert payload["time"]["total_hours"] == 0.0
-    assert payload["time"]["entry_count"] == 0
-    assert payload["time"]["total_entries"] == 0
+    # Unknown, not zero.
+    assert payload["time"]["state"] == "unavailable"
+    assert payload["time"]["total_hours"] is None
+    assert payload["time"]["total_entries"] is None
     assert payload["time"]["by_user"] == []
-    note = next(note for note in payload["notes"] if "time entries unavailable" in note)
+    note = next(note for note in payload["notes"] if note.startswith("time (unavailable)"))
     assert "no permission" in note
     # Everything else still came back.
     assert payload["closed_updated"]["total"] == 2
-    assert payload["roster"][0]["principal"] == {"id": 12, "name": "Grace Hopper"}
+    assert payload["roster"]["members"][0]["principal"] == {"id": 12, "name": "Grace Hopper"}
 
 
 async def test_a_missing_time_module_degrades_to_a_note(
@@ -363,9 +500,9 @@ async def test_a_missing_time_module_degrades_to_a_note(
     result = await mcp_client.call_tool("get_project_report_data", ARGS)
     assert result.structured_content is not None
 
-    assert result.structured_content["time"]["total_hours"] == 0.0
+    assert result.structured_content["time"]["total_hours"] is None
     note = next(
-        note for note in result.structured_content["notes"] if "time entries unavailable" in note
+        note for note in result.structured_content["notes"] if note.startswith("time (unavailable)")
     )
     assert "module absent" in note
 
@@ -386,8 +523,9 @@ async def test_an_instance_without_status_groups_says_so(
     result = await mcp_client.call_tool("get_project_report_data", ARGS)
     assert result.structured_content is not None
 
-    assert result.structured_content["open_total"] == 13
-    assert result.structured_content["open_by_status"] == []
+    assert result.structured_content["open"]["state"] == "partial"
+    assert result.structured_content["open"]["total"] == 13
+    assert result.structured_content["open"]["by_status"] == []
     assert any("groupBy=status" in note for note in result.structured_content["notes"])
 
 

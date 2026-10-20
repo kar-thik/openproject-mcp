@@ -32,10 +32,15 @@ API_BASE = f"{TEST_URL}/api/v3"
 
 @pytest.fixture(autouse=True)
 def isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep a developer's real OpenProject environment out of the tests."""
+    """Keep a developer's real OpenProject environment out of the tests.
+
+    Tests run the ``full`` profile so every tool stays callable; the ones about
+    the ``core`` default delete this variable or pass ``profile`` explicitly.
+    """
     for key in list(os.environ):
         if key.startswith("OPENPROJECT"):
             monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPENPROJECT_MCP_PROFILE", "full")
 
 
 @pytest.fixture

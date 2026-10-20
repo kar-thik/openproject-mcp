@@ -72,7 +72,7 @@
         },
         {
           "name": "OPENPROJECT_MCP_PROFILE",
-          "description": "full (default) or core: core hides the module-backed tool groups at startup",
+          "description": "core (default) or full: core hides the module-backed tool groups at startup",
           "isRequired": false,
           "format": "string"
         }

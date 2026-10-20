@@ -75,6 +75,8 @@ from openproject_mcp.projections import ListEnvelope, Ref
 from openproject_mcp.tools._shared import (
     DESTRUCTIVE,
     GROUP_ATTACHMENTS,
+    LOCAL_READ,
+    LOCAL_WRITE,
     READ,
     WRITE,
     ToolContext,
@@ -305,8 +307,19 @@ def _maximum_attachment_bytes(configuration: Mapping[str, Any]) -> int | None:
     return raw
 
 
-def _expand(root: Path | None) -> Path | None:
-    return None if root is None else root.expanduser()
+def _file_root(ctx: ToolContext, root: Path | None, env_name: str) -> Path | None:
+    """The confining root, or ``None`` on stdio; over HTTP an unset root fails closed."""
+    if root is not None:
+        return root.expanduser()
+    if ctx.transport == "http":
+        raise InputValidationError(
+            f"File paths are disabled on this HTTP server: {env_name} is not set.",
+            hint=(
+                f"Ask the operator to set {env_name} to the directory this server may use. "
+                "Nothing was read or written."
+            ),
+        )
+    return None
 
 
 def _allowlist_error(exc: ValidationFailedError, file_name: str) -> ValidationFailedError:
@@ -340,7 +353,9 @@ async def _post_attachment(
     ``maximumAttachmentFileSize`` and a materialized body keeps the request
     replay-free and inspectable.
     """
-    source, handle = open_upload_source(file_path, _expand(ctx.settings.upload_root))
+    source, handle = open_upload_source(
+        file_path, _file_root(ctx, ctx.settings.upload_root, "OPENPROJECT_MCP_UPLOAD_ROOT")
+    )
     with handle:
         size = os.fstat(handle.fileno()).st_size
         limit = _maximum_attachment_bytes(await get_configuration(ctx))
@@ -610,7 +625,7 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="download_attachment",
-        tags=tool_tags(GROUP_ATTACHMENTS, READ),
+        tags=tool_tags(GROUP_ATTACHMENTS, READ, LOCAL_WRITE),
         annotations=read_annotations(title="Download attachment", idempotent=False),
     )
     @tool_errors
@@ -701,9 +716,8 @@ def register(mcp: FastMCP) -> None:
                 extra={"attachment_id": attachment_id, "size_bytes": declared_size},
             )
 
-        directory = open_download_directory(
-            _download_dir(save_dir, ctx.settings), _expand(ctx.settings.download_root)
-        )
+        root = _file_root(ctx, ctx.settings.download_root, "OPENPROJECT_MCP_DOWNLOAD_ROOT")
+        directory = open_download_directory(_download_dir(save_dir, ctx.settings), root)
         target: DownloadFile | None = None
 
         def discard_partial() -> None:
@@ -810,7 +824,7 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="upload_attachment",
-        tags=tool_tags(GROUP_ATTACHMENTS, WRITE),
+        tags=tool_tags(GROUP_ATTACHMENTS, WRITE, LOCAL_READ),
         annotations=write_annotations(title="Upload attachment"),
     )
     @tool_errors

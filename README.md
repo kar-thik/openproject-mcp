@@ -238,12 +238,13 @@ From-source users can start from
 | `OPENPROJECT_MCP_READ_ONLY` | `false` | Serve read tools only: every write, destructive and admin tool is removed at startup. |
 | `OPENPROJECT_MCP_ADMIN_TOOLS` | `false` | Expose the three admin-gated membership write tools (hidden by default). |
 | `OPENPROJECT_MCP_DISABLE` | empty | Comma-separated group tags to remove whole tool groups at startup (see below). |
-| `OPENPROJECT_MCP_PROFILE` | `full` | `core` hides the module-backed groups at startup; a session can bring one back with `enable_tool_group` (see below). |
+| `OPENPROJECT_MCP_PROFILE` | `core` | `core` hides the module-backed groups at startup; a session can bring one back with `enable_tool_group` (see below). `full` lists every group. |
 | `OPENPROJECT_MCP_INSECURE` | `false` | Allow `--transport http` to start without auth tokens. Local development only. |
 | `OPENPROJECT_MCP_DOWNLOAD_DIR` | `./openproject-downloads` | Directory where `download_attachment` writes files (created if missing; default is relative to the server's working directory). |
 | `OPENPROJECT_MCP_UPLOAD_ROOT` | unset | When set, `upload_attachment` and `create_work_package(attachment_paths)` read only files beneath this existing directory; paths and symlinks resolving outside it are refused. Recommended for `--transport http`. |
 | `OPENPROJECT_MCP_DOWNLOAD_ROOT` | unset | When set, `download_attachment` writes only beneath this existing directory and saves there by default; a `save_dir` outside it is refused. Recommended for `--transport http`. |
 | `OPENPROJECT_MCP_MAX_DOWNLOAD_MB` | `100` | Size cap for attachment downloads, in MiB. |
+| `OPENPROJECT_MCP_MAX_INLINE_MB` | `10` | Size cap for attachment bytes returned inline by the `openproject://attachment` resource, in MiB (never above the download cap). |
 | `OPENPROJECT_MCP_CACHE_TTL` | `300` | TTL in seconds for the metadata cache (statuses, types, priorities, schemas). |
 | `OPENPROJECT_MCP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` (case-insensitive). |
 | `OPENPROJECT_MCP_LOG_FORMAT` | `text` | `text` or `json`. Logs always go to stderr (stdout belongs to the stdio transport). |
@@ -279,12 +280,13 @@ of the process, with one exception: `enable_tool_group` can bring back a group h
   `documents`, `budgets`, `news`, `reporting` — the same tags that head each section of the
   tool catalog below — plus `meetings_recurring`, a sub-tag of `meetings` that drops only the
   six recurring-meeting tools (`meetings` drops them too).
-- `OPENPROJECT_MCP_PROFILE=core` hides the module-backed groups — `meetings`, `news`,
-  `documents`, `wiki`, `budgets`, `git_activity` and `reporting`, plus the two reporting
-  prompts — so a work-package session starts with a smaller tool list. When the model needs
+- `OPENPROJECT_MCP_PROFILE` defaults to `core` (since 0.4.0), which hides the module-backed
+  groups — `meetings`, `news`, `documents`, `wiki`, `budgets`, `git_activity` and
+  `reporting`, plus the two reporting prompts — so a session starts with a smaller tool list.
+  Set it to `full` to list every group from the start. When the model needs
   one of them it calls `enable_tool_group`, which restores that group for the calling session
   only; the server then emits `tools/list_changed` to that session, so the client must honour
-  that notification and re-read its tool list (if yours does not, use `full`). Session rules
+  that notification and re-read its tool list (if yours does not, set `full`). Session rules
   expire after 24 hours idle. `enable_tool_group` never lifts `READ_ONLY`, the admin gate or
   `OPENPROJECT_MCP_DISABLE`; it lives in the `metadata` group, so disabling that group removes
   it.
@@ -325,10 +327,10 @@ explicit `confirm=true` argument before it acts.
 
   **File tools touch the server's disk.** `upload_attachment`, `create_work_package
   (attachment_paths)` and `download_attachment` read and write paths on the machine running
-  the server, so over HTTP set `OPENPROJECT_MCP_UPLOAD_ROOT` and
-  `OPENPROJECT_MCP_DOWNLOAD_ROOT` to confine them. The server prints a startup warning when
-  either is unset with `--transport http`; a future release will refuse to serve the file
-  tools over HTTP without them.
+  the server. Over HTTP they are off until you confine them: `upload_attachment` and
+  `attachment_paths` need `OPENPROJECT_MCP_UPLOAD_ROOT`, `download_attachment` needs
+  `OPENPROJECT_MCP_DOWNLOAD_ROOT`. Until then the tool is hidden (and `attachment_paths` is
+  refused), and the server names the missing variable in a startup warning.
 
 ## Tools
 
@@ -524,7 +526,7 @@ The six recurring-meeting tools also carry the `meetings_recurring` tag, so
 
 | Tool | Kind | What it does |
 |---|---|---|
-| `get_project_report_data` | Read | Aggregate everything a status report needs about one project and one date window. |
+| `get_project_report_data` | Read | Aggregate a status report for one project and date window: exact counts, sampled rows with a drill-down call, and a state per section. |
 
 ## Prompts and resources
 
@@ -546,7 +548,8 @@ Three resource templates expose OpenProject objects at stable URIs:
 
 - `openproject://work_package/{id}` — one work package as JSON.
 - `openproject://project/{identifier}` — one project as JSON (identifier slug or numeric id).
-- `openproject://attachment/{id}` — the attachment's bytes with the detected MIME type.
+- `openproject://attachment/{id}` — the attachment's bytes with the detected MIME type, up to
+  `OPENPROJECT_MCP_MAX_INLINE_MB`.
 
 ## Supported OpenProject versions
 

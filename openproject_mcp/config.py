@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     read_only: bool = Field(default=False, validation_alias="OPENPROJECT_MCP_READ_ONLY")
     admin_tools: bool = Field(default=False, validation_alias="OPENPROJECT_MCP_ADMIN_TOOLS")
     disable: str = Field(default="", validation_alias="OPENPROJECT_MCP_DISABLE")
-    profile: Profile = Field(default="full", validation_alias="OPENPROJECT_MCP_PROFILE")
+    profile: Profile = Field(default="core", validation_alias="OPENPROJECT_MCP_PROFILE")
     insecure: bool = Field(default=False, validation_alias="OPENPROJECT_MCP_INSECURE")
 
     # --- files ----------------------------------------------------------
@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     max_download_mb: int = Field(
         default=100, ge=1, validation_alias="OPENPROJECT_MCP_MAX_DOWNLOAD_MB"
     )
+    #: Cap for bytes returned inline (the attachment resource), which are held in
+    #: memory and base64-encoded rather than streamed to disk.
+    max_inline_mb: int = Field(default=10, ge=1, validation_alias="OPENPROJECT_MCP_MAX_INLINE_MB")
 
     # --- caching --------------------------------------------------------
     cache_ttl: float = Field(
@@ -248,6 +251,11 @@ class Settings(BaseSettings):
         return self.max_download_mb * 1024 * 1024
 
     @property
+    def max_inline_bytes(self) -> int:
+        """The inline cap, never above the download cap."""
+        return min(self.max_inline_mb, self.max_download_mb) * 1024 * 1024
+
+    @property
     def bearer_tokens(self) -> tuple[str, ...]:
         """Parsed HTTP bearer tokens (SPEC §11); raw secret material, never log.
 
@@ -334,9 +342,8 @@ def runtime_warnings(settings: Settings, transport: TransportName) -> list[str]:
         ]
         if unset:
             warnings.append(
-                f"{' and '.join(unset)} not set: every HTTP client can make "
-                "upload_attachment read, and download_attachment write, any path the server "
-                "process can access. Set them to confine the file tools; a future release "
-                "will refuse to serve file tools over HTTP without them."
+                f"{' and '.join(unset)} not set: over HTTP the file tools that need them are "
+                "hidden (upload_attachment and create_work_package(attachment_paths) need the "
+                "upload root, download_attachment the download root)."
             )
     return warnings

@@ -55,7 +55,6 @@ key:
   included, and must stay beneath the root, and the final open walks the path
   with `O_NOFOLLOW` so a symlink swapped in after the check cannot escape it
   (on platforms without descriptor-relative opens, such as Windows, only the
-  resolved-path check applies). Without the roots, any HTTP client can read or
-  write whatever the server process can; the server warns at startup in that
-  case, and a future release will refuse to serve the file tools over HTTP
-  without them.
+  resolved-path check applies). Over HTTP each root is required: without it
+  the matching file tools are hidden and `attachment_paths` is refused. Over
+  stdio the roots stay optional.
