@@ -454,9 +454,18 @@ The former `closed` report bucket is renamed `closed_updated`: currently closed 
 
 | Tool | Sig (abridged) | Ph |
 |---|---|---|
-| 🔍 `get_project_report_data` | `project_id, from_date, to_date` | 3 |
+| 🔍 `get_project_report_data` | `project_id, from_date, to_date, sections?, sample_size=20` | 3 |
 
-Structured JSON aggregation powering the report prompts: WPs created/updated in window and currently closed WPs updated in window (`closed_updated`; no inferred completion date; correct `createdAt`/`updatedAt` `<>d` + `status c` filters — no 30-day fudge), open-by-status counts (`groupBy=status` server-side), time entries in window with per-activity totals, membership roster. Internal caps: 3,000 WPs and 5,000 time entries per window — cap-hits reported in-band (G1). Status bucketing uses each status's **`isClosed` flag from the API**, never name keywords (the old EN-keyword classifier broke on every localized instance). Rendering (weekly report, standup) is done by **prompts** (§10), parameterized `locale='en'|'vi'|…` — preserving the valued 8-section Agile template without hardcoding Vietnamese into code.
+Structured JSON aggregation powering the report prompts: WPs created/updated in window and currently closed WPs updated in window (`closed_updated`; no inferred completion date; correct `createdAt`/`updatedAt` `<>d` + `status c` filters — no 30-day fudge), open-by-status counts (`open`, `groupBy=status` server-side), time entries in window with per-activity totals, membership roster.
+
+**Result contract (0.4.0).** Callers pick `sections` (`created`, `updated`, `closed_updated`, `open`, `time`, `roster`; default all); an unrequested section sends no request (statuses are read only when a work-package or `open` section needs them) and reports `state: "not_requested"` with null numbers. Every section carries `state` ∈ `complete | partial | unavailable | not_requested` and a `reason` when not complete; `notes` repeats each reason.
+
+- *Work-package buckets* are samples: one request of `sample_size` rows (default 20, max 100) plus the server's exact `total`. `complete` means every row is in `items`; `partial` means `items` is a sample — `total` stays exact, but anything derived from the rows (type breakdowns, done/in-progress splits) is sampled. A partial bucket carries `more: {tool, arguments}`, a ready `list_work_packages` call with the same status scope, both window bounds (`*_since`/`*_until`), the same order (`created_at asc, id asc` or `updated_at desc, id desc`, unique tie-breaker) and the next page. Later pages read current data, so rows can shift between pages; the report promises no snapshot and never widens the window.
+- *Hours* are exact only for a full scan: up to 5,000 entries is `complete`; beyond that `partial` (hours cover part of the window, `more` is `list_time_entries(…, sum_hours=true)`). A 403/404 on the ledger is `unavailable` with `total_hours: null` — unknown, never zero.
+- *Roster* is sampled to `sample_size` members with the server's total; a 403/404 is `unavailable`.
+- *Output bound:* the tool trims its JSON to 120,000 characters by halving the largest sample (its drill-down restarts at page 2 with the trimmed size), under the 150,000 `maxResultSizeChars` annotation.
+
+Measured on the synthetic busy week in `scripts/measure_surface.py` (450 created, 900 updated, 300 closed, 1,500 time entries): 0.3.4 made 36 requests and returned 400,371 bytes; 0.4.0 makes 22 and returns 16,817 (74,587 at `sample_size=100`). The prompts call the collector with 3,000-row samples so their tables match 0.3.x, mark sampled lists and render unavailable values as such; `daily_standup` skips the roster. Status bucketing uses each status's **`isClosed` flag from the API**, never name keywords (the old EN-keyword classifier broke on every localized instance). Rendering (weekly report, standup) is done by **prompts** (§10), parameterized `locale='en'|'vi'|…` — preserving the valued 8-section Agile template without hardcoding Vietnamese into code.
 
 ---
 

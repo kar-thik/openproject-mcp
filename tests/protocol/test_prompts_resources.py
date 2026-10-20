@@ -33,6 +33,7 @@ from tests.fixtures.reporting_payloads import (
     ATTACHMENT_METADATA,
     BLOCKED_RELATION_COLLECTION,
     EMPTY_RELATION_COLLECTION,
+    FORBIDDEN_ERROR,
     FROM_DATE,
     MEMBERSHIP_COLLECTION,
     NOT_FOUND_ERROR,
@@ -66,7 +67,9 @@ def mock_report_api(mock_api: respx.MockRouter) -> dict[str, respx.Route]:
     mock_api.get(f"projects/{PROJECT_ID}").mock(return_value=httpx.Response(200, json=PROJECT))
     mock_api.get("statuses").mock(return_value=httpx.Response(200, json=STATUS_COLLECTION))
     mock_api.get("time_entries").mock(return_value=httpx.Response(200, json=TIME_ENTRY_COLLECTION))
-    mock_api.get("memberships").mock(return_value=httpx.Response(200, json=MEMBERSHIP_COLLECTION))
+    memberships = mock_api.get("memberships").mock(
+        return_value=httpx.Response(200, json=MEMBERSHIP_COLLECTION)
+    )
     for work_package_id in (1235, 1236, 1237, 1238):
         mock_api.get(f"work_packages/{work_package_id}/relations").mock(
             return_value=httpx.Response(200, json=EMPTY_RELATION_COLLECTION)
@@ -76,6 +79,7 @@ def mock_report_api(mock_api: respx.MockRouter) -> dict[str, respx.Route]:
         "relations": mock_api.get("work_packages/1234/relations").mock(
             return_value=httpx.Response(200, json=BLOCKED_RELATION_COLLECTION)
         ),
+        "memberships": memberships,
     }
 
 
@@ -333,6 +337,20 @@ async def test_daily_standup_renders_yesterday_due_today_and_blockers(
     created = routes["work_packages"].calls[0].request
     filters = json.loads(created.url.params["filters"])
     assert filters[1]["createdAt"]["values"] == [yesterday, yesterday]
+    # The standup renders no roster, so it never reads one.
+    assert routes["memberships"].call_count == 0
+
+
+async def test_daily_standup_says_unavailable_rather_than_zero_hours(
+    mcp_client: Client[Any], mock_api: respx.MockRouter
+) -> None:
+    mock_report_api(mock_api)
+    mock_api.get("time_entries").mock(return_value=httpx.Response(403, json=FORBIDDEN_ERROR))
+
+    text = await rendered(mcp_client, "daily_standup", {"project": str(PROJECT_ID)})
+
+    assert "Time logged yesterday: unavailable" in text
+    assert "0.0 h" not in text
 
 
 # --- triage_inbox ---------------------------------------------------------

@@ -79,6 +79,15 @@ HIGHLIGHT_LIMIT = 3
 #: Items listed as next week's top priorities.
 PRIORITY_LIMIT = 5
 
+#: What the standup renders; everything but the roster.
+STANDUP_SECTIONS: tuple[reporting.SectionName, ...] = (
+    "created",
+    "updated",
+    "closed_updated",
+    "open",
+    "time",
+)
+
 MANUAL = "_(fill in manually)_"
 MANUAL_VI = "_(cần cập nhật thủ công)_"
 
@@ -133,6 +142,9 @@ LABELS: dict[str, dict[str, str]] = {
         "th_entries": "Entries",
         "entries_scope": "{scanned} of {total} time entries",
         "no_time": "No time was logged in this window (or it is not visible to this account).",
+        "unavailable": "unavailable",
+        "sampled": "Rows below are a sample: the window holds more work packages than were "
+        "read, so these lists and counts are partial (see data notes).",
         "th_item": "Work package",
         "th_relation": "Relation",
         "th_note": "Note",
@@ -208,6 +220,9 @@ LABELS: dict[str, dict[str, str]] = {
         "th_entries": "Số bản ghi",
         "entries_scope": "{scanned}/{total} bản ghi thời gian",
         "no_time": "Không có thời gian nào được log trong tuần (hoặc tài khoản này không thấy).",
+        "unavailable": "không có dữ liệu",
+        "sampled": "Danh sách dưới đây là mẫu: trong tuần có nhiều work package hơn số đã đọc, "
+        "nên danh sách và số đếm chưa đầy đủ (xem ghi chú dữ liệu).",
         "th_item": "Work package",
         "th_relation": "Quan hệ",
         "th_note": "Ghi chú",
@@ -285,6 +300,20 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
 
 def _hours(value: float) -> str:
     return f"{value:.1f}"
+
+
+def _known(value: int | float | None, unavailable: str) -> str:
+    """A count or hour total, or the 'unavailable' label — never a zero for unknown."""
+    if value is None:
+        return unavailable
+    return _hours(value) if isinstance(value, float) else str(value)
+
+
+def _sampled(data: ProjectReportData) -> bool:
+    """True when any work-package bucket holds only a sample of its rows."""
+    return any(
+        bucket.state == "partial" for bucket in (data.created, data.updated, data.closed_updated)
+    )
 
 
 def _ref_name(ref: Ref | None, fallback: str) -> str:
@@ -485,7 +514,7 @@ def render_weekly_report(
                 [labels["team"], _cell(team_name, manual)],
                 [labels["product"], _cell(_ref_name(data.project, "-"))],
                 [labels["project_id"], _cell(str(project_id) if project_id is not None else None)],
-                [labels["open_now"], str(data.open_total)],
+                [labels["open_now"], _known(data.open.total, labels["unavailable"])],
             ],
         )
     )
@@ -511,6 +540,7 @@ def render_weekly_report(
         "",
         f"## {labels['c']}",
         "",
+        *([f"_{labels['sampled']}_", ""] if _sampled(data) else []),
         f"### {labels['sub_done']} ({len(done)})",
         "",
     ]
@@ -521,16 +551,19 @@ def render_weekly_report(
     lines.extend(_work_package_table(planned, labels, labels["none_planned"]))
 
     lines += ["", f"## {labels['d']}", ""]
-    lines.append(f"**{labels['team_size']}:** {len(data.roster)} {labels['people']}")
+    team = _known(data.roster.total, labels["unavailable"])
+    lines.append(f"**{labels['team_size']}:** {team} {labels['people']}")
     lines.append("")
-    scope = labels["entries_scope"].format(
-        scanned=data.time.entry_count, total=data.time.total_entries
-    )
-    lines.append(
-        f"**{labels['capacity']}:** {_hours(data.time.total_hours)} {labels['hours']} ({scope})"
-    )
+    total_hours = data.time.total_hours
+    if total_hours is None:
+        lines.append(f"**{labels['capacity']}:** {labels['unavailable']}")
+    else:
+        scope = labels["entries_scope"].format(
+            scanned=data.time.entry_count, total=data.time.total_entries
+        )
+        lines.append(f"**{labels['capacity']}:** {_hours(total_hours)} {labels['hours']} ({scope})")
     lines.append("")
-    if data.time.total_hours > 0:
+    if total_hours is not None and total_hours > 0:
         lines.append(f"**{labels['by_activity']}**")
         lines.append("")
         lines.extend(
@@ -540,7 +573,7 @@ def render_weekly_report(
                     [
                         _cell(_ref_name(item.activity, "-")),
                         _hours(item.hours),
-                        f"{item.hours / data.time.total_hours * 100:.1f}%",
+                        f"{item.hours / total_hours * 100:.1f}%",
                     ]
                     for item in data.time.by_activity
                 ],
@@ -556,7 +589,7 @@ def render_weekly_report(
                 ],
             )
         )
-    else:
+    elif total_hours is not None:
         lines.append(f"_{labels['no_time']}_")
 
     lines += ["", f"## {labels['e']}", ""]
@@ -589,10 +622,10 @@ def render_weekly_report(
             [labels["th_status"], labels["th_count"]],
             [
                 [_cell(_ref_name(bucket.status, "-")), str(bucket.count)]
-                for bucket in data.open_by_status
+                for bucket in data.open.by_status
             ],
         )
-        if data.open_by_status
+        if data.open.by_status
         else [f"_{manual}_"]
     )
 
@@ -626,8 +659,8 @@ def render_weekly_report(
         f"- **{labels['in_progress_count']}:** {len(in_progress)}",
         f"- **{labels['planned_count']}:** {len(planned)}",
         f"- **{labels['blockers_count']}:** {len(impediments)}",
-        f"- **{labels['hours_logged']}:** {_hours(data.time.total_hours)}",
-        f"- **{labels['open_now']}:** {data.open_total}",
+        f"- **{labels['hours_logged']}:** {_known(data.time.total_hours, labels['unavailable'])}",
+        f"- **{labels['open_now']}:** {_known(data.open.total, labels['unavailable'])}",
         "",
         f"### {labels['data_notes']}",
         "",
@@ -680,7 +713,11 @@ def register(mcp: FastMCP) -> None:
         ctx = _shared.get_tool_context()
         try:
             data = await reporting.collect_report_data(
-                ctx, project_id=project, from_date=start, to_date=end
+                ctx,
+                project_id=project,
+                from_date=start,
+                to_date=end,
+                sample_size=reporting.WORK_PACKAGE_CAP,
             )
             impediments, impediment_notes = await reporting.collect_impediments(
                 ctx, _dedupe([data.updated.items, data.created.items])
@@ -721,8 +758,14 @@ def register(mcp: FastMCP) -> None:
         today = dt.date.today()
         yesterday = (today - dt.timedelta(days=1)).isoformat()
         try:
+            # The standup renders no roster, so it never reads one.
             data = await reporting.collect_report_data(
-                ctx, project_id=project, from_date=yesterday, to_date=yesterday
+                ctx,
+                project_id=project,
+                from_date=yesterday,
+                to_date=yesterday,
+                sections=STANDUP_SECTIONS,
+                sample_size=reporting.WORK_PACKAGE_CAP,
             )
             due_today = await reporting.collect_due_on(
                 ctx, project_id=project, date=today.isoformat()
@@ -772,9 +815,13 @@ def register(mcp: FastMCP) -> None:
             lines.append("_No blocking relations were found on the work packages scanned._")
         lines += [
             "",
-            f"## Time logged yesterday: {_hours(data.time.total_hours)} h",
+            (
+                f"## Time logged yesterday: {_hours(data.time.total_hours)} h"
+                if data.time.total_hours is not None
+                else "## Time logged yesterday: unavailable"
+            ),
             "",
-            f"Open work packages right now: {data.open_total}.",
+            f"Open work packages right now: {_known(data.open.total, 'unavailable')}.",
             "",
             "### Data notes",
             "",

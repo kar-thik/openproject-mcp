@@ -26,6 +26,28 @@ PATCH releases are fixes and strictly additive changes only.
   above `OPENPROJECT_MCP_MAX_INLINE_MB` (new, default 10, never above
   `OPENPROJECT_MCP_MAX_DOWNLOAD_MB`) instead of buffering up to the 100 MB
   download cap in memory. `download_attachment` still handles large files.
+- **Breaking:** `get_project_report_data` returns samples with section states.
+  - New `sections` (default all) and `sample_size` (default 20, max 100)
+    parameters. Unrequested sections cost no requests and report
+    `not_requested`.
+  - `created`, `updated` and `closed_updated` are `{state, total, items,
+    truncated, more, reason}`: `total` is the server's exact count, `items` a
+    sample, and `more` a ready `list_work_packages` call for the rest, e.g.
+    `{"tool": "list_work_packages", "arguments": {"project": 5,
+    "status_scope": "all", "updated_since": "2026-07-01", "updated_until":
+    "2026-07-07", "sort_by": [["updated_at", "desc"], ["id", "desc"]],
+    "page": 2, "page_size": 20}}`. `more_via` strings are gone.
+  - `open_total`/`open_by_status` become `open: {state, total, by_status}`;
+    `roster` becomes `{state, total, members}`; `time` gains `state`, `more`
+    and `reason`.
+  - An unreadable time ledger or roster is `unavailable` with null numbers
+    instead of zeros.
+  - The JSON is trimmed to 120,000 characters (`maxResultSizeChars` is now
+    150,000). On a synthetic busy week the report went from 36 requests and
+    400 KB to 22 requests and 17 KB.
+- `weekly_report` and `daily_standup` render unavailable values as
+  "unavailable" and mark sampled lists; `daily_standup` no longer reads the
+  roster.
 - Tool output schemas are compacted on the wire: field descriptions and
   defaults are dropped and nullable unions fold into `type` arrays. Output
   schemas shrink from 296 KB to 101 KB and `tools/list` from 521 KB to 326 KB

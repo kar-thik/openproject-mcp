@@ -134,17 +134,17 @@ def _router(mock: respx.MockRouter, counts: Counter[str]) -> None:
     mock.get(f"{api}/memberships").mock(side_effect=fixed("memberships", MEMBERSHIP_COLLECTION))
 
 
-async def report_cost() -> dict[str, Any]:
+async def report_cost(**extra: Any) -> dict[str, Any]:
     counts: Counter[str] = Counter()
     with respx.mock(assert_all_called=False) as mock:
         _router(mock, counts)
         async with Client(build_server(_settings(profile="full"))) as client:
             result = await client.call_tool(
                 "get_project_report_data",
-                {"project_id": PROJECT_ID, "from_date": FROM_DATE, "to_date": TO_DATE},
+                {"project_id": PROJECT_ID, "from_date": FROM_DATE, "to_date": TO_DATE, **extra},
             )
     return {
-        "workload": WORKLOAD,
+        "arguments": extra,
         "upstream_requests": sum(counts.values()),
         "requests_by_endpoint": dict(sorted(counts.items())),
         "result_bytes": size(result.structured_content),
@@ -154,7 +154,8 @@ async def report_cost() -> dict[str, Any]:
 async def measure() -> dict[str, Any]:
     return {
         "surface": {profile: await tool_surface(profile) for profile in ("full", "core")},
-        "get_project_report_data": await report_cost(),
+        "workload": WORKLOAD,
+        "get_project_report_data": [await report_cost(), await report_cost(sample_size=100)],
     }
 
 
@@ -171,12 +172,12 @@ def main() -> int:
             f"tools/list ({profile}, admin on): "
             + ", ".join(f"{k}={v}" for k, v in numbers.items())
         )
-    report = results["get_project_report_data"]
-    print(
-        f"get_project_report_data ({report['workload']}): "
-        f"requests={report['upstream_requests']} {report['requests_by_endpoint']}, "
-        f"result_bytes={report['result_bytes']}"
-    )
+    for report in results["get_project_report_data"]:
+        print(
+            f"get_project_report_data {report['arguments'] or '(defaults)'} on "
+            f"{results['workload']}: requests={report['upstream_requests']} "
+            f"{report['requests_by_endpoint']}, result_bytes={report['result_bytes']}"
+        )
     return 0
 
 

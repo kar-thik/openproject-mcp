@@ -24,11 +24,14 @@ Non-negotiables for this module:
   and the open-by-status breakdown is a server-side ``groupBy=status`` computed
   over the whole filtered set — never a client-side sum of the pages we happened
   to fetch (SPEC §9.3).
-* **Caps are reported, never silent** (G1). Each windowed work-package list stops
-  at :data:`WORK_PACKAGE_CAP` rows and the time-entry scan at
-  :data:`TIME_ENTRY_CAP`; a cap hit leaves an in-band note *and* the bucket still
-  reports the true server ``total``, so a capped row list never becomes a wrong
-  number. Progress notifications are emitted between pages (SPEC §5.9).
+* **Sections carry their own state** (G1, 0.4.0). Callers pick ``sections``;
+  an unrequested section costs no request and reports ``not_requested``. A
+  work-package bucket is a *sample* of ``sample_size`` rows plus the server's
+  exact ``total``, so it is ``complete`` only when every row fits, otherwise
+  ``partial`` with a :class:`DrillDown` call that lists the rest. Hours are
+  exact only for a full scan (:data:`TIME_ENTRY_CAP`); an unreadable section
+  is ``unavailable`` with a reason and null numbers, never a zero. Progress
+  notifications are emitted between pages (SPEC §5.9).
 * **Rendering lives in prompts.** This module returns data only; the weekly
   report and standup templates are :mod:`openproject_mcp.prompts`, which call the
   collector coroutines below directly rather than going through the tool wrapper.
@@ -44,7 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -77,34 +80,47 @@ if TYPE_CHECKING:
     from openproject_mcp.tools._shared import ToolContext
 
 __all__ = [
+    "REPORT_SECTIONS",
     "ActivityHours",
     "BacklogItem",
     "BacklogSweep",
+    "DrillDown",
     "Impediment",
     "InboxItem",
     "InboxReasonGroup",
     "InboxSummary",
+    "OpenSummary",
     "ProjectReportData",
     "ReportWorkPackage",
+    "Roster",
     "RosterMember",
+    "SectionName",
+    "SectionState",
     "StatusCount",
     "TimeSummary",
     "UserHours",
+    "WorkPackageSample",
     "collect_backlog_sweep",
     "collect_due_on",
     "collect_impediments",
     "collect_report_data",
     "collect_unread_notifications",
+    "fit_result_budget",
     "register",
 ]
 
 #: Rows pulled per upstream request while paging an aggregation.
 PAGE_SIZE = 100
 
-#: Hard cap on rows fetched for one windowed work-package list (SPEC §6.14).
-#: The bucket's ``total`` still comes from the server, so a cap costs rows, not
-#: counts.
+#: Hard cap on rows fetched for one windowed work-package list (SPEC §6.14):
+#: the largest sample the prompts ask for. The bucket's ``total`` still comes
+#: from the server, so a cap costs rows, not counts.
 WORK_PACKAGE_CAP = 3000
+
+#: Rows per work-package bucket that ``get_project_report_data`` returns by
+#: default, and the most a caller may ask for.
+DEFAULT_SAMPLE_SIZE = 20
+MAX_SAMPLE_SIZE = 100
 
 #: Hard cap on time entries scanned for one window (SPEC §6.14).
 TIME_ENTRY_CAP = 5000
@@ -123,9 +139,31 @@ INBOX_CAP = 200
 #: one costs a request, so the sweep is deliberately shallow and says so.
 IMPEDIMENT_PROBE_CAP = 25
 
-#: ``anthropic/maxResultSizeChars`` (SPEC §5.4). A quarter's worth of a busy
-#: project legitimately fills thousands of compact rows.
-MAX_RESULT_CHARS = 300_000
+#: ``anthropic/maxResultSizeChars`` (SPEC §5.4). Samples bound the result: at
+#: ``MAX_SAMPLE_SIZE`` three buckets and the roster stay well inside this.
+MAX_RESULT_CHARS = 150_000
+
+#: What :func:`fit_result_budget` trims the tool's JSON to, below the client cap
+#: so the text fallback and envelope still fit.
+RESULT_BUDGET_CHARS = 120_000
+
+SectionName = Literal["created", "updated", "closed_updated", "open", "time", "roster"]
+SectionState = Literal["complete", "partial", "unavailable", "not_requested"]
+
+#: Every report section, in result order.
+REPORT_SECTIONS: tuple[SectionName, ...] = (
+    "created",
+    "updated",
+    "closed_updated",
+    "open",
+    "time",
+    "roster",
+)
+
+#: Deterministic orders with a unique tie-breaker, so a drill-down page
+#: continues exactly where the sample stopped.
+CREATED_ORDER = [["created_at", "asc"], ["id", "asc"]]
+UPDATED_ORDER = [["updated_at", "desc"], ["id", "desc"]]
 
 #: Relation types that make a work package an impediment, in either direction.
 BLOCK_RELATION_TYPES: frozenset[str] = frozenset({"blocks", "blocked"})
@@ -197,21 +235,85 @@ class UserHours(BaseModel):
     entries: int = Field(default=0, description="Number of time entries behind the total.")
 
 
+class DrillDown(BaseModel):
+    """A ready-to-send tool call that lists more of a section."""
+
+    tool: str = Field(description="Tool to call, e.g. 'list_work_packages'.")
+    arguments: dict[str, Any] = Field(
+        description="Its arguments: the section's filters, both window bounds, the same order "
+        "and the page after the sample. Later pages read current data and can shift."
+    )
+
+
+class WorkPackageSample(BaseModel):
+    """One work-package bucket: the server's exact count plus a bounded sample of rows."""
+
+    state: SectionState = Field(
+        description="'complete' when items holds every matching row; 'partial' when items is a "
+        "sample (total is still exact); 'not_requested' when sections left it out."
+    )
+    total: int | None = Field(
+        default=None,
+        description="Server count of every matching work package; null when not requested.",
+    )
+    items: list[ReportWorkPackage] = Field(
+        default_factory=list[ReportWorkPackage],
+        description="The sample, in the order `more` continues. Anything derived from it "
+        "(type breakdowns, done/in-progress splits) is sampled too when state is 'partial'.",
+    )
+    truncated: bool = Field(default=False, description="True when items is fewer than total.")
+    more: DrillDown | None = Field(
+        default=None, description="Call that lists the rows after the sample; null if none."
+    )
+    reason: str | None = Field(default=None, description="Why the section is not complete.")
+
+
+class OpenSummary(BaseModel):
+    """The open set right now, counted server-side."""
+
+    state: SectionState = Field(
+        description="'complete' with per-status counts; 'partial' when the instance returned a "
+        "total but no groupBy buckets; 'not_requested' when sections left it out."
+    )
+    total: int | None = Field(
+        default=None, description="Open work packages in the project now; null if not read."
+    )
+    by_status: list[StatusCount] = Field(
+        default_factory=list[StatusCount],
+        description="Server-side groupBy=status counts over the whole open set. Never re-add "
+        "these from rows.",
+    )
+    reason: str | None = Field(default=None, description="Why the section is not complete.")
+
+
 class TimeSummary(BaseModel):
     """Everything booked against the project inside the window."""
 
-    total_hours: float = Field(default=0.0, description="Sum of every scanned entry, in hours.")
+    state: SectionState = Field(
+        description="'complete' when every entry was summed; 'partial' when the scan hit its cap "
+        "(hours cover part of the window); 'unavailable' when the ledger could not be read; "
+        "'not_requested'."
+    )
+    total_hours: float | None = Field(
+        default=None,
+        description="Sum of the scanned entries, in hours. Null when unavailable or not "
+        "requested: that is unknown, not zero.",
+    )
     entry_count: int = Field(
         default=0, description="Time entries the totals cover (see truncated)."
     )
-    total_entries: int = Field(
-        default=0, description="Time entries the server reported for the window."
+    total_entries: int | None = Field(
+        default=None, description="Time entries the server reported for the window."
     )
     truncated: bool = Field(
         default=False,
         description="True when the scan hit the internal cap, so the totals cover only part of "
         "the window. Narrow the range rather than quoting the number.",
     )
+    more: DrillDown | None = Field(
+        default=None, description="Call that pages the entries when the scan was partial."
+    )
+    reason: str | None = Field(default=None, description="Why the section is not complete.")
     by_activity: list[ActivityHours] = Field(
         default_factory=list[ActivityHours],
         description="Per-activity totals, highest first; always a list.",
@@ -233,36 +335,43 @@ class RosterMember(BaseModel):
     )
 
 
+class Roster(BaseModel):
+    """The project's membership roster."""
+
+    state: SectionState = Field(
+        description="'complete', 'partial' (members is a sample), 'unavailable' or 'not_requested'."
+    )
+    total: int | None = Field(
+        default=None, description="Memberships the server reported; null when not read."
+    )
+    members: list[RosterMember] = Field(
+        default_factory=list[RosterMember],
+        description="Who may act in the project and with which roles.",
+    )
+    reason: str | None = Field(default=None, description="Why the section is not complete.")
+
+
 class ProjectReportData(BaseModel):
     """The whole report window as structured data."""
 
     project: Ref | None = Field(default=None, description="The project the report covers.")
     from_date: str = Field(description="Window start, ISO YYYY-MM-DD, inclusive.")
     to_date: str = Field(description="Window end, ISO YYYY-MM-DD, inclusive.")
-    created: TruncatedList[ReportWorkPackage] = Field(
+    sample_size: int = Field(description="Rows per work-package bucket this call asked for.")
+    created: WorkPackageSample = Field(
         description="Work packages created inside the window (createdAt range filter)."
     )
-    updated: TruncatedList[ReportWorkPackage] = Field(
+    updated: WorkPackageSample = Field(
         description="Work packages changed inside the window (updatedAt range filter). Includes "
         "the ones that were closed."
     )
-    closed_updated: TruncatedList[ReportWorkPackage] = Field(
+    closed_updated: WorkPackageSample = Field(
         description="Work packages currently closed and updated inside the window. "
         "This is not a completion-date filter; old closed tickets can be edited later."
     )
-    open_total: int = Field(
-        default=0, description="Open work packages in the project right now, server-reported."
-    )
-    open_by_status: list[StatusCount] = Field(
-        default_factory=list[StatusCount],
-        description="Server-side groupBy=status counts over the whole open set, independent of "
-        "paging. Never re-add these from rows.",
-    )
+    open: OpenSummary = Field(description="The open set as it is now, not during the window.")
     time: TimeSummary = Field(description="Time logged against the project inside the window.")
-    roster: list[RosterMember] = Field(
-        default_factory=list[RosterMember],
-        description="Project membership roster: who may act in the project and with which roles.",
-    )
+    roster: Roster = Field(description="Project membership roster.")
     notes: list[str] = Field(
         default_factory=list[str],
         description="In-band markers: which lists were capped, which sources degraded. "
@@ -447,13 +556,14 @@ async def _collect_pages(
     elements: list[dict[str, Any]] = []
     total = 0
     page = 1
+    page_size = min(cap, PAGE_SIZE)
     while True:
         payload = await ctx.client.get_json(
             path,
             params=query_params(
                 filters=filters or None,
                 page=page,
-                page_size=PAGE_SIZE,
+                page_size=page_size,
                 sort_by=sort_by,
                 sort_keys=WORK_PACKAGE_SORT_KEYS if sort_by else None,
             ),
@@ -472,17 +582,6 @@ async def _collect_pages(
     return _Paged(elements=trimmed, total=max(total, len(trimmed)), capped=total > len(trimmed))
 
 
-def _cap_note(label: str, paged: _Paged, cap: int) -> str | None:
-    """The in-band marker for a capped list (G1), or ``None`` when complete."""
-    if not paged.capped:
-        return None
-    return (
-        f"{label}: only the first {len(paged.elements)} of {paged.total} rows were read "
-        f"(internal cap {cap}); the counts are still the server's own totals, but narrow the "
-        "date range for a complete row list"
-    )
-
-
 # --- row projections ------------------------------------------------------
 
 
@@ -498,6 +597,27 @@ def _report_row(element: Mapping[str, Any], index: _StatusIndex) -> ReportWorkPa
         due_date=element.get("dueDate"),
         created_at=element.get("createdAt"),
         updated_at=element.get("updatedAt"),
+    )
+
+
+def _sample(
+    paged: _Paged, index: _StatusIndex, *, sample_size: int, more: dict[str, Any]
+) -> WorkPackageSample:
+    """A bucket from one capped read: exact total, sampled rows, and the next page."""
+    rows = [_report_row(element, index) for element in paged.elements]
+    if not paged.capped:
+        return WorkPackageSample(state="complete", total=paged.total, items=rows)
+    page_size = min(sample_size, PAGE_SIZE)
+    return WorkPackageSample(
+        state="partial",
+        total=paged.total,
+        items=rows,
+        truncated=True,
+        more=DrillDown(
+            tool="list_work_packages",
+            arguments={**more, "page": len(rows) // page_size + 1, "page_size": page_size},
+        ),
+        reason=f"sample of {len(rows)} of {paged.total}; `more` lists the rest",
     )
 
 
@@ -593,63 +713,177 @@ async def collect_report_data(
     project_id: int | str,
     from_date: str,
     to_date: str,
+    sections: Iterable[SectionName] | None = None,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
 ) -> ProjectReportData:
     """Aggregate one project's report window (SPEC §6.14).
 
     This is the plain coroutine behind ``get_project_report_data``; the report
-    prompts call it directly so a rendered weekly report costs exactly the same
-    upstream requests as the tool.
+    prompts call it directly so a rendered report costs the same upstream
+    requests as the equivalent tool call.
 
     Args:
         ctx: the caller's tool context (client, cache, settings).
         project_id: numeric project id or URL identifier.
         from_date: window start, ISO ``YYYY-MM-DD``, inclusive.
         to_date: window end, ISO ``YYYY-MM-DD``, inclusive.
+        sections: the sections to read; ``None`` reads all of them. The others
+            cost no request and report ``not_requested``.
+        sample_size: rows per work-package bucket (and roster members); at most
+            :data:`MAX_SAMPLE_SIZE`, or a multiple of it up to
+            :data:`WORK_PACKAGE_CAP`, so the drill-down page lines up.
 
     Returns:
-        The populated :class:`ProjectReportData`, with every cap and degradation
-        recorded in ``notes``.
+        The populated :class:`ProjectReportData`; every section that is not
+        complete says why, and ``notes`` repeats it.
 
     Raises:
         InputValidationError: the dates are not ISO or the window is inverted.
-        OpenProjectError: the project could not be read; per-section failures
-            degrade into notes instead (G5).
+        OpenProjectError: the project or a work-package read failed; time and
+            roster failures degrade into ``unavailable`` instead (G5).
     """
     start, end = _require_window(from_date, to_date)
+    if not (1 <= sample_size <= MAX_SAMPLE_SIZE or sample_size % PAGE_SIZE == 0):
+        raise ValueError(f"sample_size {sample_size} must be <= {MAX_SAMPLE_SIZE} or a multiple")
+    wanted = frozenset(REPORT_SECTIONS if sections is None else sections)
+    sample_size = min(sample_size, WORK_PACKAGE_CAP)
 
     project = await ctx.client.get_json(f"projects/{project_id}")
     numeric_id = hal.self_id(project)
     project_ref = Ref(id=numeric_id, name=project.get("name"))
-    index = await _status_index(ctx)
+    needs_statuses = bool(wanted & {"created", "updated", "closed_updated", "open"})
+    index = await _status_index(ctx) if needs_statuses else _StatusIndex()
 
-    notes: list[str] = [STATUS_FLAG_NOTE]
+    notes: list[str] = [STATUS_FLAG_NOTE] if needs_statuses else []
     wp_path = f"projects/{project_id}/work_packages"
 
-    created = await _collect_pages(
-        ctx,
-        wp_path,
-        [status_filter("all"), date_range_filter("createdAt", after=start, before=end)],
-        cap=WORK_PACKAGE_CAP,
-        label="work packages created in the window",
-        sort_by=[["created_at", "asc"]],
+    async def bucket(
+        name: SectionName, scope: str, field_name: str, order: list[list[str]], label: str
+    ) -> WorkPackageSample:
+        if name not in wanted:
+            return WorkPackageSample(state="not_requested")
+        paged = await _collect_pages(
+            ctx,
+            wp_path,
+            [status_filter(scope), date_range_filter(field_name, after=start, before=end)],
+            cap=sample_size,
+            label=label,
+            sort_by=order,
+        )
+        prefix = "created" if field_name == "createdAt" else "updated"
+        more = {
+            "project": project_id,
+            "status_scope": scope,
+            f"{prefix}_since": start,
+            f"{prefix}_until": end,
+            "sort_by": order,
+        }
+        return _sample(paged, index, sample_size=sample_size, more=more)
+
+    created = await bucket(
+        "created", "all", "createdAt", CREATED_ORDER, "work packages created in the window"
     )
-    updated = await _collect_pages(
-        ctx,
-        wp_path,
-        [status_filter("all"), date_range_filter("updatedAt", after=start, before=end)],
-        cap=WORK_PACKAGE_CAP,
-        label="work packages changed in the window",
-        sort_by=[["updated_at", "desc"]],
+    updated = await bucket(
+        "updated", "all", "updatedAt", UPDATED_ORDER, "work packages changed in the window"
     )
-    closed = await _collect_pages(
-        ctx,
-        wp_path,
-        [status_filter("closed"), date_range_filter("updatedAt", after=start, before=end)],
-        cap=WORK_PACKAGE_CAP,
-        label="currently closed work packages updated in the window",
-        sort_by=[["updated_at", "desc"]],
+    closed = await bucket(
+        "closed_updated",
+        "closed",
+        "updatedAt",
+        UPDATED_ORDER,
+        "currently closed work packages updated in the window",
     )
 
+    open_summary = (
+        await _collect_open(ctx, wp_path, index) if "open" in wanted else _not_requested_open()
+    )
+    time_summary = (
+        await _collect_time(ctx, numeric_id, start, end)
+        if "time" in wanted
+        else TimeSummary(state="not_requested")
+    )
+    roster = (
+        await _collect_roster(ctx, numeric_id, cap=sample_size)
+        if "roster" in wanted
+        else Roster(state="not_requested")
+    )
+
+    data = ProjectReportData(
+        project=project_ref,
+        from_date=start,
+        to_date=end,
+        sample_size=sample_size,
+        created=created,
+        updated=updated,
+        closed_updated=closed,
+        open=open_summary,
+        time=time_summary,
+        roster=roster,
+        notes=notes,
+    )
+    data.notes.extend(_section_notes(data))
+    return data
+
+
+def _sections(data: ProjectReportData) -> list[tuple[str, Any]]:
+    return [(name, getattr(data, name)) for name in REPORT_SECTIONS]
+
+
+def _section_notes(data: ProjectReportData) -> list[str]:
+    """One note per section that is not complete, so ``notes`` alone tells the story."""
+    return [
+        f"{name} ({section.state}): {section.reason}"
+        for name, section in _sections(data)
+        if section.state in ("partial", "unavailable") and section.reason
+    ]
+
+
+def fit_result_budget(data: ProjectReportData, budget: int) -> ProjectReportData:
+    """Halve the largest sample until the serialized result fits ``budget`` characters.
+
+    A trimmed bucket stays ``partial`` with its exact ``total``; its drill-down
+    restarts at page 2 with the trimmed size, which the deterministic order
+    keeps aligned with the rows returned.
+    """
+    trimmed = False
+    while len(data.model_dump_json()) > budget:
+        buckets = [data.created, data.updated, data.closed_updated]
+        largest = max(buckets, key=lambda bucket: len(bucket.items))
+        if len(largest.items) >= len(data.roster.members) and len(largest.items) > 1:
+            keep = len(largest.items) // 2
+            largest.items = largest.items[:keep]
+            largest.state = "partial"
+            largest.truncated = True
+            if largest.more is not None:
+                largest.more.arguments.update(page=2, page_size=keep)
+            largest.reason = (
+                f"sample trimmed to {keep} of {largest.total} rows to fit the result budget; "
+                "`more` lists the rest"
+            )
+        elif len(data.roster.members) > 1:
+            keep = len(data.roster.members) // 2
+            data.roster.members = data.roster.members[:keep]
+            data.roster.state = "partial"
+            data.roster.reason = (
+                f"trimmed to {keep} of {data.roster.total} members to fit the result budget; "
+                "list_memberships lists them all"
+            )
+        else:
+            break
+        trimmed = True
+    if trimmed:
+        prefixes = tuple(f"{name} (" for name in REPORT_SECTIONS)
+        data.notes = [note for note in data.notes if not note.startswith(prefixes)]
+        data.notes.extend(_section_notes(data))
+    return data
+
+
+def _not_requested_open() -> OpenSummary:
+    return OpenSummary(state="not_requested")
+
+
+async def _collect_open(ctx: ToolContext, wp_path: str, index: _StatusIndex) -> OpenSummary:
+    """The open total and its status breakdown, from one ``groupBy=status`` row."""
     # One row is enough: groupBy counts are computed server-side over the whole
     # filtered set, so pulling rows here would only cost tokens (SPEC §9.3).
     grouped = await ctx.client.get_json(
@@ -658,69 +892,26 @@ async def collect_report_data(
             filters=[status_filter("open")], page=1, page_size=1, group_by="status"
         ),
     )
-    open_collection = hal.collection(grouped)
-    open_by_status = _status_counts(open_collection.groups, index)
-    if not open_by_status and open_collection.total:
-        notes.append(
-            "this instance returned no groupBy=status buckets for the open set, so only the open "
-            "total is available; list_work_packages(group_by='status') shows the same breakdown"
+    collection = hal.collection(grouped)
+    by_status = _status_counts(collection.groups, index)
+    if not by_status and collection.total:
+        return OpenSummary(
+            state="partial",
+            total=collection.total,
+            reason="this instance returned no groupBy=status buckets for the open set, so only "
+            "the total is known; list_work_packages(group_by='status') shows the breakdown",
         )
-
-    time_summary, time_note = await _collect_time(ctx, numeric_id, start, end)
-    roster, roster_note = await _collect_roster(ctx, numeric_id)
-
-    for note in (
-        _cap_note("created-in-window work packages", created, WORK_PACKAGE_CAP),
-        _cap_note("changed-in-window work packages", updated, WORK_PACKAGE_CAP),
-        _cap_note("closed-in-window work packages", closed, WORK_PACKAGE_CAP),
-        time_note,
-        roster_note,
-    ):
-        if note:
-            notes.append(note)
-
-    window = f"created_since='{start}'"
-    return ProjectReportData(
-        project=project_ref,
-        from_date=start,
-        to_date=end,
-        created=_bucket(
-            created,
-            index,
-            more_via=f"list_work_packages(project={project_id!r}, status_scope='all', {window})",
-        ),
-        updated=_bucket(
-            updated,
-            index,
-            more_via=(
-                f"list_work_packages(project={project_id!r}, status_scope='all', "
-                f"updated_since='{start}')"
-            ),
-        ),
-        closed_updated=_bucket(
-            closed,
-            index,
-            more_via=(
-                f"list_work_packages(project={project_id!r}, status_scope='closed', "
-                f"updated_since='{start}')"
-            ),
-        ),
-        open_total=open_collection.total,
-        open_by_status=open_by_status,
-        time=time_summary,
-        roster=roster,
-        notes=notes,
-    )
+    return OpenSummary(state="complete", total=collection.total, by_status=by_status)
 
 
 async def _collect_time(
     ctx: ToolContext, project_id: int | str | None, start: str, end: str
-) -> tuple[TimeSummary, str | None]:
+) -> TimeSummary:
     """Total, per-activity and per-user hours booked inside the window.
 
     Time and costs is a per-project module and ``view_time_entries`` is its own
-    permission, so an unreadable ledger degrades to an empty summary plus a note
-    (G5) instead of aborting a report whose other seven sections were readable.
+    permission, so an unreadable ledger degrades to ``unavailable`` with null
+    hours (G5) instead of aborting a report whose other sections were readable.
     """
     filters: list[Filter] = [date_range_filter("spentOn", after=start, before=end)]
     if project_id is not None:
@@ -731,9 +922,9 @@ async def _collect_time(
             ctx, "time_entries", filters, cap=TIME_ENTRY_CAP, label="time entries in the window"
         )
     except PermissionDeniedError as exc:
-        return TimeSummary(), f"time entries unavailable (no permission): {exc.message}"
+        return TimeSummary(state="unavailable", reason=f"no permission: {exc.message}")
     except NotFoundError as exc:
-        return TimeSummary(), f"time entries unavailable (module absent): {exc.message}"
+        return TimeSummary(state="unavailable", reason=f"module absent: {exc.message}")
 
     total_hours = 0.0
     by_activity: dict[tuple[int | str | None, str | None], list[float]] = {}
@@ -748,7 +939,9 @@ async def _collect_time(
         ).append(hours)
         by_user.setdefault((user.id, user.name) if user else (None, None), []).append(hours)
 
-    summary = TimeSummary(
+    partial = paged.capped
+    return TimeSummary(
+        state="partial" if partial else "complete",
         total_hours=round(total_hours, 2),
         entry_count=len(paged.elements),
         total_entries=paged.total,
@@ -777,23 +970,39 @@ async def _collect_time(
             key=lambda item: item.hours,
             reverse=True,
         ),
+        more=(
+            DrillDown(
+                tool="list_time_entries",
+                arguments={
+                    "project_id": project_id,
+                    "from_date": start,
+                    "to_date": end,
+                    "sum_hours": True,
+                },
+            )
+            if partial
+            else None
+        ),
+        reason=(
+            f"hours cover the first {len(paged.elements)} of {paged.total} entries (internal "
+            f"cap {TIME_ENTRY_CAP}); narrow the window for an exact total"
+            if partial
+            else None
+        ),
     )
-    return summary, _cap_note("time entries", paged, TIME_ENTRY_CAP)
 
 
-async def _collect_roster(
-    ctx: ToolContext, project_id: int | str | None
-) -> tuple[list[RosterMember], str | None]:
-    """The project's membership roster; a permission failure degrades to a note (G5)."""
+async def _collect_roster(ctx: ToolContext, project_id: int | str | None, *, cap: int) -> Roster:
+    """The project's membership roster; a permission failure degrades to ``unavailable`` (G5)."""
     if project_id is None:
-        return [], "membership roster skipped: the project reported no numeric id"
+        return Roster(state="unavailable", reason="the project reported no numeric id")
     filters = [make_filter("project", Op.EQ, [project_id])]
     try:
         paged = await _collect_pages(
-            ctx, "memberships", filters, cap=ROSTER_CAP, label="project memberships"
+            ctx, "memberships", filters, cap=min(cap, ROSTER_CAP), label="project memberships"
         )
     except (PermissionDeniedError, NotFoundError) as exc:
-        return [], f"membership roster unavailable: {exc.message}"
+        return Roster(state="unavailable", reason=exc.message)
 
     roster = [
         RosterMember(
@@ -802,7 +1011,15 @@ async def _collect_roster(
         )
         for element in paged.elements
     ]
-    return roster, _cap_note("membership roster", paged, ROSTER_CAP)
+    if paged.capped:
+        return Roster(
+            state="partial",
+            total=paged.total,
+            members=roster,
+            reason=f"sample of {len(roster)} of {paged.total} members; list_memberships "
+            f"(project_id={project_id!r}) lists them all",
+        )
+    return Roster(state="complete", total=paged.total, members=roster)
 
 
 def _impediment_from(row: ReportWorkPackage, relation: RelationRow) -> Impediment | None:
@@ -1042,37 +1259,56 @@ def register(mcp: FastMCP) -> None:
             str,
             Field(description="Last day of the report window, ISO YYYY-MM-DD, inclusive."),
         ],
+        sections: Annotated[
+            list[SectionName] | None,
+            Field(
+                description="Sections to read: created, updated, closed_updated, open, time, "
+                "roster. Omit for all; the rest cost nothing and report 'not_requested'."
+            ),
+        ] = None,
+        sample_size: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=MAX_SAMPLE_SIZE,
+                description="Rows per work-package bucket (and roster members). Totals stay "
+                "exact whatever the sample.",
+            ),
+        ] = DEFAULT_SAMPLE_SIZE,
     ) -> ProjectReportData:
         """Aggregate everything a status report needs about one project and one date window.
 
         Use it for weekly reports, sprint reviews, standups and "what happened in June" —
-        one call replaces a dozen filtered listings. It returns, for the window: `created`,
-        `updated` and `closed_updated` work-package buckets (each `{items, total, truncated,
-        more_via}` with compact rows), `open_total` plus `open_by_status` counts computed
-        server-side over the whole open set, a `time` summary (total hours with per-activity
-        and per-user breakdowns) and the project's membership `roster`.
+        one call replaces a dozen filtered listings. Sections: `created`, `updated` and
+        `closed_updated` work-package buckets, `open` (total plus `by_status` counts computed
+        server-side over the whole open set), `time` (hours with per-activity and per-user
+        breakdowns) and the membership `roster`. Ask only for the `sections` you need.
 
-        Done/in-progress classification is safe here: every row carries `is_closed`, read
-        from the status's own `isClosed` flag on this instance, so it works on translated
-        and renamed workflows where matching status names would not. `closed_updated` means
-        "currently closed and updated inside the window", not completed in that window.
-        Completion dates are not established by these reads.
+        Every section has a `state`: 'complete', 'partial', 'unavailable' or
+        'not_requested'. A bucket's `total` is the server's exact count, but `items` is a
+        sample of `sample_size` rows: when it is 'partial', `more` is a ready
+        `list_work_packages` call (same filters, both window bounds, same order, next page)
+        for the rest. Quote `total`, never the row count, and treat anything derived from
+        sampled rows as sampled. Rows carry `is_closed` from the status's own `isClosed`
+        flag, so classification works on translated and renamed workflows.
 
-        Pitfalls. Counts and row lists are different things: `total` is always the server's
-        number, while `items` stops at an internal cap and then sets `truncated` and adds a
-        `notes` entry — quote the count, not the row count. `open_by_status` covers the open
-        set as it is *now*, not as it was during the window. `updated` includes the rows in
-        `closed_updated`. Time visibility is permission-bound, so a `total_hours` of 0 can mean "not
-        allowed to see" rather than "nobody logged time" — an unreadable time ledger and an
-        unreadable `roster` each degrade into a `notes` entry instead of failing the call.
-        Read `notes` before calling any number complete.
+        Pitfalls: `closed_updated` means "currently closed and updated inside the window",
+        not completed in it. `open` is the open set *now*, not during the window. `updated`
+        includes the rows in `closed_updated`. An unreadable time ledger or roster is
+        'unavailable' with null numbers: that is unknown, not zero. Read `notes` before
+        calling any number complete.
 
         Cross-references: rendered reports are the `weekly_report` and `daily_standup`
-        prompts, which run this same aggregation server-side; drill into a bucket with
-        `list_work_packages`, into hours with `list_time_entries`, and into one row with
-        `get_work_package`.
+        prompts, which run this same aggregation server-side; drill into hours with
+        `list_time_entries` and into one row with `get_work_package`.
         """
         ctx = _shared.get_tool_context()
-        return await collect_report_data(
-            ctx, project_id=project_id, from_date=from_date, to_date=to_date
+        data = await collect_report_data(
+            ctx,
+            project_id=project_id,
+            from_date=from_date,
+            to_date=to_date,
+            sections=sections,
+            sample_size=sample_size,
         )
+        return fit_result_budget(data, RESULT_BUDGET_CHARS)

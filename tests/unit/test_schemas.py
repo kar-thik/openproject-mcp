@@ -19,11 +19,13 @@ from openproject_mcp.server import build_server
 from tests.conftest import TEST_URL
 
 #: Compact JSON bytes of every output schema in ``tools/list`` (full profile, admin on).
-#: 0.3.4 shipped 295,527; compaction brought it to 100,846.
-OUTPUT_SCHEMA_BUDGET = 101_000
+#: 0.3.4 shipped 295,527; compaction brought it to 100,846, and the 0.4.0 report section
+#: states (states, drill-downs, roster/open objects) added 1,702.
+OUTPUT_SCHEMA_BUDGET = 103_000
 
-#: Compact JSON bytes of the whole ``tools/list`` (full profile, admin on). 0.3.4: 520,725.
-TOOLS_LIST_BUDGET = 327_000
+#: Compact JSON bytes of the whole ``tools/list`` (full profile, admin on). 0.3.4: 520,725;
+#: 0.4.0: 328,166.
+TOOLS_LIST_BUDGET = 329_000
 
 
 def _size(value: Any) -> int:

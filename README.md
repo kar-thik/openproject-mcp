@@ -526,7 +526,7 @@ The six recurring-meeting tools also carry the `meetings_recurring` tag, so
 
 | Tool | Kind | What it does |
 |---|---|---|
-| `get_project_report_data` | Read | Aggregate everything a status report needs about one project and one date window. |
+| `get_project_report_data` | Read | Aggregate a status report for one project and date window: exact counts, sampled rows with a drill-down call, and a state per section. |
 
 ## Prompts and resources
 
