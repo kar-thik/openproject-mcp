@@ -117,9 +117,15 @@ def test_every_documented_env_var_is_read(monkeypatch: pytest.MonkeyPatch) -> No
     assert settings.max_retries == 5
 
 
-def test_profile_defaults_to_full_and_hides_nothing() -> None:
+def test_profile_defaults_to_core(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENPROJECT_MCP_PROFILE")
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
-    assert settings.profile == "full"
+    assert settings.profile == "core"
+    assert settings.profile_hidden_groups == CORE_PROFILE_HIDDEN_GROUPS
+
+
+def test_full_profile_hides_nothing() -> None:
+    settings = Settings(_env_file=None, profile="full")  # type: ignore[call-arg]
     assert settings.profile_hidden_groups == frozenset()
 
 

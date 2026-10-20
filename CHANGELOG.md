@@ -12,6 +12,11 @@ PATCH releases are fixes and strictly additive changes only.
 
 ### Changed
 
+- **Breaking:** `OPENPROJECT_MCP_PROFILE` defaults to `core`. Meetings, news,
+  documents, wiki, budgets, git activity and reporting start hidden (62 of 91
+  tools listed, `tools/list` 223 KB instead of 326 KB); the model brings a
+  group back with `enable_tool_group`. Set `OPENPROJECT_MCP_PROFILE=full` for
+  the previous behavior, or if your client ignores `tools/list_changed`.
 - **Breaking (HTTP):** over `--transport http` the file tools fail closed.
   Without `OPENPROJECT_MCP_UPLOAD_ROOT`, `upload_attachment` is hidden and
   `create_work_package(attachment_paths)` is refused; without

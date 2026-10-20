@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     read_only: bool = Field(default=False, validation_alias="OPENPROJECT_MCP_READ_ONLY")
     admin_tools: bool = Field(default=False, validation_alias="OPENPROJECT_MCP_ADMIN_TOOLS")
     disable: str = Field(default="", validation_alias="OPENPROJECT_MCP_DISABLE")
-    profile: Profile = Field(default="full", validation_alias="OPENPROJECT_MCP_PROFILE")
+    profile: Profile = Field(default="core", validation_alias="OPENPROJECT_MCP_PROFILE")
     insecure: bool = Field(default=False, validation_alias="OPENPROJECT_MCP_INSECURE")
 
     # --- files ----------------------------------------------------------
