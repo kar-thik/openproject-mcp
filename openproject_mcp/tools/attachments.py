@@ -64,6 +64,7 @@ from openproject_mcp.client.errors import (
     ValidationFailedError,
 )
 from openproject_mcp.config import Settings
+from openproject_mcp.file_access import DownloadFile, open_download_directory
 from openproject_mcp.projections import ListEnvelope, Ref
 from openproject_mcp.tools._shared import (
     DESTRUCTIVE,
@@ -242,23 +243,8 @@ def _sanitize_file_name(raw: str | None, *, fallback: str) -> str:
     return candidate
 
 
-def _unique_path(directory: Path, file_name: str) -> Path:
-    """``report.pdf`` → ``report (2).pdf`` when the name is already taken."""
-    target = directory / file_name
-    if not target.exists():
-        return target
-    stem = target.stem
-    suffix = target.suffix
-    counter = 2
-    while True:
-        candidate = directory / f"{stem} ({counter}){suffix}"
-        if not candidate.exists():
-            return candidate
-        counter += 1
-
-
-def _resolve_download_dir(save_dir: str | None, settings: Settings) -> Path:
-    """Pick and create the target directory (SPEC §7.1 step 3)."""
+def _download_dir(save_dir: str | None, settings: Settings) -> Path:
+    """Pick the target directory (SPEC §7.1 step 3); opening it is file_access's job."""
     if save_dir:
         directory = Path(save_dir).expanduser()
         if not directory.is_absolute():
@@ -270,24 +256,10 @@ def _resolve_download_dir(save_dir: str | None, settings: Settings) -> Path:
                     "download directory."
                 ),
             )
-    elif settings.download_dir is not None:
-        directory = Path(settings.download_dir).expanduser()
-    else:
-        directory = Path.cwd() / DEFAULT_DOWNLOAD_DIRNAME
-
-    try:
-        directory.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise InputValidationError(
-            f"Could not create the download directory {directory}: {exc.strerror}.",
-            hint="Pass a save_dir the server process may write to.",
-        ) from exc
-    if not directory.is_dir():
-        raise InputValidationError(
-            f"The download target {directory} is not a directory.",
-            hint="Pass a save_dir that is a directory, not a file.",
-        )
-    return directory
+        return directory
+    if settings.download_dir is not None:
+        return Path(settings.download_dir).expanduser()
+    return Path.cwd() / DEFAULT_DOWNLOAD_DIRNAME
 
 
 def _pending_scan_error(
@@ -733,8 +705,12 @@ def register(mcp: FastMCP) -> None:
                 extra={"attachment_id": attachment_id, "size_bytes": declared_size},
             )
 
-        directory = _resolve_download_dir(save_dir, ctx.settings)
-        target = _unique_path(directory, file_name)
+        directory = open_download_directory(_download_dir(save_dir, ctx.settings), None)
+        target: DownloadFile | None = None
+
+        def discard_partial() -> None:
+            if target is not None:
+                target.discard()
 
         digest = hashlib.sha256()
         written = 0
@@ -744,31 +720,32 @@ def register(mcp: FastMCP) -> None:
                 deadline,
                 ctx.client.stream("GET", f"attachments/{attachment_id}/content") as response,
             ):
-                with target.open("wb") as handle:
-                    async for chunk in response.aiter_bytes(DOWNLOAD_CHUNK_BYTES):
-                        written += len(chunk)
-                        if written > cap:
-                            raise AttachmentTooLargeError(
-                                f"Attachment {attachment_id} ({file_name}) exceeded the {cap} "
-                                "byte download limit while streaming.",
-                                hint=(
-                                    "The transfer was aborted and the partial file removed. The "
-                                    "attachment's reported size was smaller than what it actually "
-                                    "sent; raise OPENPROJECT_MCP_MAX_DOWNLOAD_MB to fetch it."
-                                ),
-                            )
-                        handle.write(chunk)
-                        digest.update(chunk)
-                        await report_progress(
-                            written,
-                            declared_size if declared_size else None,
-                            f"{file_name}: {written} bytes",
+                target = directory.create(file_name)
+                async for chunk in response.aiter_bytes(DOWNLOAD_CHUNK_BYTES):
+                    written += len(chunk)
+                    if written > cap:
+                        raise AttachmentTooLargeError(
+                            f"Attachment {attachment_id} ({file_name}) exceeded the {cap} "
+                            "byte download limit while streaming.",
+                            hint=(
+                                "The transfer was aborted and the partial file removed. The "
+                                "attachment's reported size was smaller than what it actually "
+                                "sent; raise OPENPROJECT_MCP_MAX_DOWNLOAD_MB to fetch it."
+                            ),
                         )
+                    target.write(chunk)
+                    digest.update(chunk)
+                    await report_progress(
+                        written,
+                        declared_size if declared_size else None,
+                        f"{file_name}: {written} bytes",
+                    )
+                target.close()
         except AuthenticationError as exc:
-            target.unlink(missing_ok=True)
+            discard_partial()
             raise _pending_scan_error(attachment_id, file_name, status, exc) from exc
         except TimeoutError as exc:
-            target.unlink(missing_ok=True)
+            discard_partial()
             if not deadline.expired():
                 raise
             raise NetworkError(
@@ -780,13 +757,16 @@ def register(mcp: FastMCP) -> None:
                 ),
             ) from exc
         except BaseException:
-            target.unlink(missing_ok=True)
+            discard_partial()
             raise
+        finally:
+            directory.close()
+        saved = target.path
 
         notes: list[str] = []
-        if target.name != file_name:
+        if saved.name != file_name:
             notes.append(
-                f"{file_name} already existed in {directory}; saved as {target.name} instead."
+                f"{file_name} already existed in {directory.path}; saved as {saved.name} instead."
             )
         inline_image = None
         if return_image:
@@ -798,16 +778,16 @@ def register(mcp: FastMCP) -> None:
             elif written > IMAGE_INLINE_MAX_BYTES:
                 notes.append(
                     f"return_image was ignored: {written} bytes exceeds the "
-                    f"{IMAGE_INLINE_MAX_BYTES} byte inline limit. The file is saved at {target}."
+                    f"{IMAGE_INLINE_MAX_BYTES} byte inline limit. The file is saved at {saved}."
                 )
             else:
-                inline_image = Image(data=target.read_bytes()).to_image_content(
+                inline_image = Image(data=saved.read_bytes()).to_image_content(
                     mime_type=content_type
                 )
 
         result = DownloadResult(
-            path=str(target),
-            file_name=target.name,
+            path=str(saved),
+            file_name=saved.name,
             size_bytes=written,
             content_type=content_type,
             sha256=digest.hexdigest(),

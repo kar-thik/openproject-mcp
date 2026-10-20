@@ -215,6 +215,40 @@ async def test_download_streams_to_disk_and_reports_sha256(
     assert updates[-1][1] == len(payload)
 
 
+async def test_concurrent_downloads_of_the_same_name_never_share_a_file(
+    mcp_server: Any, mock_api: respx.MockRouter, tmp_path: Path
+) -> None:
+    # Both transfers used to pick 'spec.pdf' before either opened it, so the
+    # second truncated the first and a failure could delete the other's file.
+    other = {**ATTACHMENT, "id": 99, "fileSize": 11}
+    mock_api.get("attachments/42").mock(return_value=httpx.Response(200, json=ATTACHMENT))
+    mock_api.get("attachments/99").mock(return_value=httpx.Response(200, json=other))
+
+    def slow_response(content: bytes) -> Any:
+        async def respond(request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(0.05)  # like a real network round trip
+            return httpx.Response(200, content=content)
+
+        return respond
+
+    mock_api.get("attachments/42/content").mock(side_effect=slow_response(PDF_BYTES))
+    mock_api.get("attachments/99/content").mock(side_effect=slow_response(b"other bytes"))
+
+    async with Client(mcp_server) as client:
+        results = await asyncio.gather(
+            *(
+                client.call_tool(
+                    "download_attachment", {"attachment_id": ident, "save_dir": str(tmp_path)}
+                )
+                for ident in (42, 99)
+            )
+        )
+
+    saved = {Path(result.structured_content["path"]) for result in results}  # type: ignore[index]
+    assert saved == {tmp_path / "spec.pdf", tmp_path / "spec (2).pdf"}
+    assert sorted(path.read_bytes() for path in saved) == sorted([PDF_BYTES, b"other bytes"])
+
+
 async def test_download_uniquifies_a_colliding_file_name(
     mcp_server: Any, mock_api: respx.MockRouter, tmp_path: Path
 ) -> None:
