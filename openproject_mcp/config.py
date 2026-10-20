@@ -108,6 +108,12 @@ class Settings(BaseSettings):
 
     # --- files ----------------------------------------------------------
     download_dir: Path | None = Field(default=None, validation_alias="OPENPROJECT_MCP_DOWNLOAD_DIR")
+    #: Opt-in confinement for the file tools (SPEC §7.3): when set, uploads read
+    #: and downloads write only beneath these directories.
+    upload_root: Path | None = Field(default=None, validation_alias="OPENPROJECT_MCP_UPLOAD_ROOT")
+    download_root: Path | None = Field(
+        default=None, validation_alias="OPENPROJECT_MCP_DOWNLOAD_ROOT"
+    )
     max_download_mb: int = Field(
         default=100, ge=1, validation_alias="OPENPROJECT_MCP_MAX_DOWNLOAD_MB"
     )
@@ -293,4 +299,44 @@ def check_runtime_config(settings: Settings, transport: TransportName) -> list[s
             "provide at least one non-empty bearer token (or unset it and use "
             "OPENPROJECT_MCP_INSECURE=1, local development only)"
         )
+    for name, root in (
+        ("OPENPROJECT_MCP_UPLOAD_ROOT", settings.upload_root),
+        ("OPENPROJECT_MCP_DOWNLOAD_ROOT", settings.download_root),
+    ):
+        if root is not None and not root.expanduser().is_dir():
+            problems.append(f"{name} must be an existing directory: {root}")
+    if (
+        settings.download_root is not None
+        and settings.download_dir is not None
+        and settings.download_root.expanduser().is_dir()
+        and not settings.download_dir.expanduser()
+        .resolve()
+        .is_relative_to(settings.download_root.expanduser().resolve())
+    ):
+        problems.append(
+            "OPENPROJECT_MCP_DOWNLOAD_DIR must lie inside OPENPROJECT_MCP_DOWNLOAD_ROOT "
+            f"({settings.download_dir} is outside {settings.download_root})"
+        )
     return problems
+
+
+def runtime_warnings(settings: Settings, transport: TransportName) -> list[str]:
+    """Return configuration that runs but deserves a loud warning at startup."""
+    warnings: list[str] = []
+    if transport == "http":
+        unset = [
+            name
+            for name, root in (
+                ("OPENPROJECT_MCP_UPLOAD_ROOT", settings.upload_root),
+                ("OPENPROJECT_MCP_DOWNLOAD_ROOT", settings.download_root),
+            )
+            if root is None
+        ]
+        if unset:
+            warnings.append(
+                f"{' and '.join(unset)} not set: every HTTP client can make "
+                "upload_attachment read, and download_attachment write, any path the server "
+                "process can access. Set them to confine the file tools; a future release "
+                "will refuse to serve file tools over HTTP without them."
+            )
+    return warnings

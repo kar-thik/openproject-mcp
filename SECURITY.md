@@ -42,3 +42,20 @@ key:
   endpoint. The server does not terminate TLS or rate-limit the endpoint:
   keep the localhost bind, or front it with a TLS-terminating reverse proxy
   and use long random tokens.
+- **Shared upstream identity** — bearer tokens authenticate clients to the MCP
+  endpoint, but the server holds one OpenProject credential: every HTTP client
+  acts as that OpenProject user and shares one metadata cache scope. The server
+  does not isolate upstream users from one another; per-user OpenProject
+  authentication is not implemented. Run it only for clients you would trust
+  with that account, and give it a dedicated, least-privileged user.
+- **Local file access** — `upload_attachment`, `create_work_package
+  (attachment_paths)` and `download_attachment` read and write files on the
+  server's machine. `OPENPROJECT_MCP_UPLOAD_ROOT` and
+  `OPENPROJECT_MCP_DOWNLOAD_ROOT` confine them: paths are resolved, symlinks
+  included, and must stay beneath the root, and the final open walks the path
+  with `O_NOFOLLOW` so a symlink swapped in after the check cannot escape it
+  (on platforms without descriptor-relative opens, such as Windows, only the
+  resolved-path check applies). Without the roots, any HTTP client can read or
+  write whatever the server process can; the server warns at startup in that
+  case, and a future release will refuse to serve the file tools over HTTP
+  without them.

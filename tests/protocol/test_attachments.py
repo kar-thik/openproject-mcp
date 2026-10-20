@@ -810,3 +810,87 @@ async def test_uncontainered_upload_flags_a_response_without_an_id(
         await attachments.upload_uncontainered_attachment(tool_context, source)
 
     assert "no attachment id" in excinfo.value.message
+
+
+# --- OPENPROJECT_MCP_UPLOAD_ROOT / _DOWNLOAD_ROOT (SPEC §7.3) ----------------
+
+
+def _rooted(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """An upload root, a download root and a sibling directory outside both."""
+    uploads, downloads, outside = tmp_path / "up", tmp_path / "down", tmp_path / "outside"
+    for directory in (uploads, downloads, outside):
+        directory.mkdir()
+    return uploads, downloads, outside
+
+
+async def _upload(settings: Settings, file_path: str) -> Any:
+    async with Client(build_server(settings)) as client:
+        return await client.call_tool(
+            "upload_attachment",
+            {"container_type": "work_package", "container_id": 1234, "file_path": file_path},
+            raise_on_error=False,
+        )
+
+
+async def test_upload_root_confines_upload_attachment(
+    mock_api: respx.MockRouter, tmp_path: Path
+) -> None:
+    uploads, _, outside = _rooted(tmp_path)
+    settings = _settings(upload_root=uploads)
+    mock_api.get("configuration").mock(return_value=httpx.Response(200, json=CONFIGURATION))
+    route = mock_api.post("work_packages/1234/attachments").mock(
+        return_value=httpx.Response(201, json=ATTACHMENT)
+    )
+    secret = _local_file(outside, "secret.txt", b"do not send")
+    (uploads / "escape.txt").symlink_to(secret)
+    inside = _local_file(uploads, "spec.pdf", PDF_BYTES)
+
+    for refused in (secret, str(uploads / "escape.txt"), str(uploads / ".." / "outside")):
+        error = _error(await _upload(settings, refused))
+        assert error["type"] == "invalid_input"
+    assert not route.called
+
+    result = await _upload(settings, inside)
+    assert not result.is_error
+    assert PDF_BYTES in route.calls.last.request.read()
+
+
+async def test_upload_root_also_confines_create_work_package_uploads(
+    op_client: OpenProjectClient, mock_api: respx.MockRouter, tmp_path: Path
+) -> None:
+    uploads, _, outside = _rooted(tmp_path)
+    context = ToolContext(
+        client=op_client, cache=TTLCache(ttl=300.0), settings=_settings(upload_root=uploads)
+    )
+    route = mock_api.post("attachments").mock(return_value=httpx.Response(201, json=ATTACHMENT))
+
+    with pytest.raises(InputValidationError, match="OPENPROJECT_MCP_UPLOAD_ROOT"):
+        await attachments.upload_uncontainered_attachment(
+            context, _local_file(outside, "secret.txt", b"do not send")
+        )
+    assert not route.called
+
+
+async def test_download_root_confines_save_dir_and_is_the_default(
+    mock_api: respx.MockRouter, tmp_path: Path
+) -> None:
+    _, downloads, outside = _rooted(tmp_path)
+    mock_api.get("attachments/42").mock(return_value=httpx.Response(200, json=ATTACHMENT))
+    content = mock_api.get("attachments/42/content").mock(
+        return_value=httpx.Response(200, content=PDF_BYTES)
+    )
+
+    async with Client(build_server(_settings(download_root=downloads))) as client:
+        refused = await client.call_tool(
+            "download_attachment",
+            {"attachment_id": 42, "save_dir": str(outside)},
+            raise_on_error=False,
+        )
+        assert _error(refused)["type"] == "invalid_input"
+        assert not content.called
+
+        saved = await client.call_tool("download_attachment", {"attachment_id": 42})
+
+    assert saved.structured_content is not None
+    assert saved.structured_content["path"] == str(downloads.resolve() / "spec.pdf")
+    assert list(outside.iterdir()) == []

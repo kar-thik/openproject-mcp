@@ -26,8 +26,9 @@ Non-negotiables for this module:
 * Quarantined attachments produce a structured error, not a download attempt.
 * Sanitize ``fileName`` before touching the filesystem, uniquify collisions, and
   honor ``OPENPROJECT_MCP_MAX_DOWNLOAD_MB``.
-* In HTTP (multi-user) mode these tools switch to resource/blob mode and uploads
-  are refused with an explanatory error — check ``ctx.settings``.
+* Local paths go through :mod:`openproject_mcp.file_access`: downloads are
+  created exclusively, and ``OPENPROJECT_MCP_UPLOAD_ROOT`` /
+  ``OPENPROJECT_MCP_DOWNLOAD_ROOT`` confine every path when set (SPEC §7.3).
 
 :func:`upload_uncontainered_attachment` is exported for
 ``create_work_package(attachment_paths=…)``: files are uploaded uncontainered
@@ -41,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -64,7 +66,11 @@ from openproject_mcp.client.errors import (
     ValidationFailedError,
 )
 from openproject_mcp.config import Settings
-from openproject_mcp.file_access import DownloadFile, open_download_directory
+from openproject_mcp.file_access import (
+    DownloadFile,
+    open_download_directory,
+    open_upload_source,
+)
 from openproject_mcp.projections import ListEnvelope, Ref
 from openproject_mcp.tools._shared import (
     DESTRUCTIVE,
@@ -259,6 +265,8 @@ def _download_dir(save_dir: str | None, settings: Settings) -> Path:
         return directory
     if settings.download_dir is not None:
         return Path(settings.download_dir).expanduser()
+    if settings.download_root is not None:
+        return Path(settings.download_root).expanduser()
     return Path.cwd() / DEFAULT_DOWNLOAD_DIRNAME
 
 
@@ -297,22 +305,8 @@ def _maximum_attachment_bytes(configuration: Mapping[str, Any]) -> int | None:
     return raw
 
 
-def _resolve_upload_file(file_path: str) -> Path:
-    source = Path(file_path).expanduser()
-    if not source.exists():
-        raise InputValidationError(
-            f"No such file: {source}.",
-            hint=(
-                "Pass an absolute path to a file on the machine running this MCP server. "
-                "Nothing was uploaded."
-            ),
-        )
-    if not source.is_file():
-        raise InputValidationError(
-            f"{source} is not a regular file.",
-            hint="Attachments are single files; archive a directory before uploading it.",
-        )
-    return source
+def _expand(root: Path | None) -> Path | None:
+    return None if root is None else root.expanduser()
 
 
 def _allowlist_error(exc: ValidationFailedError, file_name: str) -> ValidationFailedError:
@@ -346,17 +340,20 @@ async def _post_attachment(
     ``maximumAttachmentFileSize`` and a materialized body keeps the request
     replay-free and inspectable.
     """
-    source = _resolve_upload_file(file_path)
-    size = source.stat().st_size
-    limit = _maximum_attachment_bytes(await get_configuration(ctx))
-    if limit is not None and size > limit:
-        raise AttachmentTooLargeError(
-            f"{source.name} is {size} bytes; this instance accepts at most {limit} bytes.",
-            hint=(
-                "Nothing was uploaded. Compress or split the file, or ask an administrator to "
-                "raise the maximum attachment size. get_instance_info reports the current limit."
-            ),
-        )
+    source, handle = open_upload_source(file_path, _expand(ctx.settings.upload_root))
+    with handle:
+        size = os.fstat(handle.fileno()).st_size
+        limit = _maximum_attachment_bytes(await get_configuration(ctx))
+        if limit is not None and size > limit:
+            raise AttachmentTooLargeError(
+                f"{source.name} is {size} bytes; this instance accepts at most {limit} bytes.",
+                hint=(
+                    "Nothing was uploaded. Compress or split the file, or ask an administrator "
+                    "to raise the maximum attachment size. get_instance_info reports the "
+                    "current limit."
+                ),
+            )
+        payload = handle.read()
 
     name = _sanitize_file_name(file_name or source.name, fallback="upload")
     metadata: dict[str, Any] = {"fileName": name}
@@ -365,7 +362,6 @@ async def _post_attachment(
         # only ``raw`` lets OpenProject keep its own default format.
         metadata["description"] = {"raw": description}
 
-    payload = source.read_bytes()
     files = {
         "metadata": (None, json.dumps(metadata).encode("utf-8"), "application/json"),
         "file": (name, payload, "application/octet-stream"),
@@ -705,7 +701,9 @@ def register(mcp: FastMCP) -> None:
                 extra={"attachment_id": attachment_id, "size_bytes": declared_size},
             )
 
-        directory = open_download_directory(_download_dir(save_dir, ctx.settings), None)
+        directory = open_download_directory(
+            _download_dir(save_dir, ctx.settings), _expand(ctx.settings.download_root)
+        )
         target: DownloadFile | None = None
 
         def discard_partial() -> None:

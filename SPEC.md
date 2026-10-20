@@ -200,7 +200,7 @@ The 401/403/404/409/422/429/5xx → hint mapping preserves (and fixes) the old s
 
 ### 4.6 Metadata cache
 
-TTL cache (default 300 s, configurable) for: API root, `/configuration`, `/types`, `/statuses`, `/priorities`, `/roles`, per-project types/versions/categories, WP schemas, time-entry activities, `users/me`, version-probe results (§4.7, TTL 1 h). lockVersions are never cached. Cache is per-credential (multi-user HTTP mode keys by principal).
+TTL cache (default 300 s, configurable) for: API root, `/configuration`, `/types`, `/statuses`, `/priorities`, `/roles`, per-project types/versions/categories, WP schemas, time-entry activities, `users/me`, version-probe results (§4.7, TTL 1 h). lockVersions are never cached. Cache is scoped by a hash of the configured credential; a running server holds one credential, so all HTTP clients share one scope (§11).
 
 ### 4.7 Version & feature probing
 
@@ -476,7 +476,9 @@ Semantics verified against OpenProject source (17.7-dev).
 3. Target dir: explicit `save_dir` → validated against MCP **roots** when provided, else `OPENPROJECT_MCP_DOWNLOAD_DIR`; default `<first root or cwd>/openproject-downloads/`. Filename sanitized; collisions uniquified; traversal in `fileName` neutralized.
 4. Returns `{path, file_name, size_bytes, content_type, sha256}`. With `return_image=true`, images ≤ 1 MB additionally return an MCP `ImageContent` block so the model can *see* them.
 
-**Transport caveat:** path-based download/upload assumes the server shares a filesystem with the user (stdio). In multi-user **HTTP** mode these tools switch behavior: `download_attachment` returns the attachment as an MCP resource/blob (§10) or the short-lived `downloadLocation` URL instead of writing files; `upload_attachment`/`attachment_paths` are disabled with an explanatory error. Stated in tool descriptions at runtime.
+**Transport caveat:** path-based download/upload assumes the server shares a filesystem with the user (stdio). Over **HTTP** the tools still read and write the server's own disk (the resource/blob-only HTTP mode originally planned here is not implemented); §7.3 confines them. `openproject://attachment/{id}` (§10) remains the path-free way to read bytes.
+
+Downloads reserve the target with exclusive creation (`O_EXCL`, `O_NOFOLLOW` where available), retrying `name (n).ext` on collision, so concurrent downloads of one name never share a file; a failed or cancelled transfer removes the file only while its name still points at the inode it created. The wall-clock cap is an `asyncio.timeout` around the whole transfer, so it fires whether the body trickles or goes silent.
 
 ### 7.2 Upload
 
@@ -486,6 +488,10 @@ Plain multipart is universal (the S3 "prepare" direct-upload flow is optional in
 - Containers (verified mounts): work_package, wiki_page, meeting, document, budget, activity comment, plus **uncontainered** `POST /api/v3/attachments`.
 - **New-WP flow:** uncontainered upload + claim via `_links.attachments` in the create payload (`create_work_package(attachment_paths=…)`). Unclaimed uploads are purged by OpenProject after ~180 min, so failures don't leak junk.
 - Pre-flight: file existence, size vs `maximumAttachmentFileSize` (cached `/configuration`) → local error before burning the upload. 422 allowlist violations surfaced with the whitelist hint.
+
+### 7.3 File roots
+
+`OPENPROJECT_MCP_UPLOAD_ROOT` and `OPENPROJECT_MCP_DOWNLOAD_ROOT` (opt-in, existing directories, checked at startup) confine every local-path operation: `upload_attachment`, `create_work_package(attachment_paths)` and `download_attachment(save_dir)`. Paths are resolved (symlinks included) and must stay beneath the root; the open then walks the resolved path component by component from a descriptor on the root with `O_NOFOLLOW`, so a symlink swapped in after the check fails the open. Relative upload paths resolve against the upload root. With a download root and no `save_dir`, files go to `OPENPROJECT_MCP_DOWNLOAD_DIR` (which must then lie inside the root) or the root itself. With `--transport http` and either root unset the server prints a startup warning; making the roots mandatory for HTTP is a planned MINOR change.
 
 ---
 
@@ -578,7 +584,7 @@ Typed params cover the 95% case. `raw_filters` covers the rest — **typed, not 
 
 - **Credentials**: `OPENPROJECT_API_KEY` as `SecretStr`; never in logs (Authorization redacted; body logging is opt-in `OPENPROJECT_MCP_LOG_BODIES=1`, dev-only). TLS verified always; `OPENPROJECT_MCP_CA_BUNDLE` for private CAs (no verify-off switch).
 - **Redirect hygiene**: Authorization stripped on cross-origin redirects (presigned URLs) — explicit httpx event hook, unit-tested.
-- **HTTP transport**: requires a static bearer-token set (`OPENPROJECT_MCP_AUTH_TOKENS`, comma-separated); every request must present `Authorization: Bearer <token>` matching a configured token (constant-time comparison) or is rejected with a 401 + `WWW-Authenticate`. JWT verifier / OAuth proxy remain possible later via FastMCP 3.x built-ins. Binds localhost by default; TLS termination is out of scope (localhost bind or TLS-terminating reverse proxy). Multi-user mode maps the **verified MCP principal → per-user OpenProject API key** (`user_keys.toml`) or forwards an OAuth token — the shared-impersonation-key anti-pattern is not reproduced. Without auth configured, HTTP mode exits with an error naming the required env vars. Filesystem-coupled tools switch to resource/blob mode (§7.1).
+- **HTTP transport**: requires a static bearer-token set (`OPENPROJECT_MCP_AUTH_TOKENS`, comma-separated); every request must present `Authorization: Bearer <token>` matching a configured token (constant-time comparison) or is rejected with a 401 + `WWW-Authenticate`. JWT verifier / OAuth proxy remain possible later via FastMCP 3.x built-ins. Binds localhost by default; TLS termination is out of scope (localhost bind or TLS-terminating reverse proxy). Without auth configured, HTTP mode exits with an error naming the required env vars. **Implemented today: one shared upstream identity** — bearer tokens authenticate clients to the endpoint, but every client acts as the single configured OpenProject credential and shares one cache scope. Mapping the verified MCP principal to a per-user OpenProject API key or OAuth token remains future work (§19). Filesystem-coupled tools are confined by the §7.3 roots.
 - **Blast-radius controls**: `OPENPROJECT_MCP_READ_ONLY=1` (drops all ✏️/🗑/⚙️), `OPENPROJECT_MCP_ADMIN_TOOLS` (membership writes), `OPENPROJECT_MCP_DISABLE` (group opt-outs), `confirm` + `requiresUserInteraction` on every 🗑 tool.
 - **Output hygiene**: upstream error bodies never echoed verbatim (G4); HTML stripped; attachment filenames sanitized before filesystem use.
 
@@ -608,7 +614,7 @@ Typed params cover the 95% case. `raw_filters` covers the rest — **typed, not 
 
 - `pyproject.toml` (uv-managed): `[project.scripts] openproject-mcp = "openproject_mcp.__main__:main"`. Pins: `fastmcp>=3.4,<4`, `httpx[http2]>=0.28`, `pydantic>=2.7`. PyPI → `claude mcp add openproject -- uvx openproject-mcp`; `server.json` for the MCP registry; `fastmcp.json` for declarative runs.
 - Docker: multi-stage uv image, non-root, `CMD ["openproject-mcp", "--transport", "http", "--host", "0.0.0.0"]` (a CMD that exists), healthcheck on the MCP endpoint.
-- Config surface (all env, documented in README + a shipped `.env.example`): `OPENPROJECT_URL`, `OPENPROJECT_API_KEY`, `OPENPROJECT_MCP_{READ_ONLY, ADMIN_TOOLS, DISABLE, PROFILE, DOWNLOAD_DIR, MAX_DOWNLOAD_MB, CACHE_TTL, CA_BUNDLE, INSECURE, LOG_LEVEL, LOG_FORMAT, LOG_BODIES, OTEL, ACCEPT_LANGUAGE}`, HTTP auth vars (provider-specific), plus standard `HTTPS_PROXY`/`ALL_PROXY`/`OTEL_*` passthrough.
+- Config surface (all env, documented in README + a shipped `.env.example`): `OPENPROJECT_URL`, `OPENPROJECT_API_KEY`, `OPENPROJECT_MCP_{READ_ONLY, ADMIN_TOOLS, DISABLE, PROFILE, DOWNLOAD_DIR, UPLOAD_ROOT, DOWNLOAD_ROOT, MAX_DOWNLOAD_MB, CACHE_TTL, CA_BUNDLE, INSECURE, LOG_LEVEL, LOG_FORMAT, LOG_BODIES, OTEL, ACCEPT_LANGUAGE}`, HTTP auth vars (provider-specific), plus standard `HTTPS_PROXY`/`ALL_PROXY`/`OTEL_*` passthrough.
 - Docs: README (EN) with setup matrix (Claude Code/Desktop, stdio/HTTP), per-tool permission-requirements matrix (carried from the old README — it was accurate), troubleshooting (401/403/404/SSL/proxy), cookbook adapted from the old Vietnamese guides (translated), magic-words guide for git linking, migration guide (§16).
 
 ---
