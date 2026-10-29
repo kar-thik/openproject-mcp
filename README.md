@@ -561,6 +561,11 @@ Three resource templates expose OpenProject objects at stable URIs:
 - `openproject://attachment/{id}` — the attachment's bytes with the detected MIME type, up to
   `OPENPROJECT_MCP_MAX_INLINE_MB`.
 
+Clients that support argument completion get suggestions while typing: project
+identifiers for the `project` argument of `weekly_report`, `daily_standup` and
+`groom_backlog` and for the project resource, and the available locales for
+`weekly_report`.
+
 ## Supported OpenProject versions
 
 The server targets OpenProject **14 LTS through 17.x**. Instead of assuming one API dialect,
