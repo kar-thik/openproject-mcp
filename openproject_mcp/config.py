@@ -346,4 +346,11 @@ def runtime_warnings(settings: Settings, transport: TransportName) -> list[str]:
                 "hidden (upload_attachment and create_work_package(attachment_paths) need the "
                 "upload root, download_attachment the download root)."
             )
+        if settings.auth_tokens is None and settings.profile == "core":
+            warnings.append(
+                "OPENPROJECT_MCP_INSECURE with OPENPROJECT_MCP_PROFILE=core: clients on MCP "
+                "2026-07-28 cannot call enable_tool_group without a bearer token to scope it "
+                "to, so the core-hidden groups stay hidden for them. Set "
+                "OPENPROJECT_MCP_PROFILE=full or OPENPROJECT_MCP_AUTH_TOKENS."
+            )
     return warnings

@@ -43,6 +43,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastmcp.server.dependencies import get_context
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from pydantic import BaseModel, Field
 
 from openproject_mcp.client import hal
@@ -62,7 +63,7 @@ from openproject_mcp.client.filters import (
     register_filter_type,
 )
 from openproject_mcp.client.payloads import build_write_payload, links_payload
-from openproject_mcp.config import PROBE_CACHE_TTL
+from openproject_mcp.config import PROBE_CACHE_TTL, Settings, TransportName
 from openproject_mcp.projections import ListEnvelope, Ref, custom_field_type_name
 from openproject_mcp.tools._shared import (
     ALL_GROUPS,
@@ -89,7 +90,7 @@ from openproject_mcp.version_probe import (
 )
 
 if TYPE_CHECKING:
-    from fastmcp import FastMCP
+    from fastmcp import Context, FastMCP
 
 __all__ = [
     "CACHE_KEY_CURRENT_USER",
@@ -583,6 +584,11 @@ class PermissionsResult(ListEnvelope[CapabilityGroup]):
     )
 
 
+#: Who shares a group enabled by ``enable_tool_group``: one handshake-era session, every
+#: connection presenting the same bearer token, or the whole stdio process.
+VisibilityScope = Literal["session", "token", "process"]
+
+
 class ToolGroupStatus(BaseModel):
     """What ``enable_tool_group`` changed in this session's tool list."""
 
@@ -601,6 +607,10 @@ class ToolGroupStatus(BaseModel):
         default_factory=list[str],
         description="Why some tools of the group stay hidden (read-only mode, operator-disabled "
         "sub-groups); empty when the whole group is now visible.",
+    )
+    scope: VisibilityScope = Field(
+        description="Who else now sees the group: 'session' (this MCP session only), 'token' "
+        "(every connection using the same bearer token) or 'process' (this stdio server)."
     )
 
 
@@ -678,6 +688,24 @@ def _capability_params(principal_id: int | str, context: str, page: int) -> dict
         make_filter("context", Op.EQ, [context], resource=CAPABILITIES_RESOURCE),
     ]
     return query_params(filters=filters, page=page, page_size=CAPABILITIES_PAGE_SIZE)
+
+
+def _visibility_scope(
+    ctx: Context, transport: TransportName, settings: Settings
+) -> VisibilityScope | None:
+    """Who a group enabled on this request is enabled for; None when no one can be told apart.
+
+    FastMCP keys session visibility rules on the MCP session for handshake-era clients. A
+    2026-07-28 request has no session, so FastMCP keys the rules on the authenticated
+    principal (here: the bearer token), or on the process for stdio, which serves one client.
+    An unauthenticated 2026-07-28 HTTP request matches none of these.
+    """
+    request = ctx.request_context
+    if request is None or request.protocol_version not in MODERN_PROTOCOL_VERSIONS:
+        return "session"
+    if transport == "stdio":
+        return "process"
+    return "token" if settings.auth_tokens is not None else None
 
 
 def register(mcp: FastMCP) -> None:
@@ -1116,18 +1144,18 @@ def register(mcp: FastMCP) -> None:
             ),
         ],
     ) -> ToolGroupStatus:
-        """Re-enable a tool group hidden by OPENPROJECT_MCP_PROFILE=core, for this session.
+        """Re-enable a tool group hidden by OPENPROJECT_MCP_PROFILE=core.
 
         Use it when the user needs meetings, wiki, news, documents, budgets, git activity or
         reporting and those tools are not in your list. It never calls OpenProject.
 
-        Returns ``{group, title, status, tools_enabled, notes}``; ``status`` is 'enabled' or
-        'already_visible'. Afterwards the server sends tools/list_changed: re-read your tool
-        list before calling the new tools.
+        Returns ``{group, title, status, tools_enabled, notes, scope}``; ``status`` is
+        'enabled' or 'already_visible'. Re-read your tool list before calling the new tools.
 
         Pitfalls: it only lifts the core profile. It cannot override read-only mode (write
         tools stay hidden, see ``notes``), the admin gate, or groups the operator removed with
-        OPENPROJECT_MCP_DISABLE, which fail with invalid_input. Other sessions are unaffected.
+        OPENPROJECT_MCP_DISABLE, which fail with invalid_input. ``scope`` says who else sees
+        the group: this session, everyone on the same bearer token, or this stdio process.
 
         Cross-references: ``get_instance_info`` shows which modules this instance supports.
         """
@@ -1150,13 +1178,14 @@ def register(mcp: FastMCP) -> None:
             )
 
         ctx = get_context()
-        try:
-            _ = ctx.session_id  # session rules are keyed by it
-        except RuntimeError as exc:  # pragma: no cover — every tool call has a session
+        scope = _visibility_scope(ctx, tool_context.transport, settings)
+        if scope is None:
             raise UnexpectedResponseError(
-                "Per-session tool visibility is unavailable on this connection.",
-                hint="Start the server with OPENPROJECT_MCP_PROFILE=full to expose every group.",
-            ) from exc
+                "Tool groups cannot be enabled on an unauthenticated HTTP connection that uses "
+                "MCP 2026-07-28: nothing identifies this client from one request to the next.",
+                hint="Ask the operator to start the server with OPENPROJECT_MCP_PROFILE=full, or "
+                "to set OPENPROJECT_MCP_AUTH_TOKENS instead of OPENPROJECT_MCP_INSECURE.",
+            )
 
         before = await ctx.fastmcp.list_tools()
         # A sub-tag's tools also carry the parent tag, so judge the parent by the tools that
@@ -1169,6 +1198,7 @@ def register(mcp: FastMCP) -> None:
                 title=GROUP_TITLES[group],
                 status="already_visible",
                 notes=[f"{group} is already available in this session; nothing changed."],
+                scope=scope,
             )
 
         await ctx.enable_components(tags={group})
@@ -1191,4 +1221,5 @@ def register(mcp: FastMCP) -> None:
             status="enabled",
             tools_enabled=sorted({tool.name for tool in after} - {tool.name for tool in before}),
             notes=notes,
+            scope=scope,
         )

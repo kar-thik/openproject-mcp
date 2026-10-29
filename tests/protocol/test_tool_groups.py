@@ -1,8 +1,11 @@
 """Tool profiles and ``enable_tool_group`` over the in-memory FastMCP client.
 
 ``OPENPROJECT_MCP_PROFILE=core`` hides the module-backed groups at startup;
-``enable_tool_group`` lifts one for the calling session only and must never
-bypass ``READ_ONLY``, the admin gate or ``OPENPROJECT_MCP_DISABLE``.
+``enable_tool_group`` lifts one and must never bypass ``READ_ONLY``, the admin
+gate or ``OPENPROJECT_MCP_DISABLE``. Who sees the lifted group depends on the
+protocol era: one session on a handshake-era client; on MCP 2026-07-28, which
+has no session, every connection with the same bearer token over HTTP, or the
+whole process over stdio.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import mcp.types
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.client.messages import MessageHandler
+from fastmcp.utilities.tests import asgi_server
 
 from openproject_mcp.config import Settings
 from openproject_mcp.groups import ALL_GROUPS, CORE_PROFILE_HIDDEN_GROUPS
@@ -76,7 +80,7 @@ async def test_core_profile_lists_the_core_tools_prompts_and_resources() -> None
     async with Client(build_server(_settings(profile="core"))) as client:
         listed = await _names(client)
         prompts = {prompt.name for prompt in await client.list_prompts()}
-        templates = {t.uriTemplate for t in await client.list_resource_templates()}
+        templates = {t.uri_template for t in await client.list_resource_templates()}
     assert listed == DEFAULT_TOOLS - hidden
     assert "enable_tool_group" in listed
     assert prompts == PROMPT_NAMES - REPORTING_PROMPTS
@@ -163,16 +167,77 @@ async def test_enabling_every_hidden_group_never_reveals_admin_tools() -> None:
     assert not listed & ADMIN_TOOLS_SET
 
 
-async def test_enabled_group_is_scoped_to_the_calling_session() -> None:
+async def test_enabled_group_is_scoped_to_the_calling_session_on_legacy_clients() -> None:
     server = build_server(_settings(profile="core"))
     other_counter = ListChangedCounter()
-    async with Client(server) as first, Client(server, message_handler=other_counter) as second:
+    async with (
+        Client(server, mode="legacy") as first,
+        Client(server, mode="legacy", message_handler=other_counter) as second,
+    ):
         baseline = await _names(second)
-        await first.call_tool("enable_tool_group", {"group": "meetings"})
+        result = await first.call_tool("enable_tool_group", {"group": "meetings"})
         assert await _names(first) >= MEETINGS_GROUP_TOOLS
         assert await _names(second) == baseline
         assert not baseline & MEETINGS_GROUP_TOOLS
+    assert result.structured_content is not None
+    assert result.structured_content["scope"] == "session"
     assert other_counter.tool_list_changed == 0
+
+
+async def test_enabled_group_is_process_wide_on_modern_stdio_clients() -> None:
+    server = build_server(_settings(profile="core"))
+    async with Client(server, mode="auto") as first, Client(server, mode="auto") as second:
+        result = await first.call_tool("enable_tool_group", {"group": "meetings"})
+        assert await _names(second) >= MEETINGS_GROUP_TOOLS
+    assert result.structured_content is not None
+    assert result.structured_content["scope"] == "process"
+
+
+def _http_settings(**overrides: Any) -> Settings:
+    return _settings(profile="core", **overrides)
+
+
+async def test_enabled_group_follows_the_bearer_token_on_modern_http_clients() -> None:
+    server = build_server(_http_settings(auth_tokens="alpha,beta"), transport="http")
+    alpha = {"Authorization": "Bearer alpha"}
+    beta = {"Authorization": "Bearer beta"}
+    async with asgi_server(server) as running:
+        async with running.client(headers=alpha, mode="auto") as first:
+            result = await first.call_tool("enable_tool_group", {"group": "news"})
+        async with (
+            running.client(headers=alpha, mode="auto") as again,
+            running.client(headers=beta, mode="auto") as other,
+        ):
+            assert await _names(again) >= NEWS_GROUP_TOOLS
+            assert not await _names(other) & NEWS_GROUP_TOOLS
+    assert result.structured_content is not None
+    assert result.structured_content["scope"] == "token"
+
+
+async def test_modern_http_without_auth_refuses_instead_of_enabling_for_everyone() -> None:
+    server = build_server(_http_settings(insecure=True), transport="http")
+    async with asgi_server(server) as running, running.client(mode="auto") as client:
+        result = await client.call_tool(
+            "enable_tool_group", {"group": "news"}, raise_on_error=False
+        )
+        assert not await _names(client) & NEWS_GROUP_TOOLS
+    error = _error(result)
+    assert error["type"] == "unexpected_response"
+    assert "OPENPROJECT_MCP_PROFILE=full" in error["hint"]
+
+
+async def test_legacy_http_without_auth_still_enables_for_the_session() -> None:
+    server = build_server(_http_settings(insecure=True), transport="http")
+    async with (
+        asgi_server(server) as running,
+        running.client(mode="legacy") as first,
+        running.client(mode="legacy") as second,
+    ):
+        result = await first.call_tool("enable_tool_group", {"group": "news"})
+        assert await _names(first) >= NEWS_GROUP_TOOLS
+        assert not await _names(second) & NEWS_GROUP_TOOLS
+    assert result.structured_content is not None
+    assert result.structured_content["scope"] == "session"
 
 
 async def test_disabled_sub_tag_stays_hidden_when_the_parent_is_enabled() -> None:
@@ -209,8 +274,8 @@ async def test_enable_tool_group_is_annotated_as_a_local_read() -> None:
     async with Client(build_server(_settings())) as client:
         tool = {t.name: t for t in await client.list_tools()}["enable_tool_group"]
     assert tool.annotations is not None
-    assert tool.annotations.readOnlyHint is True
-    assert tool.annotations.openWorldHint is False
+    assert tool.annotations.read_only_hint is True
+    assert tool.annotations.open_world_hint is False
 
 
 async def test_unknown_disable_names_warn_and_the_server_still_lists(
@@ -233,9 +298,9 @@ async def test_unknown_disable_names_warn_and_the_server_still_lists(
 
 async def test_core_profile_appends_the_instructions_hint() -> None:
     async with Client(build_server(_settings(profile="core"))) as client:
-        core = client.initialize_result.instructions
+        core = client.instructions
     async with Client(build_server(_settings())) as client:
-        full = client.initialize_result.instructions
+        full = client.instructions
     assert core == SERVER_INSTRUCTIONS + CORE_PROFILE_INSTRUCTIONS
     assert core is not None and core.endswith(CORE_PROFILE_INSTRUCTIONS)
     assert "enable_tool_group" in CORE_PROFILE_INSTRUCTIONS
