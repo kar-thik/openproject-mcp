@@ -43,17 +43,17 @@ async def test_both_tools_are_registered_with_honest_annotations(
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
 
     listing = tools["list_queries"]
-    assert listing.outputSchema is not None
+    assert listing.output_schema is not None
     assert listing.annotations is not None
-    assert listing.annotations.readOnlyHint is True
-    assert set(listing.inputSchema["properties"]) == {"project_id", "page", "page_size"}
+    assert listing.annotations.read_only_hint is True
+    assert set(listing.input_schema["properties"]) == {"project_id", "page", "page_size"}
 
     running = tools["run_query"]
     assert running.annotations is not None
-    assert running.annotations.readOnlyHint is True
-    assert running.annotations.model_extra is not None
-    assert running.annotations.model_extra["anthropic/maxResultSizeChars"] == 100_000
-    assert set(running.inputSchema["properties"]) == {
+    assert running.annotations.read_only_hint is True
+    assert running.meta is not None
+    assert running.meta["anthropic/maxResultSizeChars"] == 100_000
+    assert set(running.input_schema["properties"]) == {
         "query_id",
         "page",
         "page_size",

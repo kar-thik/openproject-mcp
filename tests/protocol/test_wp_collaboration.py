@@ -71,27 +71,27 @@ async def test_both_phase_one_tools_are_registered(mcp_client: Client[Any]) -> N
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
 
     listing = tools["list_work_package_comments"]
-    assert listing.outputSchema is not None
+    assert listing.output_schema is not None
     assert listing.annotations is not None
-    assert listing.annotations.readOnlyHint is True
-    assert listing.annotations.model_extra is not None
-    assert listing.annotations.model_extra["anthropic/maxResultSizeChars"] == 100_000
-    assert set(listing.inputSchema["properties"]) == {
+    assert listing.annotations.read_only_hint is True
+    assert listing.meta is not None
+    assert listing.meta["anthropic/maxResultSizeChars"] == 100_000
+    assert set(listing.input_schema["properties"]) == {
         "id",
         "page",
         "page_size",
         "max_comment_chars",
         "activity_id",
     }
-    assert listing.inputSchema["properties"]["activity_id"]["description"]
+    assert listing.input_schema["properties"]["activity_id"]["description"]
 
     adding = tools["add_work_package_comment"]
-    assert adding.outputSchema is not None
+    assert adding.output_schema is not None
     assert adding.annotations is not None
-    assert adding.annotations.readOnlyHint is False
-    assert adding.annotations.destructiveHint is False
-    assert adding.annotations.idempotentHint is False
-    assert set(adding.inputSchema["properties"]) == {"id", "comment", "notify", "internal"}
+    assert adding.annotations.read_only_hint is False
+    assert adding.annotations.destructive_hint is False
+    assert adding.annotations.idempotent_hint is False
+    assert set(adding.input_schema["properties"]) == {"id", "comment", "notify", "internal"}
 
 
 async def test_description_admits_the_endpoint_is_unpaginated(mcp_client: Client[Any]) -> None:

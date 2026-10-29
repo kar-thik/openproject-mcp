@@ -34,10 +34,10 @@ async def test_project_tools_are_registered_as_reads(mcp_client: Client[Any]) ->
 
     for name in ("list_projects", "get_project"):
         tool = tools[name]
-        assert tool.outputSchema is not None
+        assert tool.output_schema is not None
         assert tool.annotations is not None
-        assert tool.annotations.readOnlyHint is True
-        assert tool.annotations.destructiveHint is False
+        assert tool.annotations.read_only_hint is True
+        assert tool.annotations.destructive_hint is False
         assert tool.description
 
 

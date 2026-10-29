@@ -8,7 +8,6 @@ with a declared output schema.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import pytest
 from fastmcp import Client, FastMCP
@@ -22,6 +21,7 @@ from openproject_mcp.client.errors import (
 )
 from openproject_mcp.client.hal import collection
 from openproject_mcp.projections import ListEnvelope
+from openproject_mcp.tool_meta import ClaudeToolMeta
 from openproject_mcp.tools import _shared
 from tests.fixtures.hal_payloads import WORK_PACKAGE_COLLECTION
 
@@ -77,9 +77,9 @@ async def test_tool_errors_preserves_the_success_path_and_schemas() -> None:
     async with Client(mcp) as client:
         tool = (await client.list_tools())[0]
         assert tool.description == "Returns a row."
-        assert set(tool.inputSchema["properties"]) == {"work_package_id", "verbose"}
-        assert tool.inputSchema["required"] == ["work_package_id"]
-        assert tool.outputSchema is not None
+        assert set(tool.input_schema["properties"]) == {"work_package_id", "verbose"}
+        assert tool.input_schema["required"] == ["work_package_id"]
+        assert tool.output_schema is not None
         result = await client.call_tool("succeeding", {"work_package_id": 3})
 
     assert not result.is_error
@@ -145,7 +145,9 @@ def test_require_confirmation_raises_a_typed_error() -> None:
 
 
 def test_read_annotations() -> None:
-    annotations = _shared.read_annotations(title="List work packages", max_result_chars=50_000)
+    annotations = _shared.read_annotations(
+        title="List work packages", max_result_chars=50_000
+    ).model_dump(by_alias=True)
     assert annotations["readOnlyHint"] is True
     assert annotations["destructiveHint"] is False
     assert annotations["openWorldHint"] is True
@@ -153,14 +155,16 @@ def test_read_annotations() -> None:
 
 
 def test_write_annotations() -> None:
-    annotations = _shared.write_annotations(title="Create work package")
+    annotations = _shared.write_annotations(title="Create work package").model_dump(by_alias=True)
     assert annotations["readOnlyHint"] is False
     assert annotations["destructiveHint"] is False
     assert "anthropic/requiresUserInteraction" not in annotations
 
 
 def test_destructive_annotations_always_require_user_interaction() -> None:
-    annotations = _shared.destructive_annotations(title="Delete work package")
+    annotations = _shared.destructive_annotations(title="Delete work package").model_dump(
+        by_alias=True
+    )
     assert annotations["readOnlyHint"] is False
     assert annotations["destructiveHint"] is True
     assert annotations["anthropic/requiresUserInteraction"] is True
@@ -186,7 +190,7 @@ def test_tool_tags() -> None:
 
 
 async def test_annotations_reach_the_wire() -> None:
-    mcp: FastMCP = FastMCP("scratch")
+    mcp: FastMCP = FastMCP("scratch", middleware=[ClaudeToolMeta()])
 
     @mcp.tool(
         tags=_shared.tool_tags(_shared.GROUP_WORK_PACKAGES, _shared.DESTRUCTIVE, _shared.WRITE),
@@ -201,9 +205,11 @@ async def test_annotations_reach_the_wire() -> None:
     async with Client(mcp) as client:
         tool = (await client.list_tools())[0]
         assert tool.annotations is not None
-        dumped: dict[str, Any] = tool.annotations.model_dump()
-        assert dumped["destructiveHint"] is True
-        assert dumped["anthropic/requiresUserInteraction"] is True
+        assert tool.annotations.destructive_hint is True
+        # Claude reads its vendor keys from _meta; the standard annotations stay standard.
+        assert tool.meta is not None
+        assert tool.meta["anthropic/requiresUserInteraction"] is True
+        assert "anthropic/requiresUserInteraction" not in tool.annotations.model_dump(by_alias=True)
 
         refused = await client.call_tool(
             "delete_work_package", {"work_package_id": 1}, raise_on_error=False

@@ -46,10 +46,10 @@ async def test_the_three_notification_tools_are_registered(mcp_client: Client[An
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
 
     listing = tools["list_notifications"]
-    assert listing.outputSchema is not None
+    assert listing.output_schema is not None
     assert listing.annotations is not None
-    assert listing.annotations.readOnlyHint is True
-    assert set(listing.inputSchema["properties"]) == {
+    assert listing.annotations.read_only_hint is True
+    assert set(listing.input_schema["properties"]) == {
         "unread_only",
         "reason",
         "project_id",
@@ -59,18 +59,18 @@ async def test_the_three_notification_tools_are_registered(mcp_client: Client[An
 
     marking = tools["mark_notifications"]
     assert marking.annotations is not None
-    assert marking.annotations.readOnlyHint is False
-    assert marking.annotations.destructiveHint is False
-    assert marking.annotations.idempotentHint is True
-    assert set(marking.inputSchema["properties"]) == {"ids", "read"}
-    assert "ids" in marking.inputSchema["required"]
+    assert marking.annotations.read_only_hint is False
+    assert marking.annotations.destructive_hint is False
+    assert marking.annotations.idempotent_hint is True
+    assert set(marking.input_schema["properties"]) == {"ids", "read"}
+    assert "ids" in marking.input_schema["required"]
 
     mark_all = tools["mark_all_notifications_read"]
     assert mark_all.annotations is not None
-    assert mark_all.annotations.readOnlyHint is False
-    assert set(mark_all.inputSchema["properties"]) == {"reason", "project_id"}
+    assert mark_all.annotations.read_only_hint is False
+    assert set(mark_all.input_schema["properties"]) == {"reason", "project_id"}
     # The safe direction only: there is no "read" parameter to flip.
-    assert "read" not in mark_all.inputSchema["properties"]
+    assert "read" not in mark_all.input_schema["properties"]
 
 
 async def test_descriptions_state_the_blast_radius_and_the_enterprise_gate(
@@ -87,7 +87,7 @@ async def test_descriptions_state_the_blast_radius_and_the_enterprise_gate(
     assert "no undo" in mark_all
     assert "mark_notifications" in mark_all
 
-    reason_description = tools["list_notifications"].inputSchema["properties"]["reason"][
+    reason_description = tools["list_notifications"].input_schema["properties"]["reason"][
         "description"
     ]
     assert "Enterprise" in reason_description

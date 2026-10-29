@@ -827,23 +827,23 @@ async def test_annotations_and_schemas_are_honest(mcp_client: Client[Any]) -> No
     for name in ("search_work_packages", "list_work_packages", "get_work_package"):
         annotations = tools[name].annotations
         assert annotations is not None
-        assert annotations.readOnlyHint is True
-        assert annotations.destructiveHint is False
+        assert annotations.read_only_hint is True
+        assert annotations.destructive_hint is False
 
     for name in ("create_work_package", "update_work_package"):
         annotations = tools[name].annotations
         assert annotations is not None
-        assert annotations.readOnlyHint is False
-        assert annotations.destructiveHint is False
+        assert annotations.read_only_hint is False
+        assert annotations.destructive_hint is False
 
-    deletion = tools["delete_work_package"].annotations
-    assert deletion is not None
-    dumped: dict[str, Any] = deletion.model_dump()
-    assert dumped["destructiveHint"] is True
-    assert dumped["anthropic/requiresUserInteraction"] is True
+    deletion = tools["delete_work_package"]
+    assert deletion.annotations is not None
+    assert deletion.annotations.destructive_hint is True
+    assert deletion.meta is not None
+    assert deletion.meta["anthropic/requiresUserInteraction"] is True
 
     for name in expected:
-        assert tools[name].outputSchema is not None, f"{name} must declare an outputSchema"
+        assert tools[name].output_schema is not None, f"{name} must declare an outputSchema"
         assert tools[name].description, f"{name} must carry a description"
 
 

@@ -61,23 +61,23 @@ async def test_phase_two_write_tools_are_registered(mcp_client: Client[Any]) -> 
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
 
     editing = tools["edit_work_package_comment"]
-    assert editing.outputSchema is not None
+    assert editing.output_schema is not None
     assert editing.annotations is not None
-    assert editing.annotations.readOnlyHint is False
-    assert editing.annotations.destructiveHint is False
-    assert editing.annotations.idempotentHint is True
-    assert set(editing.inputSchema["properties"]) == {"activity_id", "comment"}
+    assert editing.annotations.read_only_hint is False
+    assert editing.annotations.destructive_hint is False
+    assert editing.annotations.idempotent_hint is True
+    assert set(editing.input_schema["properties"]) == {"activity_id", "comment"}
 
     adding = tools["add_work_package_watcher"]
-    assert set(adding.inputSchema["properties"]) == {"work_package_id", "user_id"}
+    assert set(adding.input_schema["properties"]) == {"work_package_id", "user_id"}
     assert adding.annotations is not None
-    assert adding.annotations.readOnlyHint is False
+    assert adding.annotations.read_only_hint is False
 
     removing = tools["remove_work_package_watcher"]
-    assert set(removing.inputSchema["properties"]) == {"work_package_id", "user_id"}
+    assert set(removing.input_schema["properties"]) == {"work_package_id", "user_id"}
 
     creating = tools["create_work_package_relation"]
-    assert set(creating.inputSchema["properties"]) == {
+    assert set(creating.input_schema["properties"]) == {
         "from_id",
         "to_id",
         "type",
@@ -85,10 +85,10 @@ async def test_phase_two_write_tools_are_registered(mcp_client: Client[Any]) -> 
         "description",
     }
     assert creating.annotations is not None
-    assert creating.annotations.idempotentHint is False
+    assert creating.annotations.idempotent_hint is False
 
     updating = tools["update_work_package_relation"]
-    assert set(updating.inputSchema["properties"]) == {
+    assert set(updating.input_schema["properties"]) == {
         "relation_id",
         "type",
         "lag",
@@ -96,16 +96,16 @@ async def test_phase_two_write_tools_are_registered(mcp_client: Client[Any]) -> 
     }
 
     deleting = tools["delete_work_package_relation"]
-    assert set(deleting.inputSchema["properties"]) == {"relation_id", "confirm"}
+    assert set(deleting.input_schema["properties"]) == {"relation_id", "confirm"}
     assert deleting.annotations is not None
-    assert deleting.annotations.destructiveHint is True
-    assert deleting.annotations.model_extra is not None
-    assert deleting.annotations.model_extra["anthropic/requiresUserInteraction"] is True
+    assert deleting.annotations.destructive_hint is True
+    assert deleting.meta is not None
+    assert deleting.meta["anthropic/requiresUserInteraction"] is True
 
 
 async def test_relation_type_is_a_closed_enum_in_the_schema(mcp_client: Client[Any]) -> None:
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
-    schema = tools["create_work_package_relation"].inputSchema["properties"]["type"]
+    schema = tools["create_work_package_relation"].input_schema["properties"]["type"]
     allowed = schema.get("enum") or schema.get("const")
     assert allowed == [
         "relates",

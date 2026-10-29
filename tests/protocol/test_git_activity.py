@@ -76,18 +76,18 @@ async def test_both_tools_are_registered_with_honest_annotations(
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
 
     activity = tools["get_work_package_git_activity"]
-    assert activity.outputSchema is not None
+    assert activity.output_schema is not None
     assert activity.annotations is not None
-    assert activity.annotations.readOnlyHint is True
-    assert activity.annotations.destructiveHint is False
-    assert set(activity.inputSchema["properties"]) == {"work_package_id", "include"}
-    assert activity.inputSchema["properties"]["include"]["description"]
+    assert activity.annotations.read_only_hint is True
+    assert activity.annotations.destructive_hint is False
+    assert set(activity.input_schema["properties"]) == {"work_package_id", "include"}
+    assert activity.input_schema["properties"]["include"]["description"]
 
     detail = tools["get_github_pull_request"]
-    assert detail.outputSchema is not None
+    assert detail.output_schema is not None
     assert detail.annotations is not None
-    assert detail.annotations.readOnlyHint is True
-    assert set(detail.inputSchema["properties"]) == {"github_pull_request_id"}
+    assert detail.annotations.read_only_hint is True
+    assert set(detail.input_schema["properties"]) == {"github_pull_request_id"}
 
 
 async def test_descriptions_state_the_linking_magic_words(mcp_client: Client[Any]) -> None:
@@ -101,7 +101,7 @@ async def test_descriptions_state_the_linking_magic_words(mcp_client: Client[Any
     assert "OP#123" in (detail.description or "")
     # The id-producing path is named where the id is consumed (SPEC §5.10).
     assert "get_work_package_git_activity" in (detail.description or "")
-    id_description = detail.inputSchema["properties"]["github_pull_request_id"]["description"]
+    id_description = detail.input_schema["properties"]["github_pull_request_id"]["description"]
     assert "OpenProject-internal" in id_description
     assert "not the github pr number" in id_description.lower()
 

@@ -38,6 +38,7 @@ from openproject_mcp.client.http import OpenProjectClient
 from openproject_mcp.config import Settings, TransportName
 from openproject_mcp.observability import configure_logging, get_logger
 from openproject_mcp.schemas import CompactOutputSchemas
+from openproject_mcp.tool_meta import ClaudeToolMeta
 from openproject_mcp.tools import register_all
 from openproject_mcp.tools._shared import (
     CORE_PROFILE_HIDDEN_GROUPS,
@@ -170,7 +171,7 @@ def build_server(
         version=__version__,
         lifespan=build_lifespan(resolved, transport),
         auth=auth,
-        middleware=[CompactOutputSchemas()],
+        middleware=[CompactOutputSchemas(), ClaudeToolMeta()],
     )
     register_all(mcp)
     prompts.register(mcp)

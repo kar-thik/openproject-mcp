@@ -110,11 +110,11 @@ async def test_the_five_phase_three_tools_are_registered_with_honest_annotations
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
 
     copying = tools["copy_project"]
-    assert copying.outputSchema is not None
+    assert copying.output_schema is not None
     assert copying.annotations is not None
-    assert copying.annotations.readOnlyHint is False
-    assert copying.annotations.destructiveHint is False
-    assert set(copying.inputSchema["properties"]) == {
+    assert copying.annotations.read_only_hint is False
+    assert copying.annotations.destructive_hint is False
+    assert set(copying.input_schema["properties"]) == {
         "id_or_identifier",
         "new_name",
         "include_work_packages",
@@ -124,21 +124,21 @@ async def test_the_five_phase_three_tools_are_registered_with_honest_annotations
 
     job = tools["get_job_status"]
     assert job.annotations is not None
-    assert job.annotations.readOnlyHint is True
-    assert set(job.inputSchema["properties"]) == {"job_id"}
+    assert job.annotations.read_only_hint is True
+    assert set(job.input_schema["properties"]) == {"job_id"}
     assert set((job.meta or {})["fastmcp"]["tags"]) == {"projects", "read"}
 
     favorite = tools["set_project_favorite"]
     assert favorite.annotations is not None
-    assert favorite.annotations.readOnlyHint is False
-    assert favorite.annotations.idempotentHint is True
-    assert set(favorite.inputSchema["properties"]) == {"id_or_identifier", "favorite"}
-    assert set(favorite.inputSchema["required"]) == {"id_or_identifier", "favorite"}
+    assert favorite.annotations.read_only_hint is False
+    assert favorite.annotations.idempotent_hint is True
+    assert set(favorite.input_schema["properties"]) == {"id_or_identifier", "favorite"}
+    assert set(favorite.input_schema["required"]) == {"id_or_identifier", "favorite"}
 
     saving = tools["save_query"]
     assert saving.annotations is not None
-    assert saving.annotations.readOnlyHint is False
-    assert set(saving.inputSchema["properties"]) == {
+    assert saving.annotations.read_only_hint is False
+    assert set(saving.input_schema["properties"]) == {
         "name",
         "filters",
         "project_id",
@@ -147,14 +147,14 @@ async def test_the_five_phase_three_tools_are_registered_with_honest_annotations
         "sort_by",
         "group_by",
     }
-    assert set(saving.inputSchema["required"]) == {"name", "filters"}
+    assert set(saving.input_schema["required"]) == {"name", "filters"}
     assert set((saving.meta or {})["fastmcp"]["tags"]) == {"queries", "write"}
 
     links = tools["list_file_links"]
-    assert links.outputSchema is not None
+    assert links.output_schema is not None
     assert links.annotations is not None
-    assert links.annotations.readOnlyHint is True
-    assert set(links.inputSchema["properties"]) == {"work_package_id"}
+    assert links.annotations.read_only_hint is True
+    assert set(links.input_schema["properties"]) == {"work_package_id"}
     assert set((links.meta or {})["fastmcp"]["tags"]) == {"attachments", "read"}
 
 

@@ -337,3 +337,17 @@ def test_http_without_file_roots_warns(tmp_path: Path) -> None:
     assert "hidden" in warnings[0]
     confined = _settings(upload_root=tmp_path, download_root=tmp_path)
     assert runtime_warnings(confined, "http") == []
+
+
+def test_insecure_http_with_the_core_profile_warns_that_groups_stay_hidden(
+    tmp_path: Path,
+) -> None:
+    roots = {"upload_root": tmp_path, "download_root": tmp_path}
+    insecure_core = _settings(insecure=True, profile="core", **roots)
+    [warning] = runtime_warnings(insecure_core, "http")
+    assert "enable_tool_group" in warning
+    assert "OPENPROJECT_MCP_PROFILE=full" in warning
+    assert runtime_warnings(insecure_core, "stdio") == []
+    assert runtime_warnings(_settings(insecure=True, profile="full", **roots), "http") == []
+    tokens_core = _settings(auth_tokens="t", profile="core", **roots)
+    assert runtime_warnings(tokens_core, "http") == []

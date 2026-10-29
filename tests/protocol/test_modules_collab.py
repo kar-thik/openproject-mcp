@@ -109,14 +109,14 @@ async def test_all_fifteen_tools_are_registered_with_honest_annotations(
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
     for name in TOOL_NAMES:
         assert name in tools, name
-        assert tools[name].outputSchema is not None
+        assert tools[name].output_schema is not None
         assert tools[name].annotations is not None
 
     listing = tools["list_meetings"]
     assert listing.annotations is not None
-    assert listing.annotations.readOnlyHint is True
-    assert listing.annotations.destructiveHint is False
-    assert set(listing.inputSchema["properties"]) == {
+    assert listing.annotations.read_only_hint is True
+    assert listing.annotations.destructive_hint is False
+    assert set(listing.input_schema["properties"]) == {
         "project_id",
         "upcoming_only",
         "page",
@@ -126,9 +126,9 @@ async def test_all_fifteen_tools_are_registered_with_honest_annotations(
 
     creating = tools["create_meeting"]
     assert creating.annotations is not None
-    assert creating.annotations.readOnlyHint is False
-    assert creating.annotations.destructiveHint is False
-    assert set(creating.inputSchema["properties"]) == {
+    assert creating.annotations.read_only_hint is False
+    assert creating.annotations.destructive_hint is False
+    assert set(creating.input_schema["properties"]) == {
         "project_id",
         "title",
         "start_time",
@@ -138,7 +138,7 @@ async def test_all_fifteen_tools_are_registered_with_honest_annotations(
     assert set((creating.meta or {})["fastmcp"]["tags"]) == {"meetings", "write"}
 
     agenda = tools["add_meeting_agenda_item"]
-    assert set(agenda.inputSchema["properties"]) == {
+    assert set(agenda.input_schema["properties"]) == {
         "meeting_id",
         "title",
         "notes",
@@ -148,9 +148,9 @@ async def test_all_fifteen_tools_are_registered_with_honest_annotations(
 
     updating = tools["update_meeting"]
     assert updating.annotations is not None
-    assert updating.annotations.readOnlyHint is False
-    assert updating.annotations.destructiveHint is False
-    assert set(updating.inputSchema["properties"]) == {
+    assert updating.annotations.read_only_hint is False
+    assert updating.annotations.destructive_hint is False
+    assert set(updating.input_schema["properties"]) == {
         "meeting_id",
         "title",
         "location",
@@ -162,7 +162,7 @@ async def test_all_fifteen_tools_are_registered_with_honest_annotations(
     }
     assert set((updating.meta or {})["fastmcp"]["tags"]) == {"meetings", "write"}
 
-    assert set(tools["update_meeting_agenda_item"].inputSchema["properties"]) == {
+    assert set(tools["update_meeting_agenda_item"].input_schema["properties"]) == {
         "agenda_item_id",
         "title",
         "notes",
@@ -172,13 +172,13 @@ async def test_all_fifteen_tools_are_registered_with_honest_annotations(
         "work_package_id",
         "lock_version",
     }
-    assert set(tools["add_meeting_outcome"].inputSchema["properties"]) == {
+    assert set(tools["add_meeting_outcome"].input_schema["properties"]) == {
         "agenda_item_id",
         "kind",
         "notes",
         "work_package_id",
     }
-    assert set(tools["update_meeting_outcome"].inputSchema["properties"]) == {
+    assert set(tools["update_meeting_outcome"].input_schema["properties"]) == {
         "outcome_id",
         "kind",
         "notes",
@@ -194,18 +194,18 @@ async def test_all_fifteen_tools_are_registered_with_honest_annotations(
     ):
         deleting = tools[name]
         assert deleting.annotations is not None, name
-        assert deleting.annotations.destructiveHint is True, name
-        assert set(deleting.inputSchema["properties"]) == {id_field, "confirm"}, name
+        assert deleting.annotations.destructive_hint is True, name
+        assert set(deleting.input_schema["properties"]) == {id_field, "confirm"}, name
         assert set((deleting.meta or {})["fastmcp"]["tags"]) == {
             "meetings",
             "write",
             "destructive",
         }, name
 
-    assert set(tools["get_wiki_page"].inputSchema["properties"]) == {"wiki_page_id"}
-    assert set(tools["list_documents"].inputSchema["properties"]) == {"page", "page_size"}
-    assert set(tools["get_document"].inputSchema["properties"]) == {"document_id"}
-    assert set(tools["list_budgets"].inputSchema["properties"]) == {"project_id"}
+    assert set(tools["get_wiki_page"].input_schema["properties"]) == {"wiki_page_id"}
+    assert set(tools["list_documents"].input_schema["properties"]) == {"page", "page_size"}
+    assert set(tools["get_document"].input_schema["properties"]) == {"document_id"}
+    assert set(tools["list_budgets"].input_schema["properties"]) == {"project_id"}
     assert set((tools["get_wiki_page"].meta or {})["fastmcp"]["tags"]) == {"wiki", "read"}
     assert set((tools["list_documents"].meta or {})["fastmcp"]["tags"]) == {"documents", "read"}
     assert set((tools["list_budgets"].meta or {})["fastmcp"]["tags"]) == {"budgets", "read"}
@@ -220,7 +220,9 @@ async def test_descriptions_state_the_api_limits_a_model_must_pass_on(
     assert "wiki index and no wiki search" in wiki
     assert "CONTENT is not exposed" in wiki
     assert "list_attachments(container_type='wiki_page'" in wiki
-    id_description = tools["get_wiki_page"].inputSchema["properties"]["wiki_page_id"]["description"]
+    id_description = tools["get_wiki_page"].input_schema["properties"]["wiki_page_id"][
+        "description"
+    ]
     assert "URL" in id_description
 
     budgets = tools["list_budgets"].description or ""

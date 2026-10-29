@@ -52,12 +52,12 @@ async def test_the_three_write_tools_are_registered_with_honest_annotations(
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
 
     creating = tools["create_project"]
-    assert creating.outputSchema is not None
+    assert creating.output_schema is not None
     assert creating.annotations is not None
-    assert creating.annotations.readOnlyHint is False
-    assert creating.annotations.destructiveHint is False
-    assert creating.annotations.idempotentHint is False
-    assert set(creating.inputSchema["properties"]) == {
+    assert creating.annotations.read_only_hint is False
+    assert creating.annotations.destructive_hint is False
+    assert creating.annotations.idempotent_hint is False
+    assert set(creating.input_schema["properties"]) == {
         "name",
         "identifier",
         "description",
@@ -65,7 +65,7 @@ async def test_the_three_write_tools_are_registered_with_honest_annotations(
         "public",
         "status_code",
     }
-    assert creating.inputSchema["properties"]["status_code"]["anyOf"][0]["enum"] == [
+    assert creating.input_schema["properties"]["status_code"]["anyOf"][0]["enum"] == [
         "on_track",
         "at_risk",
         "off_track",
@@ -76,8 +76,8 @@ async def test_the_three_write_tools_are_registered_with_honest_annotations(
 
     updating = tools["update_project"]
     assert updating.annotations is not None
-    assert updating.annotations.readOnlyHint is False
-    assert set(updating.inputSchema["properties"]) == {
+    assert updating.annotations.read_only_hint is False
+    assert set(updating.input_schema["properties"]) == {
         "id_or_identifier",
         "name",
         "description",
@@ -90,11 +90,11 @@ async def test_the_three_write_tools_are_registered_with_honest_annotations(
 
     deleting = tools["delete_project"]
     assert deleting.annotations is not None
-    assert deleting.annotations.destructiveHint is True
-    assert deleting.annotations.readOnlyHint is False
-    assert deleting.annotations.model_extra is not None
-    assert deleting.annotations.model_extra["anthropic/requiresUserInteraction"] is True
-    assert set(deleting.inputSchema["properties"]) == {"id_or_identifier", "confirm"}
+    assert deleting.annotations.destructive_hint is True
+    assert deleting.annotations.read_only_hint is False
+    assert deleting.meta is not None
+    assert deleting.meta["anthropic/requiresUserInteraction"] is True
+    assert set(deleting.input_schema["properties"]) == {"id_or_identifier", "confirm"}
     assert set((deleting.meta or {})["fastmcp"]["tags"]) == {"projects", "write", "destructive"}
 
 
