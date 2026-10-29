@@ -40,11 +40,14 @@ from tests.fixtures.hal_payloads import WORK_PACKAGE_COLLECTION
 
 
 async def test_server_boots_over_the_in_memory_transport(mcp_client: Client[Any]) -> None:
-    assert await mcp_client.ping()
+    # ping is not routed on the sessionless era; a negotiated version and a tool list are
+    # the era-neutral proof that the server is up.
+    assert mcp_client.protocol_version is not None
+    assert await mcp_client.list_tools()
 
 
 async def test_instructions_are_advertised(mcp_client: Client[Any]) -> None:
-    instructions = mcp_client.initialize_result.instructions
+    instructions = mcp_client.instructions
     assert instructions == SERVER_INSTRUCTIONS
     assert "work packages" in instructions
     assert "confirm" in instructions
@@ -202,7 +205,7 @@ async def test_phase_3_tool_set_is_registered(mcp_client: Client[Any]) -> None:
     assert listed == DEFAULT_TOOLS
     assert {prompt.name for prompt in await mcp_client.list_prompts()} == PROMPT_NAMES
     templates = await mcp_client.list_resource_templates()
-    assert {template.uriTemplate for template in templates} == RESOURCE_TEMPLATES
+    assert {template.uri_template for template in templates} == RESOURCE_TEMPLATES
     assert await mcp_client.list_resources() == []  # templates only, no static resources
 
 
@@ -352,8 +355,8 @@ async def test_reference_tool_shape_works_end_to_end(
         tool = next(
             t for t in await client.list_tools() if t.name == "reference_list_work_packages"
         )
-        assert tool.outputSchema is not None
-        assert tool.annotations is not None and tool.annotations.readOnlyHint is True
+        assert tool.output_schema is not None
+        assert tool.annotations is not None and tool.annotations.read_only_hint is True
 
         result = await client.call_tool("reference_list_work_packages", {"page": 2})
         assert not result.is_error

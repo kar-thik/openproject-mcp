@@ -48,17 +48,21 @@ jobs:
         run: uv run pyright
 
   test:
-    name: pytest (py${{ matrix.python }})
+    name: pytest (py${{ matrix.python }}, ${{ matrix.protocol }} protocol)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
       matrix:
         python: ["3.12", "3.13"]
+        # auto negotiates MCP 2026-07-28 (sessionless); legacy pins the initialize
+        # handshake. A deployed server answers both kinds of client.
+        protocol: [auto, legacy]
         experimental: [false]
         include:
           # fastmcp installs on 3.14 (requires-python >=3.10) but does not yet
           # declare a 3.14 classifier. Non-blocking until this lane is stably green.
           - python: "3.14"
+            protocol: auto
             experimental: true
     continue-on-error: ${{ matrix.experimental }}
     steps:
@@ -72,6 +76,10 @@ jobs:
         run: uv sync --locked --group dev
       - name: pytest (offline)
         run: uv run pytest -m "not integration"
+        env:
+          OPENPROJECT_MCP_TEST_PROTOCOL: ${{ matrix.protocol }}
+          # FastMCP's camelCase field bridge is going away; fail on any read that needs it.
+          FASTMCP_MCP_CAMELCASE_COMPAT: "false"
 
   build:
     name: package build check

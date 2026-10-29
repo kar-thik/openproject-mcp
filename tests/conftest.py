@@ -9,13 +9,20 @@ Fixtures Phase 1 will use:
                   instead of awaited (see ``sleep_calls``)
 ``mcp_server``    ``build_server(settings)``
 ``mcp_client``    an in-memory ``fastmcp.Client`` connected to it
+
+Every ``fastmcp.Client`` in the suite negotiates the protocol era named by
+``OPENPROJECT_MCP_TEST_PROTOCOL``: ``auto`` (the default, which against this
+server means the sessionless ``2026-07-28`` era) or ``legacy`` (the
+``initialize`` handshake). CI runs the suite under both, because a deployed
+server answers both kinds of client.
 """
 
 from __future__ import annotations
 
+import functools
 import os
 from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from typing import Any, Literal, cast
 
 import pytest
 import respx
@@ -25,6 +32,25 @@ from openproject_mcp.client.cache import TTLCache
 from openproject_mcp.client.http import OpenProjectClient
 from openproject_mcp.config import Settings
 from openproject_mcp.server import build_server
+
+TEST_PROTOCOL = cast(
+    Literal["auto", "legacy"], os.environ.get("OPENPROJECT_MCP_TEST_PROTOCOL", "auto")
+)
+if TEST_PROTOCOL not in ("auto", "legacy"):
+    raise RuntimeError(
+        f"OPENPROJECT_MCP_TEST_PROTOCOL must be auto or legacy, not {TEST_PROTOCOL!r}"
+    )
+if TEST_PROTOCOL == "legacy":
+    # Client has no global default for its era, so set the keyword's default here; a test
+    # that pins mode= itself still wins.
+    _client_init = Client.__init__
+
+    @functools.wraps(_client_init)
+    def _legacy_client_init(self: Client[Any], *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("mode", "legacy")
+        _client_init(self, *args, **kwargs)
+
+    Client.__init__ = _legacy_client_init  # type: ignore[method-assign]
 
 TEST_URL = "https://openproject.test"
 API_BASE = f"{TEST_URL}/api/v3"
