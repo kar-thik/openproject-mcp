@@ -585,6 +585,8 @@ Typed params cover the 95% case. `raw_filters` covers the rest — **typed, not 
 - `triage_inbox()` — unread notifications grouped by reason with suggested actions.
 - `groom_backlog(project)` — unassigned/unestimated/stale WP sweep.
 
+**Argument completion** (`completion/complete`, `openproject_mcp/completions.py`): the `project` argument of `weekly_report`, `daily_standup` and `groom_backlog`, and `{identifier}` on `openproject://project/{identifier}`, complete to the identifiers of active projects whose name or identifier contains the typed text (`name_and_identifier ~`, sorted by name, at most 20, cached 30 s per credential so typing costs one request per distinct prefix). `weekly_report(locale)` completes from the rendered locales. Every other argument gets no candidates, and an OpenProject failure yields none rather than an error.
+
 **Server `instructions`** (load-bearing for Claude Code tool-search): one paragraph — manages OpenProject (work packages, projects, files, git links, time, meetings, notifications); ids are discoverable via `search_*`/`get_project_metadata`; `list_work_packages` defaults to open items only; destructive tools need `confirm`.
 
 **Elicitation** (progressive): destructive confirms and missing-required-field prompts when the client supports it; parameter/error fallback otherwise. **No sampling** dependence (unsupported in Claude clients). Icons metadata: nice-to-have, harmless.

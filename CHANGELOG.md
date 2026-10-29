@@ -26,6 +26,14 @@ PATCH releases are fixes and strictly additive changes only.
 - Handshake-era HTTP sessions end after 30 minutes idle (the MCP SDK default)
   instead of never, which also drops the groups they enabled.
 
+### Added
+
+- Argument completion: the `project` argument of `weekly_report`,
+  `daily_standup` and `groom_backlog`, and the project resource's
+  `{identifier}`, suggest identifiers of active projects whose name or
+  identifier contains the typed text; `weekly_report(locale)` suggests the
+  available locales.
+
 ### Fixed
 
 - `anthropic/requiresUserInteraction` and `anthropic/maxResultSizeChars` are
