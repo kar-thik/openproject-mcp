@@ -11,7 +11,7 @@ An MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) server for t
 91 tools covering work packages, comments and relations, attachments, git/PR activity, projects,
 saved queries, notifications, time tracking, versions, people and memberships, meetings, news,
 documents, budgets and reporting — plus 4 report/workflow prompts and 3 resource templates.
-Built on FastMCP 3.x and httpx (HTTP/2).
+Built on FastMCP 4.x and httpx (HTTP/2); speaks MCP 2026-07-28 and the earlier handshake versions.
 
 This project is aimed at the OpenProject **Community edition**. OpenProject's Enterprise
 edition now ships with its own built-in MCP integration; this server brings the same
@@ -268,7 +268,7 @@ held in memory as Pydantic `SecretStr` values and are never written to logs; the
 
 Four settings shrink the tool surface at startup. The tool list is then fixed for the lifetime
 of the process, with one exception: `enable_tool_group` can bring back a group hidden by the
-`core` profile, for the calling session only.
+`core` profile, for the calling client (see below for what that means per protocol version).
 
 - `OPENPROJECT_MCP_READ_ONLY=1` serves only the 40 read tools.
 - `OPENPROJECT_MCP_ADMIN_TOOLS=1` reveals the three membership write tools
@@ -284,12 +284,22 @@ of the process, with one exception: `enable_tool_group` can bring back a group h
   groups — `meetings`, `news`, `documents`, `wiki`, `budgets`, `git_activity` and
   `reporting`, plus the two reporting prompts — so a session starts with a smaller tool list.
   Set it to `full` to list every group from the start. When the model needs
-  one of them it calls `enable_tool_group`, which restores that group for the calling session
-  only; the server then emits `tools/list_changed` to that session, so the client must honour
-  that notification and re-read its tool list (if yours does not, set `full`). Session rules
-  expire after 24 hours idle. `enable_tool_group` never lifts `READ_ONLY`, the admin gate or
-  `OPENPROJECT_MCP_DISABLE`; it lives in the `metadata` group, so disabling that group removes
-  it.
+  one of them it calls `enable_tool_group`, which restores that group and tells the client to
+  re-read its tool list (if yours never does, set `full`). Who sees the restored group depends
+  on the client's protocol version, and the result's `scope` field names it:
+  - **`session`** — clients on the `initialize` handshake (MCP 2025-11-25 and earlier): that
+    MCP session only. Over HTTP a session ends after 30 minutes idle.
+  - **`token`** — MCP 2026-07-28 clients over HTTP, which have no session: every connection
+    presenting the same bearer token. Give each user their own token in
+    `OPENPROJECT_MCP_AUTH_TOKENS` if they should not share a tool list. With
+    `OPENPROJECT_MCP_INSECURE` nothing identifies the client, so the call is refused; run
+    `full` there (the server warns at startup).
+  - **`process`** — MCP 2026-07-28 clients over stdio: the whole server process, which serves
+    one client anyway.
+
+  Enabled groups are forgotten after 24 hours idle. `enable_tool_group` never lifts
+  `READ_ONLY`, the admin gate or `OPENPROJECT_MCP_DISABLE`; it lives in the `metadata` group,
+  so disabling that group removes it.
 
 Independent of all four, every destructive tool (the 13 permanent deletes) requires an
 explicit `confirm=true` argument before it acts.
@@ -466,7 +476,7 @@ account with the Manage members permission).
 | `get_project_metadata` | Read | List the ids and names (types, statuses, priorities, ...) that are actually valid on this instance. |
 | `get_work_package_schema` | Read | Show which fields a work package of this type accepts in this project. |
 | `list_permissions` | Read | List what the authenticated user is allowed to do, globally or in one project. |
-| `enable_tool_group` | Read | Re-enable a tool group hidden by `OPENPROJECT_MCP_PROFILE=core` for this session; never calls OpenProject. |
+| `enable_tool_group` | Read | Re-enable a tool group hidden by `OPENPROJECT_MCP_PROFILE=core` for this session, bearer token or stdio process; never calls OpenProject. |
 
 ### Meetings (`meetings`)
 

@@ -81,11 +81,11 @@ async def test_read_tools_are_registered_with_honest_annotations(
     assert set(tools) >= PEOPLE_READ_TOOLS
 
     search = tools["search_principals"]
-    assert search.outputSchema is not None
+    assert search.output_schema is not None
     assert search.annotations is not None
-    assert search.annotations.readOnlyHint is True
-    assert search.annotations.destructiveHint is False
-    assert set(search.inputSchema["properties"]) == {
+    assert search.annotations.read_only_hint is True
+    assert search.annotations.destructive_hint is False
+    assert set(search.input_schema["properties"]) == {
         "query",
         "type",
         "member_of_project",
@@ -94,18 +94,18 @@ async def test_read_tools_are_registered_with_honest_annotations(
         "page_size",
     }
     assert all(
-        search.inputSchema["properties"][name]["description"]
-        for name in search.inputSchema["properties"]
+        search.input_schema["properties"][name]["description"]
+        for name in search.input_schema["properties"]
     )
 
-    assert set(tools["get_user"].inputSchema["properties"]) == {"id_or_me"}
-    assert set(tools["list_memberships"].inputSchema["properties"]) == {
+    assert set(tools["get_user"].input_schema["properties"]) == {"id_or_me"}
+    assert set(tools["list_memberships"].input_schema["properties"]) == {
         "project_id",
         "principal_id",
         "page",
         "page_size",
     }
-    assert set(tools["list_roles"].inputSchema["properties"]) == {"include_permissions"}
+    assert set(tools["list_roles"].input_schema["properties"]) == {"include_permissions"}
 
 
 async def test_search_principals_advertises_itself_as_the_id_source(
@@ -153,29 +153,29 @@ async def test_membership_write_annotations_are_honest(admin_client: Client[Any]
 
     create = tools["create_membership"]
     assert create.annotations is not None
-    assert create.annotations.readOnlyHint is False
-    assert create.annotations.destructiveHint is False
-    assert create.annotations.idempotentHint is False
-    assert set(create.inputSchema["properties"]) == {
+    assert create.annotations.read_only_hint is False
+    assert create.annotations.destructive_hint is False
+    assert create.annotations.idempotent_hint is False
+    assert set(create.input_schema["properties"]) == {
         "project_id",
         "principal_id",
         "role_ids",
         "notify_message",
     }
-    assert create.inputSchema["required"] == ["project_id", "principal_id", "role_ids"]
+    assert create.input_schema["required"] == ["project_id", "principal_id", "role_ids"]
     assert "No notification is sent unless `notify_message` is given" in (create.description or "")
-    assert "NO email at all" in create.inputSchema["properties"]["notify_message"]["description"]
+    assert "NO email at all" in create.input_schema["properties"]["notify_message"]["description"]
 
     update = tools["update_membership"]
     assert update.annotations is not None
-    assert update.annotations.idempotentHint is True
+    assert update.annotations.idempotent_hint is True
 
     delete = tools["delete_membership"]
     assert delete.annotations is not None
-    assert delete.annotations.destructiveHint is True
-    assert delete.annotations.model_extra is not None
-    assert delete.annotations.model_extra["anthropic/requiresUserInteraction"] is True
-    assert set(delete.inputSchema["properties"]) == {"membership_id", "confirm"}
+    assert delete.annotations.destructive_hint is True
+    assert delete.meta is not None
+    assert delete.meta["anthropic/requiresUserInteraction"] is True
+    assert set(delete.input_schema["properties"]) == {"membership_id", "confirm"}
 
 
 # --- search_principals ----------------------------------------------------

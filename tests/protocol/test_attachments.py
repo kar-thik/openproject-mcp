@@ -71,20 +71,20 @@ async def test_tools_are_registered_with_honest_annotations(mcp_client: Client[A
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
     for name in ("list_attachments", "download_attachment", "upload_attachment"):
         assert name in tools, f"{name} is not registered"
-        assert tools[name].outputSchema is not None
+        assert tools[name].output_schema is not None
         assert tools[name].description
 
     for name in ("list_attachments", "download_attachment"):
         annotations = tools[name].annotations
         assert annotations is not None
-        assert annotations.readOnlyHint is True
-        assert annotations.destructiveHint is False
+        assert annotations.read_only_hint is True
+        assert annotations.destructive_hint is False
 
     upload = tools["upload_attachment"].annotations
     assert upload is not None
-    assert upload.readOnlyHint is False
+    assert upload.read_only_hint is False
     # Repeating a download makes a second file ("name (2).ext"), so it is not idempotent.
-    assert tools["download_attachment"].annotations.idempotentHint is False  # type: ignore[union-attr]
+    assert tools["download_attachment"].annotations.idempotent_hint is False  # type: ignore[union-attr]
 
 
 # --- list_attachments ------------------------------------------------------
@@ -511,7 +511,7 @@ async def test_download_returns_an_inline_image_block(
 
     images = [block for block in result.content if block.type == "image"]
     assert len(images) == 1
-    assert images[0].mimeType == "image/png"
+    assert images[0].mime_type == "image/png"
     assert images[0].data
     structured = result.structured_content
     assert structured is not None

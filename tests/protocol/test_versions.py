@@ -53,16 +53,16 @@ async def test_all_four_version_tools_are_registered(mcp_client: Client[Any]) ->
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
 
     listing = tools["list_versions"]
-    assert listing.outputSchema is not None
+    assert listing.output_schema is not None
     assert listing.annotations is not None
-    assert listing.annotations.readOnlyHint is True
-    assert set(listing.inputSchema["properties"]) == {"project_id", "include_sprints"}
+    assert listing.annotations.read_only_hint is True
+    assert set(listing.input_schema["properties"]) == {"project_id", "include_sprints"}
 
     creating = tools["create_version"]
     assert creating.annotations is not None
-    assert creating.annotations.readOnlyHint is False
-    assert creating.annotations.destructiveHint is False
-    assert set(creating.inputSchema["properties"]) == {
+    assert creating.annotations.read_only_hint is False
+    assert creating.annotations.destructive_hint is False
+    assert set(creating.input_schema["properties"]) == {
         "project_id",
         "name",
         "start_date",
@@ -71,14 +71,14 @@ async def test_all_four_version_tools_are_registered(mcp_client: Client[Any]) ->
         "status",
         "sharing",
     }
-    assert creating.inputSchema["properties"]["status"]["anyOf"][0]["enum"] == [
+    assert creating.input_schema["properties"]["status"]["anyOf"][0]["enum"] == [
         "open",
         "locked",
         "closed",
     ]
 
     updating = tools["update_version"]
-    assert set(updating.inputSchema["properties"]) == {
+    assert set(updating.input_schema["properties"]) == {
         "version_id",
         "name",
         "start_date",
@@ -90,9 +90,9 @@ async def test_all_four_version_tools_are_registered(mcp_client: Client[Any]) ->
 
     deleting = tools["delete_version"]
     assert deleting.annotations is not None
-    assert deleting.annotations.destructiveHint is True
-    assert deleting.annotations.model_extra is not None
-    assert deleting.annotations.model_extra["anthropic/requiresUserInteraction"] is True
+    assert deleting.annotations.destructive_hint is True
+    assert deleting.meta is not None
+    assert deleting.meta["anthropic/requiresUserInteraction"] is True
     assert set((deleting.meta or {})["fastmcp"]["tags"]) == {"versions", "write", "destructive"}
 
 
@@ -106,7 +106,7 @@ async def test_descriptions_name_the_end_date_field_and_the_backlogs_degradation
     assert "backlogs" in listing
     assert (
         "does not fail"
-        in (tools["list_versions"].inputSchema["properties"]["include_sprints"]["description"])
+        in (tools["list_versions"].input_schema["properties"]["include_sprints"]["description"])
     )
     assert "update_version(status='closed')" in (tools["delete_version"].description or "")
 

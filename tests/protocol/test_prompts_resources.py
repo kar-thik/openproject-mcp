@@ -21,7 +21,7 @@ import httpx
 import pytest
 import respx
 from fastmcp import Client
-from mcp.shared.exceptions import McpError
+from fastmcp.exceptions import McpError
 
 from openproject_mcp import resources
 from openproject_mcp.config import Settings
@@ -114,16 +114,16 @@ async def test_the_four_prompts_are_advertised(mcp_client: Client[Any]) -> None:
 
 async def test_the_three_resource_templates_are_advertised(mcp_client: Client[Any]) -> None:
     templates = {
-        template.uriTemplate: template for template in await mcp_client.list_resource_templates()
+        template.uri_template: template for template in await mcp_client.list_resource_templates()
     }
     assert set(templates) == {
         "openproject://work_package/{id}",
         "openproject://project/{identifier}",
         "openproject://attachment/{id}",
     }
-    assert templates["openproject://work_package/{id}"].mimeType == "application/json"
-    assert templates["openproject://project/{identifier}"].mimeType == "application/json"
-    assert templates["openproject://attachment/{id}"].mimeType == "application/octet-stream"
+    assert templates["openproject://work_package/{id}"].mime_type == "application/json"
+    assert templates["openproject://project/{identifier}"].mime_type == "application/json"
+    assert templates["openproject://attachment/{id}"].mime_type == "application/octet-stream"
     assert "search_work_packages" in (
         templates["openproject://work_package/{id}"].description or ""
     )
@@ -427,7 +427,7 @@ async def test_the_work_package_resource_returns_the_detail_projection(
 
     contents = await mcp_client.read_resource(f"openproject://work_package/{WORK_PACKAGE_ID}")
     assert len(contents) == 1
-    assert contents[0].mimeType == "application/json"
+    assert contents[0].mime_type == "application/json"
     payload = json.loads(contents[0].text)  # type: ignore[union-attr]
 
     assert payload["id"] == WORK_PACKAGE_ID
@@ -466,7 +466,7 @@ async def test_the_project_resource_returns_the_overview(
     mock_api.get("projects/platform").mock(return_value=httpx.Response(200, json=PROJECT))
 
     contents = await mcp_client.read_resource("openproject://project/platform")
-    assert contents[0].mimeType == "application/json"
+    assert contents[0].mime_type == "application/json"
     payload = json.loads(contents[0].text)  # type: ignore[union-attr]
 
     assert payload["id"] == PROJECT_ID
@@ -493,7 +493,7 @@ async def test_the_attachment_resource_returns_bytes_with_the_real_mime_type(
     contents = await mcp_client.read_resource(ATTACHMENT_URI)
     assert len(contents) == 1
     # The declared template MIME type is a fallback; the real one wins per read.
-    assert contents[0].mimeType == "image/png"
+    assert contents[0].mime_type == "image/png"
     assert base64.b64decode(contents[0].blob) == ATTACHMENT_BYTES  # type: ignore[union-attr]
 
 
@@ -571,7 +571,7 @@ async def test_disabling_attachments_removes_the_attachment_resource(
     )
 
     async with Client(build_server(_settings(disable="attachments"))) as client:
-        templates = {t.uriTemplate for t in await client.list_resource_templates()}
+        templates = {t.uri_template for t in await client.list_resource_templates()}
         with pytest.raises(McpError):
             await client.read_resource(ATTACHMENT_URI)
 

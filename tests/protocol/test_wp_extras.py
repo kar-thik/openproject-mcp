@@ -112,33 +112,33 @@ async def test_phase_three_collaboration_tools_are_registered(mcp_client: Client
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
 
     reacting = tools["toggle_comment_reaction"]
-    assert reacting.outputSchema is not None
+    assert reacting.output_schema is not None
     assert reacting.annotations is not None
-    assert reacting.annotations.readOnlyHint is False
-    assert reacting.annotations.destructiveHint is False
+    assert reacting.annotations.read_only_hint is False
+    assert reacting.annotations.destructive_hint is False
     # A toggle is not idempotent: the second call undoes the first.
-    assert reacting.annotations.idempotentHint is False
-    assert set(reacting.inputSchema["properties"]) == {"activity_id", "reaction"}
+    assert reacting.annotations.idempotent_hint is False
+    assert set(reacting.input_schema["properties"]) == {"activity_id", "reaction"}
 
     reminding = tools["set_work_package_reminder"]
-    assert reminding.outputSchema is not None
+    assert reminding.output_schema is not None
     assert reminding.annotations is not None
-    assert reminding.annotations.readOnlyHint is False
-    assert reminding.annotations.destructiveHint is False
-    assert reminding.annotations.idempotentHint is True
-    assert set(reminding.inputSchema["properties"]) == {"work_package_id", "remind_at", "note"}
+    assert reminding.annotations.read_only_hint is False
+    assert reminding.annotations.destructive_hint is False
+    assert reminding.annotations.idempotent_hint is True
+    assert set(reminding.input_schema["properties"]) == {"work_package_id", "remind_at", "note"}
 
     listing = tools["list_reminders"]
-    assert listing.outputSchema is not None
+    assert listing.output_schema is not None
     assert listing.annotations is not None
-    assert listing.annotations.readOnlyHint is True
-    assert listing.inputSchema.get("properties", {}) == {}
+    assert listing.annotations.read_only_hint is True
+    assert listing.input_schema.get("properties", {}) == {}
 
     executing = tools["execute_custom_action"]
-    assert executing.outputSchema is not None
+    assert executing.output_schema is not None
     assert executing.annotations is not None
-    assert executing.annotations.readOnlyHint is False
-    assert set(executing.inputSchema["properties"]) == {
+    assert executing.annotations.read_only_hint is False
+    assert set(executing.input_schema["properties"]) == {
         "custom_action_id",
         "work_package_id",
         "lock_version",
@@ -149,7 +149,7 @@ async def test_reaction_is_a_closed_enum_of_the_eight_openproject_accepts(
     mcp_client: Client[Any],
 ) -> None:
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
-    schema = tools["toggle_comment_reaction"].inputSchema["properties"]["reaction"]
+    schema = tools["toggle_comment_reaction"].input_schema["properties"]["reaction"]
     allowed = schema.get("enum") or schema.get("const")
     assert allowed == [
         "thumbs_up",

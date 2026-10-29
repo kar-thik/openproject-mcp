@@ -87,9 +87,9 @@ async def test_metadata_tools_are_registered_as_reads(mcp_client: Client[Any]) -
 
     for name in ("get_instance_info", "get_project_metadata", "get_work_package_schema"):
         tool = tools[name]
-        assert tool.outputSchema is not None
+        assert tool.output_schema is not None
         assert tool.annotations is not None
-        assert tool.annotations.readOnlyHint is True
+        assert tool.annotations.read_only_hint is True
         assert tool.description
 
 

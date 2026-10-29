@@ -116,10 +116,10 @@ async def test_the_four_time_tools_are_registered(mcp_client: Client[Any]) -> No
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
 
     listing = tools["list_time_entries"]
-    assert listing.outputSchema is not None
+    assert listing.output_schema is not None
     assert listing.annotations is not None
-    assert listing.annotations.readOnlyHint is True
-    assert set(listing.inputSchema["properties"]) == {
+    assert listing.annotations.read_only_hint is True
+    assert set(listing.input_schema["properties"]) == {
         "work_package_id",
         "project_id",
         "user",
@@ -134,20 +134,20 @@ async def test_the_four_time_tools_are_registered(mcp_client: Client[Any]) -> No
 
     logging_tool = tools["log_time"]
     assert logging_tool.annotations is not None
-    assert logging_tool.annotations.readOnlyHint is False
-    assert logging_tool.annotations.idempotentHint is False
-    assert set(logging_tool.inputSchema["required"]) == {"hours", "spent_on"}
+    assert logging_tool.annotations.read_only_hint is False
+    assert logging_tool.annotations.idempotent_hint is False
+    assert set(logging_tool.input_schema["required"]) == {"hours", "spent_on"}
 
     updating = tools["update_time_entry"]
     assert updating.annotations is not None
-    assert updating.annotations.destructiveHint is False
+    assert updating.annotations.destructive_hint is False
 
     deleting = tools["delete_time_entry"]
     assert deleting.annotations is not None
-    assert deleting.annotations.destructiveHint is True
-    assert deleting.annotations.model_extra is not None
-    assert deleting.annotations.model_extra["anthropic/requiresUserInteraction"] is True
-    assert set(deleting.inputSchema["properties"]) == {"time_entry_id", "confirm"}
+    assert deleting.annotations.destructive_hint is True
+    assert deleting.meta is not None
+    assert deleting.meta["anthropic/requiresUserInteraction"] is True
+    assert set(deleting.input_schema["properties"]) == {"time_entry_id", "confirm"}
 
 
 async def test_descriptions_carry_the_pitfalls_and_cross_references(

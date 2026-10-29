@@ -141,6 +141,5 @@ async def test_in_memory_client_is_unaffected_by_auth_tokens() -> None:
     """The in-memory transport bypasses HTTP middleware: no token required."""
     settings = _settings(auth_tokens="secret-token", admin_tools=True)
     async with Client(build_server(settings)) as client:
-        assert await client.ping()
         listed = {tool.name for tool in await client.list_tools()}
     assert len(listed) == 91

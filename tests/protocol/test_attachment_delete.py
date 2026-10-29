@@ -36,19 +36,19 @@ async def test_delete_attachment_is_registered_as_destructive(mcp_client: Client
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
     deleting = tools["delete_attachment"]
 
-    assert deleting.outputSchema is not None
+    assert deleting.output_schema is not None
     assert deleting.annotations is not None
-    assert deleting.annotations.readOnlyHint is False
-    assert deleting.annotations.destructiveHint is True
-    assert deleting.annotations.idempotentHint is False
-    assert deleting.annotations.model_extra is not None
-    assert deleting.annotations.model_extra["anthropic/requiresUserInteraction"] is True
-    assert set(deleting.inputSchema["properties"]) == {"attachment_id", "confirm"}
-    assert deleting.inputSchema["properties"]["confirm"]["default"] is False
+    assert deleting.annotations.read_only_hint is False
+    assert deleting.annotations.destructive_hint is True
+    assert deleting.annotations.idempotent_hint is False
+    assert deleting.meta is not None
+    assert deleting.meta["anthropic/requiresUserInteraction"] is True
+    assert set(deleting.input_schema["properties"]) == {"attachment_id", "confirm"}
+    assert deleting.input_schema["properties"]["confirm"]["default"] is False
 
     description = deleting.description or ""
     assert "list_attachments" in description
-    assert "no undo" in deleting.inputSchema["properties"]["confirm"]["description"]
+    assert "no undo" in deleting.input_schema["properties"]["confirm"]["description"]
 
 
 async def test_delete_refuses_without_confirmation_and_reads_nothing(

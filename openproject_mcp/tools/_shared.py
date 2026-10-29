@@ -101,6 +101,7 @@ from openproject_mcp.groups import (
 )
 from openproject_mcp.observability import correlation_scope, get_logger
 from openproject_mcp.projections import Group, ListEnvelope, Pagination
+from openproject_mcp.tool_meta import ToolHints
 from openproject_mcp.version_probe import InstanceProbe, get_probe
 
 __all__ = [
@@ -262,7 +263,7 @@ def read_annotations(
     idempotent: bool = True,
     max_result_chars: int | None = None,
     open_world: bool = True,
-) -> dict[str, Any]:
+) -> ToolHints:
     """Annotations for a read tool.
 
     ``max_result_chars`` sets ``anthropic/maxResultSizeChars`` — use it on known
@@ -280,7 +281,7 @@ def read_annotations(
         annotations["title"] = title
     if max_result_chars is not None:
         annotations["anthropic/maxResultSizeChars"] = max_result_chars
-    return annotations
+    return ToolHints.model_validate(annotations)
 
 
 def write_annotations(
@@ -288,7 +289,7 @@ def write_annotations(
     title: str | None = None,
     idempotent: bool = False,
     requires_user_interaction: bool = False,
-) -> dict[str, Any]:
+) -> ToolHints:
     """Annotations for a non-destructive write (create/update/add)."""
     annotations: dict[str, Any] = {
         "readOnlyHint": False,
@@ -300,17 +301,18 @@ def write_annotations(
         annotations["title"] = title
     if requires_user_interaction:
         annotations["anthropic/requiresUserInteraction"] = True
-    return annotations
+    return ToolHints.model_validate(annotations)
 
 
 def destructive_annotations(
     *,
     title: str | None = None,
     idempotent: bool = False,
-) -> dict[str, Any]:
+) -> ToolHints:
     """Annotations for a destructive tool.
 
-    Always sets ``anthropic/requiresUserInteraction`` — every 🗑 tool needs it
+    Always sets ``anthropic/requiresUserInteraction`` (published under ``_meta`` by
+    :class:`~openproject_mcp.tool_meta.ClaudeToolMeta`) — every 🗑 tool needs it
     (SPEC §5.4) — and must be paired with :func:`require_confirmation` in the
     body and the ``destructive`` tag.
     """
@@ -323,7 +325,7 @@ def destructive_annotations(
     }
     if title:
         annotations["title"] = title
-    return annotations
+    return ToolHints.model_validate(annotations)
 
 
 # --- lifespan access -------------------------------------------------------

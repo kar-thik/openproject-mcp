@@ -91,13 +91,13 @@ async def test_all_six_tools_are_registered_with_honest_annotations(
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
     for name in TOOL_NAMES:
         assert name in tools, name
-        assert tools[name].outputSchema is not None
+        assert tools[name].output_schema is not None
         assert tools[name].annotations is not None
 
     listing = tools["list_recurring_meetings"]
     assert listing.annotations is not None
-    assert listing.annotations.readOnlyHint is True
-    assert set(listing.inputSchema["properties"]) == {"page", "page_size"}
+    assert listing.annotations.read_only_hint is True
+    assert set(listing.input_schema["properties"]) == {"page", "page_size"}
     assert set((listing.meta or {})["fastmcp"]["tags"]) == {
         "meetings",
         "meetings_recurring",
@@ -106,8 +106,8 @@ async def test_all_six_tools_are_registered_with_honest_annotations(
 
     reading = tools["get_recurring_meeting"]
     assert reading.annotations is not None
-    assert reading.annotations.readOnlyHint is True
-    assert set(reading.inputSchema["properties"]) == {"recurring_meeting_id"}
+    assert reading.annotations.read_only_hint is True
+    assert set(reading.input_schema["properties"]) == {"recurring_meeting_id"}
     assert set((reading.meta or {})["fastmcp"]["tags"]) == {
         "meetings",
         "meetings_recurring",
@@ -116,9 +116,9 @@ async def test_all_six_tools_are_registered_with_honest_annotations(
 
     creating = tools["create_recurring_meeting"]
     assert creating.annotations is not None
-    assert creating.annotations.readOnlyHint is False
-    assert creating.annotations.destructiveHint is False
-    assert set(creating.inputSchema["properties"]) == {
+    assert creating.annotations.read_only_hint is False
+    assert creating.annotations.destructive_hint is False
+    assert set(creating.input_schema["properties"]) == {
         "project_id",
         "title",
         "start_time",
@@ -143,8 +143,8 @@ async def test_all_six_tools_are_registered_with_honest_annotations(
 
     initing = tools["init_recurring_meeting_occurrence"]
     assert initing.annotations is not None
-    assert initing.annotations.destructiveHint is False
-    assert set(initing.inputSchema["properties"]) == {"recurring_meeting_id", "start_time"}
+    assert initing.annotations.destructive_hint is False
+    assert set(initing.input_schema["properties"]) == {"recurring_meeting_id", "start_time"}
     assert set((initing.meta or {})["fastmcp"]["tags"]) == {
         "meetings",
         "meetings_recurring",
@@ -162,8 +162,8 @@ async def test_all_six_tools_are_registered_with_honest_annotations(
     ):
         destroying = tools[name]
         assert destroying.annotations is not None, name
-        assert destroying.annotations.destructiveHint is True, name
-        assert set(destroying.inputSchema["properties"]) == properties, name
+        assert destroying.annotations.destructive_hint is True, name
+        assert set(destroying.input_schema["properties"]) == properties, name
         assert set((destroying.meta or {})["fastmcp"]["tags"]) == {
             "meetings",
             "meetings_recurring",

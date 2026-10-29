@@ -60,11 +60,11 @@ async def test_list_permissions_is_registered_as_a_read_tool(mcp_client: Client[
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
     tool = tools["list_permissions"]
 
-    assert tool.outputSchema is not None
+    assert tool.output_schema is not None
     assert tool.annotations is not None
-    assert tool.annotations.readOnlyHint is True
-    assert tool.annotations.destructiveHint is False
-    assert set(tool.inputSchema["properties"]) == {"project_id", "permission"}
+    assert tool.annotations.read_only_hint is True
+    assert tool.annotations.destructive_hint is False
+    assert set(tool.input_schema["properties"]) == {"project_id", "permission"}
     assert set((tool.meta or {})["fastmcp"]["tags"]) == {"metadata", "read"}
 
 

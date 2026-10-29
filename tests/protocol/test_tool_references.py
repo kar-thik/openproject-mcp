@@ -36,7 +36,7 @@ def _settings(*, admin_tools: bool) -> Settings:
 def _referenced_tool_names(tool: Any, universe: set[str]) -> set[str]:
     """Whole-word matches of any universe tool name in ``tool``'s descriptions."""
     texts = [tool.description or ""]
-    for prop in tool.inputSchema.get("properties", {}).values():
+    for prop in tool.input_schema.get("properties", {}).values():
         if isinstance(prop, dict):
             texts.append(prop.get("description") or "")
     combined = " ".join(texts)

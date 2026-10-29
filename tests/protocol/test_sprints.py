@@ -48,16 +48,16 @@ async def test_sprint_tools_are_registered_as_read_only(mcp_client: Client[Any])
     assert "delete_sprint" not in tools
 
     listing = tools["list_sprints"]
-    assert listing.outputSchema is not None
+    assert listing.output_schema is not None
     assert listing.annotations is not None
-    assert listing.annotations.readOnlyHint is True
-    assert set(listing.inputSchema["properties"]) == {"project_id", "page", "page_size"}
+    assert listing.annotations.read_only_hint is True
+    assert set(listing.input_schema["properties"]) == {"project_id", "page", "page_size"}
     assert set((listing.meta or {})["fastmcp"]["tags"]) == {"versions", "read"}
 
     reading = tools["get_sprint"]
     assert reading.annotations is not None
-    assert reading.annotations.readOnlyHint is True
-    assert set(reading.inputSchema["properties"]) == {"sprint_id"}
+    assert reading.annotations.read_only_hint is True
+    assert set(reading.input_schema["properties"]) == {"sprint_id"}
 
 
 # --- listing --------------------------------------------------------------

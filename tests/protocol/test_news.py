@@ -58,22 +58,22 @@ async def test_all_five_news_tools_are_registered_with_honest_annotations(
     tools = {tool.name: tool for tool in await mcp_client.list_tools()}
 
     listing = tools["list_news"]
-    assert listing.outputSchema is not None
+    assert listing.output_schema is not None
     assert listing.annotations is not None
-    assert listing.annotations.readOnlyHint is True
-    assert set(listing.inputSchema["properties"]) == {"project_id", "page", "page_size"}
+    assert listing.annotations.read_only_hint is True
+    assert set(listing.input_schema["properties"]) == {"project_id", "page", "page_size"}
     assert set((listing.meta or {})["fastmcp"]["tags"]) == {"news", "read"}
 
     reading = tools["get_news"]
     assert reading.annotations is not None
-    assert reading.annotations.readOnlyHint is True
-    assert set(reading.inputSchema["properties"]) == {"news_id"}
+    assert reading.annotations.read_only_hint is True
+    assert set(reading.input_schema["properties"]) == {"news_id"}
 
     creating = tools["create_news"]
     assert creating.annotations is not None
-    assert creating.annotations.readOnlyHint is False
-    assert creating.annotations.destructiveHint is False
-    assert set(creating.inputSchema["properties"]) == {
+    assert creating.annotations.read_only_hint is False
+    assert creating.annotations.destructive_hint is False
+    assert set(creating.input_schema["properties"]) == {
         "project_id",
         "title",
         "summary",
@@ -82,7 +82,7 @@ async def test_all_five_news_tools_are_registered_with_honest_annotations(
     assert set((creating.meta or {})["fastmcp"]["tags"]) == {"news", "write"}
 
     updating = tools["update_news"]
-    assert set(updating.inputSchema["properties"]) == {
+    assert set(updating.input_schema["properties"]) == {
         "news_id",
         "title",
         "summary",
@@ -91,9 +91,9 @@ async def test_all_five_news_tools_are_registered_with_honest_annotations(
 
     deleting = tools["delete_news"]
     assert deleting.annotations is not None
-    assert deleting.annotations.destructiveHint is True
-    assert deleting.annotations.model_extra is not None
-    assert deleting.annotations.model_extra["anthropic/requiresUserInteraction"] is True
+    assert deleting.annotations.destructive_hint is True
+    assert deleting.meta is not None
+    assert deleting.meta["anthropic/requiresUserInteraction"] is True
     assert set((deleting.meta or {})["fastmcp"]["tags"]) == {"news", "write", "destructive"}
 
 

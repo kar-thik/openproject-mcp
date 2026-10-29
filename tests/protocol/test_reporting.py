@@ -74,20 +74,20 @@ def mock_report_api(mock_api: respx.MockRouter) -> dict[str, respx.Route]:
 async def test_the_tool_is_registered_with_honest_annotations(mcp_client: Client[Any]) -> None:
     tool = next(t for t in await mcp_client.list_tools() if t.name == "get_project_report_data")
 
-    assert tool.outputSchema is not None
+    assert tool.output_schema is not None
     assert tool.annotations is not None
-    assert tool.annotations.readOnlyHint is True
-    assert tool.annotations.destructiveHint is False
-    assert tool.annotations.model_extra is not None
-    assert tool.annotations.model_extra["anthropic/maxResultSizeChars"] == 150_000
-    assert set(tool.inputSchema["properties"]) == {
+    assert tool.annotations.read_only_hint is True
+    assert tool.annotations.destructive_hint is False
+    assert tool.meta is not None
+    assert tool.meta["anthropic/maxResultSizeChars"] == 150_000
+    assert set(tool.input_schema["properties"]) == {
         "project_id",
         "from_date",
         "to_date",
         "sections",
         "sample_size",
     }
-    assert set(tool.inputSchema["required"]) == {"project_id", "from_date", "to_date"}
+    assert set(tool.input_schema["required"]) == {"project_id", "from_date", "to_date"}
 
     description = tool.description or ""
     assert "isClosed" in description
