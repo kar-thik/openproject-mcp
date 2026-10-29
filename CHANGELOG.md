@@ -10,6 +10,29 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** built on FastMCP 4 (`fastmcp>=4.1.4,<5`) and the MCP Python SDK
+  v2. The server now also speaks MCP `2026-07-28`, which has no sessions;
+  clients on the `initialize` handshake keep working unchanged.
+- **Breaking:** what `enable_tool_group` enables a group for depends on the
+  client's protocol version. Handshake-era clients: that session, as before.
+  `2026-07-28` clients: every connection with the same bearer token over HTTP,
+  or the whole process over stdio. Over HTTP with `OPENPROJECT_MCP_INSECURE`,
+  `2026-07-28` clients get `unexpected_response` instead, since nothing
+  identifies them between requests; the server warns at startup when
+  `INSECURE` is combined with `PROFILE=core`. The result gains `scope`
+  (`session`, `token` or `process`).
+- Handshake-era HTTP sessions end after 30 minutes idle (the MCP SDK default)
+  instead of never, which also drops the groups they enabled.
+
+### Fixed
+
+- `anthropic/requiresUserInteraction` and `anthropic/maxResultSizeChars` are
+  published in each tool's `_meta`, where Claude reads them. They used to be
+  sent inside `annotations`, where Claude ignores them (and MCP SDK v2 drops
+  them).
+
 ## [0.4.0] - 2026-10-20
 
 ### Changed
