@@ -31,7 +31,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from openproject_mcp import __version__, prompts, resources
+from openproject_mcp import __version__, completions, prompts, resources
 from openproject_mcp.auth import StaticBearerVerifier
 from openproject_mcp.client.cache import TTLCache
 from openproject_mcp.client.http import OpenProjectClient
@@ -176,5 +176,6 @@ def build_server(
     register_all(mcp)
     prompts.register(mcp)
     resources.register(mcp)
+    completions.register(mcp)
     apply_tag_filters(mcp, resolved, transport)
     return mcp
