@@ -10,6 +10,8 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-29
+
 ### Changed
 
 - **Breaking:** built on FastMCP 4 (`fastmcp>=4.1.4,<5`) and the MCP Python SDK
