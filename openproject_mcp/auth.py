@@ -53,6 +53,4 @@ class StaticBearerVerifier(TokenVerifier):
                 matched_index = index
         if matched_index < 0:
             return None
-        return AccessToken(
-            token=token, client_id=self.client_id(matched_index), scopes=[]
-        )
+        return AccessToken(token=token, client_id=self.client_id(matched_index), scopes=[])
