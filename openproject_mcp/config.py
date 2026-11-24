@@ -10,6 +10,7 @@ instead of tracebacks.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -46,8 +47,14 @@ class _AliasOnlyEnvSource(EnvSettingsSource):
     (SPEC §14).
     """
 
-    def _extract_field_info(self, field: FieldInfo, field_name: str) -> list[tuple[str, str, bool]]:
-        infos = super()._extract_field_info(field, field_name)
+    def _extract_field_info(
+        self, field: FieldInfo, field_name: str, model_config: Mapping[str, Any] | None = None
+    ) -> list[tuple[str, str, bool]]:
+        # Older supported pydantic-settings versions accept only the first two arguments.
+        if model_config is None:
+            infos = super()._extract_field_info(field, field_name)
+        else:
+            infos = super()._extract_field_info(field, field_name, model_config)
         if field.validation_alias is None:
             return infos
         return [info for info in infos if info[0] != field_name]
