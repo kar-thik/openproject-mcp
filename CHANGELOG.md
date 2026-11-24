@@ -10,6 +10,12 @@ PATCH releases are fixes and strictly additive changes only.
 
 ## [Unreleased]
 
+### Added
+
+- HTTP deployments can map MCP bearer tokens to individual OpenProject API keys
+  with `OPENPROJECT_MCP_USER_KEYS_FILE`. Tools, resources and completions use
+  the authenticated account's permissions and metadata cache scope.
+
 ## [0.5.0] - 2026-10-29
 
 ### Changed

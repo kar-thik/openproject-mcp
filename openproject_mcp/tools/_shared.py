@@ -61,7 +61,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from fastmcp.server.dependencies import get_context
+from fastmcp.server.dependencies import get_access_token, get_context
 from fastmcp.tools.base import ToolResult
 
 from openproject_mcp.client.cache import TTLCache
@@ -354,6 +354,11 @@ class ToolContext:
         return self.client.scope
 
 
+@dataclass(slots=True)
+class MappedToolContexts:
+    by_client_id: dict[str, ToolContext]
+
+
 def get_tool_context() -> ToolContext:
     """Return the :class:`ToolContext` for the running tool call.
 
@@ -368,6 +373,11 @@ def get_tool_context() -> ToolContext:
             "Tools must be invoked through the MCP server, not imported and awaited directly."
         ) from exc
     context = mcp_context.lifespan_context.get(LIFESPAN_KEY)
+    if isinstance(context, MappedToolContexts):
+        token = get_access_token()
+        if token is None or token.client_id not in context.by_client_id:
+            raise RuntimeError("A verified HTTP client identity is required.")
+        return context.by_client_id[token.client_id]
     if not isinstance(context, ToolContext):
         raise RuntimeError(
             "OpenProject tool context is unavailable — the server lifespan did not run. "

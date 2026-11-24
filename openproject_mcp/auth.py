@@ -41,6 +41,10 @@ class StaticBearerVerifier(TokenVerifier):
         super().__init__()
         self._tokens = tuple(token.encode("utf-8") for token in tokens)
 
+    @staticmethod
+    def client_id(index: int) -> str:
+        return f"openproject-mcp/token-{index + 1}"
+
     async def verify_token(self, token: str) -> AccessToken | None:
         presented = token.encode("utf-8")
         matched_index = -1
@@ -50,5 +54,5 @@ class StaticBearerVerifier(TokenVerifier):
         if matched_index < 0:
             return None
         return AccessToken(
-            token=token, client_id=f"openproject-mcp/token-{matched_index + 1}", scopes=[]
+            token=token, client_id=self.client_id(matched_index), scopes=[]
         )

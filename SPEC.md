@@ -200,7 +200,7 @@ The 401/403/404/409/422/429/5xx → hint mapping preserves (and fixes) the old s
 
 ### 4.6 Metadata cache
 
-TTL cache (default 300 s, configurable) for: API root, `/configuration`, `/types`, `/statuses`, `/priorities`, `/roles`, per-project types/versions/categories, WP schemas, time-entry activities, `users/me`, version-probe results (§4.7, TTL 1 h). lockVersions are never cached. Cache is scoped by a hash of the configured credential; a running server holds one credential, so all HTTP clients share one scope (§11).
+TTL cache (default 300 s, configurable) for: API root, `/configuration`, `/types`, `/statuses`, `/priorities`, `/roles`, per-project types/versions/categories, WP schemas, time-entry activities, `users/me`, version-probe results (§4.7, TTL 1 h). lockVersions are never cached. Cache is scoped by a hash of the upstream credential selected for the current request (§11).
 
 ### 4.7 Version & feature probing
 
@@ -597,7 +597,7 @@ Typed params cover the 95% case. `raw_filters` covers the rest — **typed, not 
 
 - **Credentials**: `OPENPROJECT_API_KEY` as `SecretStr`; never in logs (Authorization redacted; body logging is opt-in `OPENPROJECT_MCP_LOG_BODIES=1`, dev-only). TLS verified always; `OPENPROJECT_MCP_CA_BUNDLE` for private CAs (no verify-off switch).
 - **Redirect hygiene**: Authorization stripped on cross-origin redirects (presigned URLs) — explicit httpx event hook, unit-tested.
-- **HTTP transport**: requires a static bearer-token set (`OPENPROJECT_MCP_AUTH_TOKENS`, comma-separated); every request must present `Authorization: Bearer <token>` matching a configured token (constant-time comparison) or is rejected with a 401 + `WWW-Authenticate`. JWT verifier / OAuth proxy remain possible later via FastMCP built-ins. Binds localhost by default; TLS termination is out of scope (localhost bind or TLS-terminating reverse proxy). Without auth configured, HTTP mode exits with an error naming the required env vars. **Implemented today: one shared upstream identity** — bearer tokens authenticate clients to the endpoint, but every client acts as the single configured OpenProject credential and shares one cache scope. Mapping the verified MCP principal to a per-user OpenProject API key or OAuth token remains future work (§19). Filesystem-coupled tools are confined by the §7.3 roots.
+- **HTTP transport**: requires a static bearer-token set (from the shared-account list or the per-user key file); every request must present `Authorization: Bearer <token>` matching a configured token (constant-time comparison) or is rejected with a 401 + `WWW-Authenticate`. JWT verifier / OAuth proxy remain possible later via FastMCP built-ins. Binds localhost by default; TLS termination is out of scope (localhost bind or TLS-terminating reverse proxy). Without auth configured, HTTP mode exits with an error naming the required env vars. `OPENPROJECT_MCP_AUTH_TOKENS` uses one shared OpenProject identity. `OPENPROJECT_MCP_USER_KEYS_FILE` maps the verified client to its OpenProject API key and scoped metadata cache. Filesystem-coupled tools are confined by the §7.3 roots.
 - **Blast-radius controls**: `OPENPROJECT_MCP_READ_ONLY=1` (drops all ✏️/🗑/⚙️), `OPENPROJECT_MCP_ADMIN_TOOLS` (membership writes), `OPENPROJECT_MCP_DISABLE` (group opt-outs), `confirm` + `requiresUserInteraction` on every 🗑 tool.
 - **Output hygiene**: upstream error bodies never echoed verbatim (G4); HTML stripped; attachment filenames sanitized before filesystem use.
 
@@ -726,7 +726,7 @@ Each item is a deliberate exclusion, not an omission:
 
 ## 19. Open questions
 
-1. **Multi-user HTTP auth** — per-user API-key mapping file vs OpenProject OAuth (Doorkeeper auth-code + PKCE) token passthrough. Proposal: keys file in Phase 3, OAuth passthrough as fast-follow. Decide before Phase 3.
+1. **Multi-user HTTP OAuth** — API-key mapping is available. OAuth authorization-code flow with PKCE remains a future option.
 2. **Version floor** — the spec targets 14 LTS with probes (§4.7) for the verified divergences (time-entry filters, internal comments, favorites, capabilities contexts, emoji reactions). If the deployed instance is ≥ 16, the probe layer shrinks; confirm the actual target instance version to descope.
 3. **OpenProject's first-party MCP server** — it has **shipped** in 17.x core (`/mcp` endpoint, Enterprise-gated via `mcp_server` token, admin-configured). Positioning: this server is the free/self-hosted-friendly, deeper alternative (files, git aggregation, reporting, 14-LTS support). Track its tool surface each OpenProject release to avoid name collisions and to steal good ideas.
 4. **Old-name compatibility aliases** — should v1 ship hidden aliases for the old server's 62 tool names (FastMCP tool transformation makes this cheap) to ease migration for existing prompt libraries, or is the §16 mapping table enough? Leaning: mapping table only; aliases add permanent surface for a temporary problem.

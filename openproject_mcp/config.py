@@ -11,10 +11,11 @@ instead of tracebacks.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, field_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -81,6 +82,14 @@ class _AliasOnlyDotEnvSource(_AliasOnlyEnvSource, DotEnvSettingsSource):
         return data
 
 
+class UserCredential(BaseModel):
+    """One incoming bearer token and its upstream OpenProject API key."""
+
+    model_config = ConfigDict(extra="forbid")
+    bearer_token: SecretStr
+    api_key: SecretStr
+
+
 class Settings(BaseSettings):
     """Environment-driven configuration.
 
@@ -145,6 +154,9 @@ class Settings(BaseSettings):
     auth_tokens: SecretStr | None = Field(
         default=None, validation_alias="OPENPROJECT_MCP_AUTH_TOKENS"
     )
+    user_keys_file: Path | None = Field(
+        default=None, validation_alias="OPENPROJECT_MCP_USER_KEYS_FILE"
+    )
 
     # --- timeouts (SPEC §4.1) -------------------------------------------
     connect_timeout: float = Field(
@@ -159,6 +171,46 @@ class Settings(BaseSettings):
         default=10, gt=0, validation_alias="OPENPROJECT_MCP_MAX_CONNECTIONS"
     )
     max_retries: int = Field(default=3, ge=1, validation_alias="OPENPROJECT_MCP_MAX_RETRIES")
+
+    def mapped_credentials(self, transport: TransportName) -> tuple[UserCredential, ...]:
+        if self.user_keys_file is None:
+            return ()
+        if (
+            transport != "http"
+            or self.auth_tokens is not None
+            or self.insecure
+            or self.has_credential
+        ):
+            raise ValueError(
+                "OPENPROJECT_MCP_USER_KEYS_FILE requires HTTP with shared credentials, "
+                "AUTH_TOKENS and INSECURE unset."
+            )
+        return self._user_credentials
+
+    @cached_property
+    def _user_credentials(self) -> tuple[UserCredential, ...]:
+        """Read one snapshot for CLI validation, bearer verification and upstream routing."""
+        assert self.user_keys_file is not None
+        path = self.user_keys_file.expanduser().resolve()
+        if self.upload_root and path.is_relative_to(self.upload_root.expanduser().resolve()):
+            raise ValueError("OPENPROJECT_MCP_USER_KEYS_FILE must be outside the upload root.")
+        try:
+            entries = TypeAdapter(list[UserCredential]).validate_json(path.read_bytes())
+        except (ValueError, OSError):
+            raise ValueError(
+                "Cannot read valid credential records from OPENPROJECT_MCP_USER_KEYS_FILE."
+            ) from None
+        tokens = [entry.bearer_token.get_secret_value() for entry in entries]
+        if (
+            not entries
+            or len(set(tokens)) != len(entries)
+            or any(not t.isascii() or not t.isprintable() or " " in t or not t for t in tokens)
+            or any(not entry.api_key.get_secret_value().strip() for entry in entries)
+        ):
+            raise ValueError(
+                "User key records require unique ASCII bearer tokens and nonempty API keys."
+            )
+        return tuple(entries)
 
     @classmethod
     def settings_customise_sources(
@@ -294,7 +346,12 @@ def check_runtime_config(settings: Settings, transport: TransportName) -> list[s
         problems.append(
             f"OPENPROJECT_URL must start with http:// or https:// (got {settings.url!r})"
         )
-    if not settings.has_credential:
+    if settings.user_keys_file is not None:
+        try:
+            settings.mapped_credentials(transport)
+        except ValueError as exc:
+            problems.append(str(exc))
+    elif not settings.has_credential:
         problems.append(
             "OPENPROJECT_API_KEY is not set — create an API key under "
             "'My account → Access tokens' in OpenProject "
@@ -302,9 +359,15 @@ def check_runtime_config(settings: Settings, transport: TransportName) -> list[s
         )
     if settings.ca_bundle is not None and not settings.ca_bundle.exists():
         problems.append(f"OPENPROJECT_MCP_CA_BUNDLE does not exist: {settings.ca_bundle}")
-    if transport == "http" and not settings.insecure and settings.auth_tokens is None:
+    if (
+        transport == "http"
+        and not settings.insecure
+        and settings.auth_tokens is None
+        and settings.user_keys_file is None
+    ):
         problems.append(
-            "HTTP transport requires authentication: set OPENPROJECT_MCP_AUTH_TOKENS "
+            "HTTP transport requires authentication: set OPENPROJECT_MCP_USER_KEYS_FILE or "
+            "OPENPROJECT_MCP_AUTH_TOKENS "
             "(comma-separated bearer tokens) or, for local development only, "
             "OPENPROJECT_MCP_INSECURE=1"
         )
@@ -353,7 +416,11 @@ def runtime_warnings(settings: Settings, transport: TransportName) -> list[str]:
                 "hidden (upload_attachment and create_work_package(attachment_paths) need the "
                 "upload root, download_attachment the download root)."
             )
-        if settings.auth_tokens is None and settings.profile == "core":
+        if (
+            settings.auth_tokens is None
+            and settings.user_keys_file is None
+            and settings.profile == "core"
+        ):
             warnings.append(
                 "OPENPROJECT_MCP_INSECURE with OPENPROJECT_MCP_PROFILE=core: clients on MCP "
                 "2026-07-28 cannot call enable_tool_group without a bearer token to scope it "

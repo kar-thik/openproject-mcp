@@ -6,8 +6,7 @@ per-project types/versions/categories, WP schemas, time-entry activities,
 work packages, or anything else a write can invalidate.
 
 Entries are scoped by a hash of the configured credential, never the credential
-itself. A running server holds one upstream credential, so every client of an
-HTTP deployment shares one scope — and one OpenProject identity (SECURITY.md).
+itself. Mapped HTTP clients use the scope of their upstream API key.
 """
 
 from __future__ import annotations
