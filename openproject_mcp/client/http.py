@@ -1,6 +1,6 @@
 """The pooled OpenProject API client (SPEC §4.1).
 
-One :class:`httpx.AsyncClient` per server process, created in the FastMCP
+One :class:`httpx.AsyncClient` per upstream tool context, created in the FastMCP
 lifespan and shared by every tool. It owns:
 
 * auth — HTTP Basic ``apikey:<token>`` (default) or ``Bearer <oauth-token>``,

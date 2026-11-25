@@ -12,12 +12,20 @@ unaffected either way.
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+import base64
+import json
+from pathlib import Path
+from typing import Any, Literal
 
 import httpx
+import pytest
+import respx
 from fastmcp import Client
+from fastmcp.utilities.tests import asgi_server
+from mcp_types import PromptReference
 
-from openproject_mcp.config import Settings
+from openproject_mcp.config import Settings, check_runtime_config
 from openproject_mcp.server import build_server
 from tests.conftest import TEST_URL
 
@@ -43,7 +51,7 @@ async def _post_initialize(
     settings: Settings, headers: dict[str, str] | None = None
 ) -> httpx.Response:
     """POST an MCP ``initialize`` to the HTTP app and return the response."""
-    app = build_server(settings).http_app()
+    app = build_server(settings, transport="http").http_app()
     request_headers = {"Accept": "application/json, text/event-stream"}
     request_headers.update(headers or {})
     async with app.router.lifespan_context(app):
@@ -57,7 +65,7 @@ async def _post_initialize(
 
 async def test_missing_authorization_is_rejected_with_www_authenticate() -> None:
     settings = _settings(auth_tokens="secret-token")
-    app = build_server(settings).http_app()
+    app = build_server(settings, transport="http").http_app()
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -117,7 +125,7 @@ async def test_empty_token_list_rejects_every_request() -> None:
 async def test_other_methods_require_a_token_too() -> None:
     """GET/DELETE/HEAD on the MCP endpoint are gated exactly like POST."""
     settings = _settings(auth_tokens="secret-token")
-    app = build_server(settings).http_app()
+    app = build_server(settings, transport="http").http_app()
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -133,7 +141,7 @@ async def test_other_methods_require_a_token_too() -> None:
 async def test_http_app_exposes_only_the_mcp_route() -> None:
     """A route added later (e.g. via a custom route) would bypass bearer auth."""
     settings = _settings(auth_tokens="secret-token")
-    app = build_server(settings).http_app()
+    app = build_server(settings, transport="http").http_app()
     assert [getattr(route, "path", None) for route in app.routes] == [app.state.path]
 
 
@@ -143,3 +151,100 @@ async def test_in_memory_client_is_unaffected_by_auth_tokens() -> None:
     async with Client(build_server(settings)) as client:
         listed = {tool.name for tool in await client.list_tools()}
     assert len(listed) == 91
+
+
+@pytest.mark.parametrize("mode", ["auto", "legacy"])
+async def test_mapped_http_clients_see_their_own_projects_and_cache(
+    mode: Literal["auto", "legacy"], tmp_path: Path, mock_api: respx.MockRouter
+) -> None:
+    key_file = tmp_path / "users.json"
+    users = ["alice", "bob"]
+    key_file.write_text(
+        json.dumps([{"bearer_token": name, "api_key": f"{name}-key"} for name in users])
+    )
+    settings = Settings(_env_file=None, url=TEST_URL, user_keys_file=key_file)
+    assert check_runtime_config(settings, "http") == []
+    server = build_server(settings, transport="http")
+    requests: list[str] = []
+
+    def projects(request: httpx.Request) -> httpx.Response:
+        method, encoded = request.headers["Authorization"].split()
+        assert method == "Basic"
+        login = base64.b64decode(encoded).decode()
+        name = {f"apikey:{user}-key": user for user in users}[login]
+        requests.append(name)
+        row = {"id": 1, "identifier": name, "name": name, "active": True}
+        return httpx.Response(200, json={"total": 1, "_embedded": {"elements": [row]}})
+
+    mock_api.get("projects").mock(side_effect=projects)
+    async with asgi_server(server) as running:
+
+        async def exercise(name: str) -> None:
+            async with running.client(
+                headers={"Authorization": f"Bearer {name}"}, mode=mode
+            ) as client:
+                result = await client.call_tool("list_projects", {})
+                assert result.structured_content is not None
+                assert [p["identifier"] for p in result.structured_content["items"]] == [name]
+                for _ in range(2):
+                    completion = await client.complete(
+                        PromptReference(name="weekly_report"), {"name": "project", "value": ""}
+                    )
+                    assert completion.values == [name]
+
+        await asyncio.gather(*(exercise(user) for user in users))
+    assert sorted(requests) == ["alice", "alice", "bob", "bob"]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "",
+        "[]",
+        '[{"bearer_token": "private-token"}]',
+        '[{"bearer_token": "", "api_key": "private-key"}]',
+        json.dumps([{"bearer_token": "private-token", "api_key": "private-key"}] * 2),
+    ],
+)
+def test_invalid_user_key_file_fails_closed(tmp_path: Path, data: str) -> None:
+    path = tmp_path / "users.json"
+    path.write_text(data)
+    settings = Settings(_env_file=None, url=TEST_URL, user_keys_file=path)
+    assert check_runtime_config(settings, "http")
+    with pytest.raises(ValueError) as error:
+        build_server(settings, transport="http")
+    assert "private" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"api_key": "shared"},
+        {"oauth_token": "shared"},
+        {"insecure": True},
+        {"auth_tokens": "shared"},
+    ],
+)
+def test_rejects_mixed_auth_configuration(tmp_path: Path, overrides: dict[str, Any]) -> None:
+    settings = Settings(
+        _env_file=None, url=TEST_URL, user_keys_file=tmp_path / "users", **overrides
+    )
+    assert check_runtime_config(settings, "http")
+    with pytest.raises(ValueError, match="requires HTTP"):
+        build_server(settings, transport="http")
+
+
+async def test_user_keys_reject_unknown_token(tmp_path: Path) -> None:
+    path = tmp_path / "users.json"
+    path.write_text('[{"bearer_token":"incoming", "api_key":"upstream"}]')
+    settings = Settings(_env_file=None, url=TEST_URL, user_keys_file=path)
+    for headers in (None, {"Authorization": "Bearer upstream"}):
+        response = await _post_initialize(settings, headers)
+        assert response.status_code == 401
+
+
+def test_user_keys_cannot_be_read_via_upload_root(tmp_path: Path) -> None:
+    path = tmp_path / "users.json"
+    path.write_text('[{"bearer_token":"incoming", "api_key":"upstream"}]')
+    settings = Settings(_env_file=None, url=TEST_URL, user_keys_file=path, upload_root=tmp_path)
+    assert any("outside the upload root" in p for p in check_runtime_config(settings, "http"))

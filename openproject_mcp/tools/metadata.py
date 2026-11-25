@@ -705,7 +705,9 @@ def _visibility_scope(
         return "session"
     if transport == "stdio":
         return "process"
-    return "token" if settings.auth_tokens is not None else None
+    return (
+        "token" if settings.auth_tokens is not None or settings.user_keys_file is not None else None
+    )
 
 
 def register(mcp: FastMCP) -> None:

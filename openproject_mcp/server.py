@@ -26,7 +26,7 @@ calling session only, and emits ``tools/list_changed`` to that session only.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 from fastmcp import FastMCP
@@ -35,7 +35,7 @@ from openproject_mcp import __version__, completions, prompts, resources
 from openproject_mcp.auth import StaticBearerVerifier
 from openproject_mcp.client.cache import TTLCache
 from openproject_mcp.client.http import OpenProjectClient
-from openproject_mcp.config import Settings, TransportName
+from openproject_mcp.config import Settings, TransportName, UserCredential
 from openproject_mcp.observability import configure_logging, get_logger
 from openproject_mcp.schemas import CompactOutputSchemas
 from openproject_mcp.tool_meta import ClaudeToolMeta
@@ -43,6 +43,7 @@ from openproject_mcp.tools import register_all
 from openproject_mcp.tools._shared import (
     CORE_PROFILE_HIDDEN_GROUPS,
     LIFESPAN_KEY,
+    MappedToolContexts,
     ToolContext,
     deployment_rules,
     profile_rules,
@@ -79,7 +80,12 @@ CORE_PROFILE_INSTRUCTIONS = (
 )
 
 
-def build_lifespan(settings: Settings, transport: TransportName = "stdio") -> Any:
+def build_lifespan(
+    settings: Settings,
+    transport: TransportName = "stdio",
+    *,
+    users: tuple[UserCredential, ...] = (),
+) -> Any:
     """Create the lifespan that owns the HTTP client and metadata cache.
 
     The version probe is *not* run here: it is lazy and cached for an hour
@@ -89,7 +95,6 @@ def build_lifespan(settings: Settings, transport: TransportName = "stdio") -> An
 
     @asynccontextmanager
     async def lifespan(server: FastMCP) -> AsyncGenerator[dict[str, Any]]:
-        client = OpenProjectClient(settings)
         cache = TTLCache(ttl=settings.cache_ttl)
         logger.info(
             "server starting",
@@ -100,16 +105,22 @@ def build_lifespan(settings: Settings, transport: TransportName = "stdio") -> An
                 "profile": settings.profile,
             },
         )
-        try:
-            yield {
-                LIFESPAN_KEY: ToolContext(
-                    client=client, cache=cache, settings=settings, transport=transport
-                )
-            }
-        finally:
-            await client.aclose()
-            cache.clear()
-            logger.info("server stopped")
+        async with AsyncExitStack() as stack:
+            stack.callback(cache.clear)
+
+            async def create_context(config: Settings) -> ToolContext:
+                client = await stack.enter_async_context(OpenProjectClient(config))
+                return ToolContext(client=client, cache=cache, settings=config, transport=transport)
+
+            if users:
+                contexts: dict[str, ToolContext] = {}
+                for index, user in enumerate(users):
+                    config = settings.model_copy(update={"api_key": user.api_key})
+                    contexts[StaticBearerVerifier.client_id(index)] = await create_context(config)
+                yield {LIFESPAN_KEY: MappedToolContexts(contexts)}
+            else:
+                yield {LIFESPAN_KEY: await create_context(settings)}
+        logger.info("server stopped")
 
     return lifespan
 
@@ -160,16 +171,16 @@ def build_server(
     # verification, SPEC §11); stdio and the in-memory client transport never
     # consult it. AUTH_TOKENS set but parsing to zero tokens still attaches a
     # verifier, which then rejects every request: never an open endpoint.
-    auth = (
-        StaticBearerVerifier(resolved.bearer_tokens) if resolved.auth_tokens is not None else None
-    )
+    users = resolved.mapped_credentials(transport)
+    tokens = tuple(user.bearer_token.get_secret_value() for user in users) or resolved.bearer_tokens
+    auth = StaticBearerVerifier(tokens) if users or resolved.auth_tokens is not None else None
 
     mcp: FastMCP = FastMCP(
         name=SERVER_NAME,
         instructions=SERVER_INSTRUCTIONS
         + (CORE_PROFILE_INSTRUCTIONS if resolved.profile == "core" else ""),
         version=__version__,
-        lifespan=build_lifespan(resolved, transport),
+        lifespan=build_lifespan(resolved, transport, users=users),
         auth=auth,
         middleware=[CompactOutputSchemas(), ClaudeToolMeta()],
     )

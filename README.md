@@ -221,7 +221,7 @@ downtime: create the new token, switch your clients over, then revoke the old on
 ## Configuration
 
 Configuration is entirely environment-driven. The table below is the authoritative reference:
-the server binds **exactly these 26 names and no others**. Bare, unprefixed names such as
+the server binds **the names listed here**. Bare, unprefixed names such as
 `READ_TIMEOUT` or `API_KEY` are deliberately ignored (a stray variable in your shell cannot
 change or break the server), as is any other unknown variable. A `.env` file in the server's
 working directory is read with the same names; real environment variables take precedence.
@@ -232,7 +232,7 @@ From-source users can start from
 |---|---|---|
 | `OPENPROJECT_URL` | — (required) | Instance root URL, e.g. `https://openproject.example.com`. A trailing `/api/v3` is tolerated and stripped. |
 | `OPENPROJECT_API_KEY` | — (required*) | API key from **My account → Access tokens**. Sent as HTTP Basic `apikey:<token>`. |
-| `OPENPROJECT_OAUTH_TOKEN` | unset | OAuth bearer token, as an alternative to the API key. *One of the two credentials is required. |
+| `OPENPROJECT_OAUTH_TOKEN` | unset | OAuth bearer token, as an alternative to the API key. *Required alongside an instance URL unless HTTP uses a per-user key file. |
 | `OPENPROJECT_MCP_ACCEPT_LANGUAGE` | unset | Sent as the `Accept-Language` header; OpenProject localizes validation messages accordingly. |
 | `OPENPROJECT_MCP_CA_BUNDLE` | system trust store | Path to a CA bundle (PEM) for instances behind a private CA. TLS is always verified; there is deliberately no off switch. |
 | `OPENPROJECT_MCP_READ_ONLY` | `false` | Serve read tools only: every write, destructive and admin tool is removed at startup. |
@@ -252,7 +252,8 @@ From-source users can start from
 | `OPENPROJECT_MCP_OTEL` | `false` | Reserved for OpenTelemetry tracing. Accepted but not yet wired to anything in this release; setting it produces no traces. |
 | `OPENPROJECT_MCP_HTTP_HOST` | `127.0.0.1` | Bind address for `--transport http`. |
 | `OPENPROJECT_MCP_HTTP_PORT` | `8000` | Port for `--transport http`. |
-| `OPENPROJECT_MCP_AUTH_TOKENS` | unset | Comma-separated bearer tokens accepted by `--transport http` (e.g. one per client). Every request must carry `Authorization: Bearer <token>` with one of them; anything else gets a 401. Without it (and without `OPENPROJECT_MCP_INSECURE=1`), the HTTP transport refuses to start. See [Transports](#transports). |
+| `OPENPROJECT_MCP_AUTH_TOKENS` | unset | Comma-separated bearer tokens accepted by `--transport http` (e.g. one per client). Every request must carry `Authorization: Bearer <token>` with one of them; anything else gets a 401. These tokens share the configured upstream account. See [Transports](#transports). |
+| `OPENPROJECT_MCP_USER_KEYS_FILE` | unset | HTTP only. Path to a JSON file mapping bearer tokens to individual OpenProject API keys. See [Transports](#transports) for the format. |
 | `OPENPROJECT_MCP_CONNECT_TIMEOUT` | `10` | Seconds to wait for a TCP/TLS connection to OpenProject. |
 | `OPENPROJECT_MCP_READ_TIMEOUT` | `30` | Seconds to wait for response data. |
 | `OPENPROJECT_MCP_WRITE_TIMEOUT` | `60` | Seconds to wait while sending request data (uploads). |
@@ -311,7 +312,7 @@ explicit `confirm=true` argument before it acts.
 - **Streamable HTTP** — `openproject-mcp-server --transport http`. Binds `127.0.0.1:8000` by
   default; override with `--host`/`--port` or `OPENPROJECT_MCP_HTTP_HOST`/
   `OPENPROJECT_MCP_HTTP_PORT`. The HTTP transport refuses to start without authentication
-  configured: set `OPENPROJECT_MCP_AUTH_TOKENS` to a comma-separated list of bearer tokens,
+  configured: set `OPENPROJECT_MCP_USER_KEYS_FILE` for per-user access, set `OPENPROJECT_MCP_AUTH_TOKENS` to a comma-separated list of bearer tokens,
   or — for local development only — set `OPENPROJECT_MCP_INSECURE=1`.
 
   With tokens configured, every HTTP request to the MCP endpoint must carry an
@@ -329,11 +330,26 @@ explicit `confirm=true` argument before it acts.
   beyond localhost, put it behind a TLS-terminating reverse proxy (for example nginx or
   Caddy).
 
-  **One upstream identity.** Bearer tokens decide who may reach the endpoint, not who they
-  are in OpenProject: the server holds a single `OPENPROJECT_API_KEY` (or OAuth token), and
-  every HTTP client acts as that OpenProject user and shares its metadata cache. Deploy it
-  for clients you would trust with that account, and issue a dedicated, least-privileged
-  OpenProject user for it.
+  **Individual OpenProject accounts.** Set `OPENPROJECT_URL` and
+  `OPENPROJECT_MCP_USER_KEYS_FILE` for a multi-user HTTP deployment. The file contains
+  one record per client. Give each client its bearer token and store its upstream API key
+  on the server. For example:
+
+  ```json
+  [
+    {"bearer_token": "<random-token-for-alice>", "api_key": "<alice-openproject-api-key>"},
+    {"bearer_token": "<random-token-for-bob>", "api_key": "<bob-openproject-api-key>"}
+  ]
+  ```
+
+  Keep the file readable only by the service account and outside the upload root.
+  Leave `OPENPROJECT_API_KEY`, `OPENPROJECT_OAUTH_TOKEN`, `OPENPROJECT_MCP_AUTH_TOKENS`
+  and `OPENPROJECT_MCP_INSECURE` unset. Run `openproject-mcp-server --transport http --check`
+  to validate the file. Restart after adding, rotating or revoking a token.
+  Requests use the mapped account's permissions and credential-scoped cache.
+
+  **Shared OpenProject account.** With `OPENPROJECT_MCP_AUTH_TOKENS`, every client
+  acts as the user identified by the server's API key or OAuth token.
 
   **File tools touch the server's disk.** `upload_attachment`, `create_work_package
   (attachment_paths)` and `download_attachment` read and write paths on the machine running
@@ -613,12 +629,12 @@ detail tools return a structured error explaining both possible readings of the 
   and traversal sequences are neutralized), and reported with a SHA-256 of the bytes.
 - Destructive tools require `confirm=true` and are annotated so clients can ask the user
   first.
-- The HTTP transport refuses to start without `OPENPROJECT_MCP_AUTH_TOKENS` configured and
+- The HTTP transport refuses to start in authenticated mode without a token list or user key file and
   verifies the `Authorization: Bearer` header on every request — missing or invalid tokens
   are rejected with a 401, and token comparison is constant-time. The server does not
   terminate TLS: keep the default `127.0.0.1` bind, and put a TLS-terminating reverse proxy
   in front if the port must be reachable from anywhere else (see [Transports](#transports)).
-  All HTTP clients share the server's one OpenProject identity; confine the file tools with
+  The file roots are shared across clients. Confine the file tools with
   `OPENPROJECT_MCP_UPLOAD_ROOT` / `OPENPROJECT_MCP_DOWNLOAD_ROOT`.
 - Downloads are created exclusively (never overwriting an existing file, even under
   concurrent downloads of the same name), and a failed or cancelled transfer removes only
@@ -633,8 +649,8 @@ detail tools return a structured error explaining both possible readings of the 
 | 403 permission_denied | The account is authenticated but lacks a role permission for that project, or the relevant module is disabled for it. |
 | Empty list plus a note about a missing module | That OpenProject module (meetings, news, documents, ...) is not installed or not enabled in the project — the empty result is the honest answer, not an error. |
 | TLS certificate errors | Your instance uses a private CA: point `OPENPROJECT_MCP_CA_BUNDLE` at its PEM bundle. There is no option to disable verification. |
-| `--transport http` refuses to start | Set `OPENPROJECT_MCP_AUTH_TOKENS` (comma-separated bearer tokens), or `OPENPROJECT_MCP_INSECURE=1` for local development only — see [Transports](#transports). |
-| 401 from the MCP HTTP endpoint itself | The request's `Authorization: Bearer <token>` header is missing or does not match any configured `OPENPROJECT_MCP_AUTH_TOKENS` entry. Check the client's token for typos; distinct from the upstream `401 authentication_failed` above, which is about the OpenProject API key. |
+| `--transport http` refuses to start | Set `OPENPROJECT_MCP_USER_KEYS_FILE` for individual accounts, `OPENPROJECT_MCP_AUTH_TOKENS` for a shared account, or `OPENPROJECT_MCP_INSECURE=1` for local development only — see [Transports](#transports). |
+| 401 from the MCP HTTP endpoint itself | The request's `Authorization: Bearer <token>` header is missing or does not match a bearer token in the configured list or user key file. Check the client's token for typos; distinct from the upstream `401 authentication_failed` above, which is about the OpenProject API key. |
 | Proxies | Standard `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY` variables are honored by the underlying HTTP client. |
 
 When reporting an issue, please include your OpenProject version, the output of

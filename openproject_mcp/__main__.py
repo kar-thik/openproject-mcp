@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog=_prog(),
         description=(
             "MCP server for OpenProject. Configuration comes from the environment: "
-            "OPENPROJECT_URL and OPENPROJECT_API_KEY are required."
+            "Set OPENPROJECT_URL and configure OpenProject credentials."
         ),
     )
     parser.add_argument(

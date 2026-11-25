@@ -34,7 +34,7 @@ key:
   are sanitized before any filesystem use, and a SHA-256 digest of the bytes is
   returned for verification.
 - **HTTP transport** — binds `127.0.0.1` by default and refuses to start
-  without `OPENPROJECT_MCP_AUTH_TOKENS` unless `OPENPROJECT_MCP_INSECURE=1` is
+  without a bearer token list or user key file unless `OPENPROJECT_MCP_INSECURE=1` is
   set explicitly (local development only). With tokens configured, every
   request must carry `Authorization: Bearer <token>` matching a configured
   token — comparison is constant-time, anything else is rejected with a 401 —
@@ -42,12 +42,11 @@ key:
   endpoint. The server does not terminate TLS or rate-limit the endpoint:
   keep the localhost bind, or front it with a TLS-terminating reverse proxy
   and use long random tokens.
-- **Shared upstream identity** — bearer tokens authenticate clients to the MCP
-  endpoint, but the server holds one OpenProject credential: every HTTP client
-  acts as that OpenProject user and shares one metadata cache scope. The server
-  does not isolate upstream users from one another; per-user OpenProject
-  authentication is not implemented. Run it only for clients you would trust
-  with that account, and give it a dedicated, least-privileged user.
+- **Upstream identity** — `OPENPROJECT_MCP_USER_KEYS_FILE` maps each HTTP bearer token
+  to an OpenProject API key. Upstream permissions and cache entries follow that key.
+  Protect this file as a secret and restart the server when credentials change.
+  With `OPENPROJECT_MCP_AUTH_TOKENS`, all clients share the configured OpenProject
+  account. File-tool roots are shared in both modes.
 - **Local file access** — `upload_attachment`, `create_work_package
   (attachment_paths)` and `download_attachment` read and write files on the
   server's machine. `OPENPROJECT_MCP_UPLOAD_ROOT` and
